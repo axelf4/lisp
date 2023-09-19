@@ -1,5 +1,5 @@
 let
   pkgs = import <nixpkgs> {};
 in pkgs.mkShell {
-  buildInputs = [ pkgs.cmake ];
+  buildInputs = [ pkgs.cmake pkgs.croaring ];
 }
