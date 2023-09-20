@@ -11,10 +11,10 @@ struct GcTypeInfo {
 
 void gc_init();
 
-void *myalloc(size_t size);
+void *gc_alloc(size_t size);
+
+void gc_mark(void *);
 
 void garbage_collect();
-
-void gc_noop1(void *);
 
 #endif

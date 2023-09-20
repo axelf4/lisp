@@ -3,6 +3,8 @@ project(gc C)
 
 find_package(roaring REQUIRED)
 
+add_compile_options(-Wall -Wextra -pedantic)
+
 add_executable(gc-test main.c gc.c)
 set_target_properties(gc-test PROPERTIES C_STANDARD 23)
 target_link_libraries(gc-test PRIVATE roaring::roaring)
