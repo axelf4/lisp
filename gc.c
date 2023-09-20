@@ -13,8 +13,8 @@
 
 #include "vec.h"
 
-#define LINE_SIZE_BITS 7
-#define LINE_SIZE (1 << LINE_SIZE_BITS) // 0x80
+#define LINE_SIZE_BITS 8
+#define LINE_SIZE (1 << LINE_SIZE_BITS) // 2 * 0x80
 #define BLOCK_SIZE_BITS 15
 #define BLOCK_SIZE (1 << BLOCK_SIZE_BITS) // 0x8000
 
@@ -85,7 +85,7 @@ struct BlockList {
 
 struct Chunk {
 	struct Block *data;
-	roaring_bitmap_t *object_map;
+	roaring_bitmap_t object_map;
 	struct Chunk *next;
 };
 
@@ -127,7 +127,7 @@ static struct Block *acquire_block(struct Heap *heap) {
 	struct Chunk *chunk;
 	if (!(chunk = malloc(sizeof *chunk))) return NULL;
 	chunk->data = blocks;
-	chunk->object_map = roaring_bitmap_create();
+	roaring_bitmap_init_cleared(&chunk->object_map);
 	chunk->next = heap->chunks;
 	heap->chunks = chunk;
 
@@ -177,10 +177,9 @@ static void unmark_block(struct Block *block) {
 	memset(block->meta.lines, 0, sizeof block->meta.lines);
 }
 
-static struct Heap heap;
+static struct Heap heap = { 0 };
 
 void gc_init() {
-	heap = (struct Heap) { 0 };
 }
 
 struct ObjectHeader {
@@ -188,32 +187,35 @@ struct ObjectHeader {
 	struct GcTypeInfo *tib;
 };
 
-void *gc_alloc(size_t size) {
+/** Remember @arg x as a live allocated object location. */
+static void object_map_add(char *x) {
+	struct Chunk *chunk = heap.chunks;
+	while (!((char *) chunk->data <= x
+			&& x < (char *) (chunk->data + BLOCKS_PER_CHUNK))) chunk = chunk->next;
+	roaring_bitmap_add(&chunk->object_map,
+		(x - (char *) chunk->data) / alignof(void *));
+}
+
+void *gc_alloc(size_t size, struct GcTypeInfo *tib) {
 	char *ptr = do_alloc(&heap, sizeof(struct ObjectHeader) + size);
 	if (!ptr) return NULL;
-	struct ObjectHeader *header = (struct ObjectHeader *) ptr;
+	*(struct ObjectHeader *) ptr = (struct ObjectHeader) {
+		.mark = heap.mark_color, .tib = tib,
+	};
+
 	ptr += sizeof(struct ObjectHeader);
-
-	header->mark = !heap.mark_color;
-
-	// Add to object map
-	const size_t min_align = 8;
-	struct Chunk *chunk = heap.chunks;
-	while (chunk && !((char *) chunk->data <= ptr
-			&& ptr < (char *) (chunk->data + BLOCKS_PER_CHUNK))) chunk = chunk->next;
-	roaring_bitmap_add(chunk->object_map, (uintptr_t) (ptr - (char *) chunk->data) / min_align);
-
+	object_map_add(ptr);
 	return ptr;
 }
 
 void gc_trace(void *p) {
-	printf("foo Tracing object at '%p'\n", p);
-	struct ObjectHeader *header = (void *) ((uintptr_t) p - sizeof(struct ObjectHeader));
-	if (header->mark == heap.mark_color) return;
+	struct ObjectHeader *header = (struct ObjectHeader *) p - 1;
+	if (header->mark == heap.mark_color) return; // Already marked and traced
 	header->mark = !header->mark;
 
 	printf("Tracing object at '%p'\n", p);
-	if (header->tib) header->tib->trace(p); else gc_mark(p);
+	object_map_add(p);
+	header->tib->trace(p);
 }
 
 /** Mark the line that contains the given pointee. */
@@ -239,10 +241,8 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 }
 
 extern void *__libc_stack_end;
-static void push_regs(void *roots) {
-	/* register uintptr_t sp asm ("sp"); */
-	/* printf("SP: %p\n", (void *) sp); */
-
+static void collect_roots(void *roots) {
+	// register void *sp asm ("sp");
 	void *base = __libc_stack_end,
 		*sp = __builtin_frame_address(0);
 	sp = (void *) (((uintptr_t) sp + alignof(void *) - 1)
@@ -250,15 +250,14 @@ static void push_regs(void *roots) {
 	printf("SP: %p, base: %p\n", sp, base);
 	for (uintptr_t *p = sp; p < (uintptr_t *) base; ++p) {
 		uintptr_t x = *p;
-		if (x % 8) continue;
-		for (struct Chunk *chunk = heap.chunks; chunk; chunk = chunk->next) {
-			if (x >= (uintptr_t) chunk->data
-				&& roaring_bitmap_contains(chunk->object_map, (x - (uintptr_t) chunk->data) / 8)) {
-				printf("adding object at '%p'\n", (void *) x);
+		if (x % alignof(void *)) continue;
+		for (struct Chunk *chunk = heap.chunks; chunk; chunk = chunk->next)
+			if (x >= (uintptr_t) chunk->data && x < (uintptr_t) (chunk->data + BLOCKS_PER_CHUNK)
+				&& roaring_bitmap_remove_checked(&chunk->object_map,
+					(x - (uintptr_t) chunk->data) / alignof(void *))) {
 				vec_push(roots, (void *) x);
 				break;
 			}
-		}
 	}
 }
 
@@ -271,19 +270,25 @@ static enum BlockStatus sweep_block(struct Block *block) {
 		: UNAVAILABLE);
 }
 
-void garbage_collect() {
+__attribute__ ((noinline)) void garbage_collect() {
 	if (heap.head) unmark_block(heap.head);
 	for (struct Chunk *x = heap.chunks; x; x = x->next)
 		for (unsigned i = 0; i < BLOCKS_PER_CHUNK; ++i)
 			unmark_block(x->data + i);
 
-	// Find conservative roots
+	heap.mark_color = !heap.mark_color;
+
+	// Collect conservative roots
 	struct Vec roots = vec_new();
-	with_callee_saves_pushed(push_regs, &roots);
-	for (size_t i = 0; i < roots.length; ++i) {
-		void *p = roots.items[i];
-		gc_trace(p); // Mark conservative and pinned
-	}
+	with_callee_saves_pushed(collect_roots, &roots);
+
+	// Empty object map
+	for (struct Chunk *chunk = heap.chunks; chunk; chunk = chunk->next)
+		roaring_bitmap_clear(&chunk->object_map);
+
+	// Trace live objects
+	for (size_t i = 0; i < roots.length; ++i)
+		gc_trace(roots.items[i]); // Mark conservative and pinned
 	vec_free(&roots);
 
 	struct BlockList *prev = NULL;
