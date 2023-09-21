@@ -15,7 +15,7 @@ void *gc_alloc(size_t size, struct GcTypeInfo *tib);
 
 void gc_trace(void *p);
 
-void gc_mark(void *);
+void gc_mark(char *);
 
 void garbage_collect();
 

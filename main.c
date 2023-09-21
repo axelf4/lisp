@@ -23,10 +23,10 @@ static void *cons(void *car, void *cdr) {
 	return cell;
 }
 
-void foo() {
+static void foo() {
 	for (int i = 0; i < 2000; ++i) {
-		void *p = cons(NULL, NULL);
-		printf("foo alloc:ed: %p\n", p);
+		__attribute__ ((unused)) void *p = cons(NULL, NULL);
+		/* printf("foo alloc:ed: %p\n", p); */
 	}
 }
 
@@ -36,8 +36,8 @@ int main(void) {
 	void *p = cons(NULL, cons(NULL, NULL));
 	printf("Allocated: %p\n", p);
 
+	foo();
 	printf("Collecting garbage...\n");
-	/* foo(); */
 	garbage_collect();
 
 	printf("Again: %p\n", p);
