@@ -22,11 +22,6 @@ struct GcTypeInfo {
 	void (*trace)(struct Heap *, void *);
 };
 
-enum {
-	GC_PINNED = 2,
-	GC_FORWARDED = 4,
-};
-
 struct GcObjectHeader {
 	char mark; ///< Object mark bit: Ensures transitive closure terminates.
 	char flags; //< GC flags.
