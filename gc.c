@@ -1,15 +1,11 @@
 #include "gc.h"
 #include <stdlib.h>
-#include <stdint.h>
-#include <stdbool.h>
+#include <stdio.h>
 #include <stdalign.h>
-#include <assert.h>
 #include <roaring/roaring.h>
 
 #include <sys/mman.h>
 #include <ucontext.h>
-
-#include <stdio.h>
 
 #include "vec.h"
 
@@ -22,7 +18,7 @@
 // One byte per line is used for flags
 #define BLOCK_CAPACITY (BLOCK_SIZE - LINE_COUNT - 1)
 
-#define BLOCKS_PER_CHUNK 8
+#define BLOCKS_PER_CHUNK 8 // 128
 
 struct BumpPointer {
 	char *cursor, *limit;
@@ -34,91 +30,67 @@ static void *bump_alloc(struct BumpPointer *ptr, size_t size, size_t align) {
 		: NULL;
 }
 
-enum BlockStatus {
-	FREE,
-	/// Partly used with at least F=1 free lines.
-	RECYCLABLE,
-	UNAVAILABLE,
-};
+_Static_assert(sizeof(struct GcBlock) == BLOCK_SIZE);
 
-/// Aligned to block boundary.
-struct Block {
-	char data[BLOCK_CAPACITY];
-	struct BlockMeta {
-		char lines[LINE_COUNT];
-		enum BlockStatus status : 8;
-	} meta;
-};
-
-_Static_assert(sizeof(struct Block) == BLOCK_SIZE);
-
-static void *block_alloc(struct Block *block, struct BumpPointer *ptr, size_t size) {
-	_Static_assert(!(LINE_SIZE & (alignof(max_align_t) - 1)));
-	size_t align = alignof(max_align_t);
-
-	void *result;
-	if ((result = bump_alloc(ptr, size, align))) return result;
-
-	// Locate next gap of unmarked lines of sufficient size
+_Static_assert(!(LINE_SIZE % alignof(max_align_t)));
+/** Locate next gap of unmarked lines of sufficient size. */
+static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size) {
 	unsigned required_lines = (size + LINE_SIZE - 1) / LINE_SIZE, count = 0,
-		end = ((char *) block - (char *) ptr->limit) / LINE_SIZE;
-	for (unsigned i = end; i-- > 0;) {
-		bool marked = block->meta.lines[i];
-		if (marked) {
+		end = ((char *) block - top) / LINE_SIZE;
+	for (unsigned i = end; i-- > 0;)
+		if (block->line_marks[i]) {
 			if (count > required_lines) {
 				// At least 2 preceeding lines were unmarked. Consider
 				// the previous block as conservatively marked.
-				ptr->cursor = block->data + LINE_SIZE * end;
-				ptr->limit = block->data + LINE_SIZE * (i + 2);
-				return block_alloc(block, ptr, size);
+				return (struct BumpPointer) {
+					block->data + LINE_SIZE * end,
+					block->data + LINE_SIZE * (i + 2),
+				};
 			}
-
 			count = 0;
 			end = i;
 		} else ++count;
-	}
-
-	if (count >= required_lines) {
-		*ptr = (struct BumpPointer) { block->data + LINE_SIZE * end, block->data };
-		return bump_alloc(ptr, size, align);
-	}
-	return NULL;
+	return count >= required_lines
+		? (struct BumpPointer) { block->data + LINE_SIZE * end, block->data }
+		: (struct BumpPointer) { NULL, NULL };
 }
 
-struct BlockList {
-	struct Block *block;
-	struct BlockList *next;
+struct GcBlockList {
+	struct GcBlock *block;
+	struct GcBlockList *next;
 };
 
 struct Chunk {
-	struct Block *data;
+	struct GcBlock *data;
 	roaring_bitmap_t object_map;
 	struct Chunk *next;
 };
 
+#define MIN_FREE (BLOCKS_PER_CHUNK / 35 + 2)
+
 static struct Heap {
 	struct BumpPointer ptr, overflow_ptr;
 
-	struct Block *head, ///< The current block being allocated into.
+	struct GcBlock *head, ///< The current block being allocated into.
 		*overflow; ///< Block kept for writing medium objects.
-	struct BlockList *free, *recycled, *rest;
+	struct GcBlockList *free, *recycled, *rest;
 	struct Chunk *chunks;
+	size_t num_free;
 
-	bool mark_color;
+	bool mark_color, is_gc, defrag;
 } heap;
 
-void gc_init() {}
-
-static struct Block *acquire_block(struct Heap *heap) {
+static struct GcBlock *acquire_block(struct Heap *heap) {
 	printf("Acquiring a new block...\n");
-
 	if (heap->free) {
-		struct Block *block = heap->free->block;
-		heap->free = heap->free->next;
+		struct GcBlockList *x = heap->free;
+		struct GcBlock *block = x->block;
+		heap->free = x->next;
+		free(x);
 		return block;
 	}
 
-	struct Block *blocks;
+	struct GcBlock *blocks;
 	if ((blocks = mmap(NULL, (BLOCKS_PER_CHUNK + 1) * sizeof *blocks - 1,
 				PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
 		== MAP_FAILED)
@@ -126,11 +98,15 @@ static struct Block *acquire_block(struct Heap *heap) {
 	// Align to block boundary
 	blocks = (void *) ((uintptr_t) (blocks + 1) & ~(sizeof *blocks - 1));
 	for (unsigned i = 1; i < BLOCKS_PER_CHUNK; ++i) {
-		struct BlockList *cell;
+		struct GcBlockList *cell;
 		if (!(cell = malloc(sizeof *cell))) break;
 		cell->block = blocks + i;
 		cell->next = heap->free;
 		heap->free = cell;
+		++heap->num_free;
+#ifndef __linux__
+		memset(blocks[i].line_marks, 0, sizeof blocks[i].line_marks);
+#endif
 	}
 
 	struct Chunk *chunk;
@@ -139,16 +115,25 @@ static struct Block *acquire_block(struct Heap *heap) {
 	roaring_bitmap_init_cleared(&chunk->object_map);
 	chunk->next = heap->chunks;
 	heap->chunks = chunk;
+#ifndef __linux__
+	memset(blocks->line_marks, 0, sizeof blocks->line_marks);
+#endif
 
 	return blocks;
 }
 
-static struct BumpPointer empty_block_ptr(struct Block *block) {
+static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
 	return (struct BumpPointer) { block->data + sizeof block->data, block->data };
 }
 
+bool gc_init() {
+	if (!(heap.head = acquire_block(&heap))) return false;
+	heap.ptr = empty_block_ptr(heap.head);
+	return true;
+}
+
 /** Remember @arg x as a live allocated object location. */
-static void object_map_add(char *x) {
+static void gc_object_map_add(char *x) {
 	struct Chunk *chunk = heap.chunks;
 	while (!((char *) chunk->data <= x && x < (char *) (chunk->data + BLOCKS_PER_CHUNK)))
 		chunk = chunk->next;
@@ -156,85 +141,82 @@ static void object_map_add(char *x) {
 		(x - (char *) chunk->data) / alignof(void *));
 }
 
-struct ObjectHeader {
-	bool mark; //< GC flags.
-	union {
-		struct GcTypeInfo *tib;
-		void *forwarding_ptr;
-	};
-};
-
-enum SizeClass { SMALL, MEDIUM, LARGE };
-
-static enum SizeClass size_class(size_t size) {
-	return size <= LINE_SIZE ? SMALL
-		: size <= BLOCK_CAPACITY ? MEDIUM
-		: LARGE;
-}
-
 void *gc_alloc(size_t size, struct GcTypeInfo *tib) {
+	if ((size += sizeof(struct GcObjectHeader)) > BLOCK_CAPACITY) return NULL;
 	char *p;
-	enum SizeClass class = size_class(size += sizeof(struct ObjectHeader));
-	switch (class) {
-	case SMALL: case MEDIUM:
-		if (!heap.head)
-			heap.ptr = empty_block_ptr(heap.head = acquire_block(&heap));
-		struct Block **block = &heap.head;
-		struct BumpPointer *ptr = &heap.ptr;
-		if (class == SMALL) {
-			if ((p = block_alloc(*block, ptr, size))) break;
-			if (heap.recycled) {
-				*ptr = empty_block_ptr(*block = heap.recycled->block);
-				heap.recycled = heap.recycled->next;
-				// Recycled blocks have gaps of >=1 lines; enough for a small obj
-				p = block_alloc(*block, ptr, size);
-				break;
-			}
-		} else {
-			if ((p = bump_alloc(ptr, size, alignof(max_align_t)))) break;
-			// Demand-driven overflow allocation
-			block = &heap.overflow;
-			ptr = &heap.overflow_ptr;
-			if (block && (p = bump_alloc(ptr, size, alignof(max_align_t)))) break;
+	struct GcBlock **block = &heap.head;
+	struct BumpPointer *ptr = &heap.ptr;
+	if ((p = bump_alloc(ptr, size, alignof(max_align_t)))) goto success;
+	if (size <= LINE_SIZE) {
+		if ((*ptr = next_gap(*block, ptr->limit, size)).cursor) {
+			p = bump_alloc(ptr, size, alignof(max_align_t));
+			goto success;
 		}
-
-		// Acquire a free block
-		struct BlockList *new_rest;
-		if (!(new_rest = malloc(sizeof *new_rest))) return NULL;
-		*new_rest = (struct BlockList) { *block, heap.rest };
-		heap.rest = new_rest;
-		if (!(*block = acquire_block(&heap))) return NULL;
-		*ptr = empty_block_ptr(*block);
-
-		p = bump_alloc(ptr, size, alignof(max_align_t));
-		break;
-	case LARGE: printf("TODO: Large Object Space\n"); return NULL;
+		if (heap.recycled) {
+			*block = heap.recycled->block;
+			heap.recycled = heap.recycled->next;
+			// Recycled blocks have gaps of >=1 lines; enough for a small obj
+			*ptr = next_gap(*block, (*block)->data + BLOCK_CAPACITY, size);
+			p = bump_alloc(ptr, size, alignof(max_align_t));
+			goto success;
+		}
+	} else {
+		// Demand-driven overflow allocation
+		block = &heap.overflow;
+		ptr = &heap.overflow_ptr;
+		if (block && (p = bump_alloc(ptr, size, alignof(max_align_t)))) goto success;
 	}
 
-	*(struct ObjectHeader *) p = (struct ObjectHeader) {
+	// Acquire a free block
+	struct GcBlockList *new_rest;
+	if (!(new_rest = malloc(sizeof *new_rest))) return NULL;
+	*new_rest = (struct GcBlockList) { *block, heap.rest };
+	heap.rest = new_rest;
+	if (!(*block = acquire_block(&heap))) return NULL;
+	*ptr = empty_block_ptr(*block);
+
+	p = bump_alloc(ptr, size, alignof(max_align_t));
+success:
+	*(struct GcObjectHeader *) p = (struct GcObjectHeader) {
 		.mark = heap.mark_color, .tib = tib,
 	};
-	p += sizeof(struct ObjectHeader);
-	object_map_add(p);
+	p += sizeof(struct GcObjectHeader);
+	gc_object_map_add(p);
+	if (heap.num_free <= MIN_FREE && !heap.is_gc) garbage_collect();
 	return p;
 }
 
-void gc_trace(void *p) {
-	struct ObjectHeader *header = (struct ObjectHeader *) p - 1;
-	if (header->mark == heap.mark_color) return; // Already traced
-	header->mark = !header->mark;
+void gc_trace(void **p) {
+	struct GcObjectHeader *header = (struct GcObjectHeader *) *p - 1;
+	if (header->mark == heap.mark_color) { // Already traced
+		if (header->flags & GC_FORWARDED) *p = header->forwarding;
+		return;
+	}
+	printf("Tracing object at '%p'\n", *p);
+	header->mark = heap.mark_color;
 
-	printf("Tracing object at '%p'\n", p);
-	object_map_add(p);
-	header->tib->trace(p);
+	// Opportunistic evacuation if block is marked as defrag candidate
+	struct GcBlock *block = (struct GcBlock *)
+		((uintptr_t) ((struct GcObjectHeader *) *p - 1) & ~(GC_BLOCK_SIZE - 1));
+	bool should_evacuate = !block->flag;
+	size_t size;
+	void *q;
+	if (heap.defrag && !(header->flags & GC_PINNED) && should_evacuate
+		&& (q = gc_alloc(size = header->tib->size(*p), header->tib))) {
+		printf("Evacuating %p...\n", *p);
+		((struct GcObjectHeader *) q - 1)->flags |= GC_FORWARDED;
+		memcpy(q, *p, size);
+		*p = q;
+	}
+
+	gc_object_map_add(*p);
+	header->tib->trace(*p);
 }
 
-/** Mark the line that contains the given pointee. */
-void gc_mark(char *p) {
-	p -= sizeof(struct ObjectHeader);
-	struct Block *block = (struct Block *) ((uintptr_t) p & ~(BLOCK_SIZE - 1));
-	unsigned line = (p - (char *) block) / LINE_SIZE;
-	block->meta.lines[line] = 1;
+static void gc_pin_and_trace(void *p) {
+	struct GcObjectHeader *header = (struct GcObjectHeader *) p - 1;
+	header->flags = GC_PINNED;
+	gc_trace(&p);
 }
 
 volatile void *gc_noop_sink;
@@ -273,46 +255,107 @@ static void collect_roots(void *roots) {
 	}
 }
 
-static void unmark_block(struct Block *block) {
-	memset(block->meta.lines, heap.mark_color, sizeof block->meta.lines);
-}
+enum BlockStatus {
+	FREE,
+	/// Partly used with at least F=1 free lines.
+	RECYCLABLE,
+	UNAVAILABLE,
+};
 
-static enum BlockStatus sweep_block(struct Block *block) {
+static enum BlockStatus sweep_block(struct GcBlock *block) {
 	unsigned unavailable_lines = 0;
 	for (unsigned i = 0; i < LINE_COUNT; ++i)
-		if (block->meta.lines[i] == heap.mark_color) ++unavailable_lines;
-	return block->meta.status = (!unavailable_lines ? FREE
+		if (block->line_marks[i]) ++unavailable_lines;
+	return !unavailable_lines ? FREE
 		: unavailable_lines < LINE_COUNT ? RECYCLABLE
-		: UNAVAILABLE);
+		: UNAVAILABLE;
+}
+
+static struct BlockStats {
+	unsigned num_marks, num_holes;
+} block_stats(struct GcBlock *block) {
+	struct BlockStats result = { 0 };
+	for (unsigned i = 0; i < LINE_COUNT; ++i) {
+		while (i < LINE_COUNT && block->line_marks[i]) ++i, ++result.num_marks;
+		if (i < LINE_COUNT) ++result.num_holes;
+		while (i < LINE_COUNT && !block->line_marks[i]) ++i;
+	}
+	return result;
 }
 
 __attribute__ ((noinline)) void garbage_collect() {
+	heap.is_gc = true;
+	size_t prev_num_free = heap.num_free;
+
 	// Collect conservative roots
 	struct Vec roots = vec_new();
 	with_callee_saves_pushed(collect_roots, &roots);
 	// Empty object map
 	for (struct Chunk *chunk = heap.chunks; chunk; chunk = chunk->next)
 		roaring_bitmap_clear(&chunk->object_map);
+
+#define MAX_HOLES ((LINE_COUNT + 1) / 2)
+	unsigned mark_histogram[MAX_HOLES] = { 0 };
 	// Unmark blocks
 	for (struct Chunk *x = heap.chunks; x; x = x->next)
-		for (unsigned i = 0; i < BLOCKS_PER_CHUNK; ++i)
-			unmark_block(x->data + i);
+		for (unsigned i = 0; i < BLOCKS_PER_CHUNK; ++i) {
+			struct GcBlock *block = x->data + i;
+			if (heap.defrag) {
+				struct BlockStats stats = block_stats(block);
+				mark_histogram[stats.num_holes] += stats.num_marks;
+				block->flag = stats.num_holes + 1;
+			}
+			memset(block->line_marks, 0, sizeof block->line_marks);
+		}
 
+	if (heap.defrag) {
+		printf("Defragmenting...");
+		ssize_t available_space = BLOCK_CAPACITY * heap.num_free;
+		unsigned bin = MAX_HOLES;
+		do available_space -= LINE_SIZE * mark_histogram[--bin];
+		while (available_space > 0 && bin);
+
+		for (struct GcBlockList *x = heap.rest; x; x = x->next) {
+			struct GcBlock *block = x->block;
+			bool is_defrag_candidate = (unsigned) block->flag - 1 > bin;
+			if (is_defrag_candidate) block->flag = 0;
+		}
+		struct GcBlockList *prev = NULL;
+		for (struct GcBlockList *x = heap.recycled; x;) {
+			struct GcBlock *block = x->block;
+			bool is_defrag_candidate = (unsigned) block->flag - 1 > bin;
+			if (is_defrag_candidate) {
+				block->flag = 0;
+				struct GcBlockList *y = x;
+				x = x->next;
+				// Remove from recycled list so it will not be used for allocation
+				*(prev ? &prev->next : &heap.recycled) = y->next;
+				y->next = heap.rest;
+				heap.rest = y;
+			} else {
+				prev = x;
+				x = x->next;
+			}
+		}
+	}
+
+	// Zeroing object marks is impossible since their locations are unknown
 	heap.mark_color = !heap.mark_color;
 	// Trace live objects
 	for (size_t i = 0; i < roots.length; ++i)
-		gc_trace(roots.items[i]); // Mark conservative and pinned
+		// Pin to not "evacuate" a false positive root
+		gc_pin_and_trace(roots.items[i]); 
 	vec_free(&roots);
 
-	struct BlockList *prev = NULL;
-	for (struct BlockList *x = heap.rest; x;) {
+	struct GcBlockList *prev = NULL;
+	for (struct GcBlockList *x = heap.rest; x;) {
 		enum BlockStatus status = sweep_block(x->block);
 		if (status == UNAVAILABLE) {
 			prev = x;
 			x = x->next;
 		} else {
 			*(prev ? &prev->next : &heap.rest) = x->next;
-			struct BlockList *y = x;
+			struct GcBlockList *y = x;
 			x = x->next;
 			if (status == RECYCLABLE) {
 				printf("Recycling a block...\n");
@@ -322,7 +365,11 @@ __attribute__ ((noinline)) void garbage_collect() {
 				printf("Freeing a block...\n");
 				y->next = heap.free;
 				heap.free = y;
+				++heap.num_free;
 			}
 		}
 	}
+
+	heap.defrag = heap.num_free <= prev_num_free;
+	heap.is_gc = false;
 }

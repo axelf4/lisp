@@ -5,16 +5,16 @@ struct Cons {
 	void *car, *cdr;
 };
 
+static size_t consSize(__attribute__ ((unused)) void *x) { return sizeof(struct Cons); }
+
 static void consTrace(void *x) {
-	gc_mark(x);
 	struct Cons *cons = x;
-	if (cons->car) gc_trace(cons->car);
-	if (cons->cdr) gc_trace(cons->cdr);
+	gc_mark(x, sizeof *cons);
+	if (cons->car) gc_trace(&cons->car);
+	if (cons->cdr) gc_trace(&cons->cdr);
 }
 
-static struct GcTypeInfo consTib = {
-	.trace = consTrace,
-};
+static struct GcTypeInfo consTib = { consSize, consTrace };
 
 static void *cons(void *car, void *cdr) {
 	struct Cons *cell = gc_alloc(sizeof(struct Cons), &consTib);
@@ -31,7 +31,7 @@ static void foo() {
 }
 
 int main(void) {
-	gc_init();
+	if (!gc_init()) return 1;
 
 	void *p = cons(NULL, cons(NULL, NULL));
 	printf("Allocated: %p\n", p);
