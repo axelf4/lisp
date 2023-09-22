@@ -6,7 +6,7 @@ struct Vec {
 	void **items;
 };
 
-static struct Vec vec_new() {
+static inline struct Vec vec_new() {
 	return (struct Vec) { 0, 0, NULL, };
 }
 
@@ -24,6 +24,6 @@ static void vec_push(struct Vec *vec, void *x) {
 	vec->items[vec->length++] = x;
 }
 
-static void vec_free(struct Vec *vec) {
+static inline void vec_free(struct Vec *vec) {
 	free(vec->items);
 }

@@ -68,7 +68,7 @@ struct Chunk {
 
 #define MIN_FREE (BLOCKS_PER_CHUNK / 35 + 2)
 
-static struct Heap {
+struct Heap {
 	struct BumpPointer ptr, overflow_ptr;
 
 	struct GcBlock *head, ///< The current block being allocated into.
@@ -78,7 +78,8 @@ static struct Heap {
 	size_t num_free;
 
 	bool mark_color, is_gc, defrag;
-} heap;
+	struct Vec trace_stack;
+};
 
 static struct GcBlock *acquire_block(struct Heap *heap) {
 	printf("Acquiring a new block...\n");
@@ -126,35 +127,40 @@ static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
 	return (struct BumpPointer) { block->data + sizeof block->data, block->data };
 }
 
-bool gc_init() {
-	if (!(heap.head = acquire_block(&heap))) return false;
-	heap.ptr = empty_block_ptr(heap.head);
-	return true;
+struct Heap *gc_new() {
+	struct Heap *heap;
+	if (!(heap = malloc(sizeof *heap))
+		|| !(heap->head = acquire_block(heap))) goto error;
+	heap->ptr = empty_block_ptr(heap->head);
+	return heap;
+error:
+	free(heap);
+	return NULL;
 }
 
 /** Remember @arg x as a live allocated object location. */
-static void gc_object_map_add(char *x) {
-	struct Chunk *chunk = heap.chunks;
+static void gc_object_map_add(struct Heap *heap, char *x) {
+	struct Chunk *chunk = heap->chunks;
 	while (!((char *) chunk->data <= x && x < (char *) (chunk->data + BLOCKS_PER_CHUNK)))
 		chunk = chunk->next;
 	roaring_bitmap_add(&chunk->object_map,
 		(x - (char *) chunk->data) / alignof(void *));
 }
 
-void *gc_alloc(size_t size, struct GcTypeInfo *tib) {
+void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 	if ((size += sizeof(struct GcObjectHeader)) > BLOCK_CAPACITY) return NULL;
 	char *p;
-	struct GcBlock **block = &heap.head;
-	struct BumpPointer *ptr = &heap.ptr;
+	struct GcBlock **block = &heap->head;
+	struct BumpPointer *ptr = &heap->ptr;
 	if ((p = bump_alloc(ptr, size, alignof(max_align_t)))) goto success;
 	if (size <= LINE_SIZE) {
 		if ((*ptr = next_gap(*block, ptr->limit, size)).cursor) {
 			p = bump_alloc(ptr, size, alignof(max_align_t));
 			goto success;
 		}
-		if (heap.recycled) {
-			*block = heap.recycled->block;
-			heap.recycled = heap.recycled->next;
+		if (heap->recycled) {
+			*block = heap->recycled->block;
+			heap->recycled = heap->recycled->next;
 			// Recycled blocks have gaps of >=1 lines; enough for a small obj
 			*ptr = next_gap(*block, (*block)->data + BLOCK_CAPACITY, size);
 			p = bump_alloc(ptr, size, alignof(max_align_t));
@@ -162,61 +168,64 @@ void *gc_alloc(size_t size, struct GcTypeInfo *tib) {
 		}
 	} else {
 		// Demand-driven overflow allocation
-		block = &heap.overflow;
-		ptr = &heap.overflow_ptr;
+		block = &heap->overflow;
+		ptr = &heap->overflow_ptr;
 		if (block && (p = bump_alloc(ptr, size, alignof(max_align_t)))) goto success;
 	}
 
 	// Acquire a free block
 	struct GcBlockList *new_rest;
 	if (!(new_rest = malloc(sizeof *new_rest))) return NULL;
-	*new_rest = (struct GcBlockList) { *block, heap.rest };
-	heap.rest = new_rest;
-	if (!(*block = acquire_block(&heap))) return NULL;
+	*new_rest = (struct GcBlockList) { *block, heap->rest };
+	heap->rest = new_rest;
+	if (!(*block = acquire_block(heap))) return NULL;
 	*ptr = empty_block_ptr(*block);
 
 	p = bump_alloc(ptr, size, alignof(max_align_t));
 success:
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) {
-		.mark = heap.mark_color, .tib = tib,
+		.mark = heap->mark_color, .tib = tib,
 	};
 	p += sizeof(struct GcObjectHeader);
-	gc_object_map_add(p);
-	if (heap.num_free <= MIN_FREE && !heap.is_gc) garbage_collect();
+	gc_object_map_add(heap, p);
+	if (heap->num_free <= MIN_FREE && !heap->is_gc) garbage_collect(heap);
 	return p;
 }
 
-void gc_trace(void **p) {
+void gc_trace(struct Heap *heap, void **p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) *p - 1;
-	if (header->mark == heap.mark_color) { // Already traced
+	if (header->mark == heap->mark_color) { // Already traced
 		if (header->flags & GC_FORWARDED) *p = header->forwarding;
 		return;
 	}
 	printf("Tracing object at '%p'\n", *p);
-	header->mark = heap.mark_color;
+	header->mark = heap->mark_color;
 
 	// Opportunistic evacuation if block is marked as defrag candidate
-	struct GcBlock *block = (struct GcBlock *)
-		((uintptr_t) ((struct GcObjectHeader *) *p - 1) & ~(GC_BLOCK_SIZE - 1));
+	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) header & ~(GC_BLOCK_SIZE - 1));
 	bool should_evacuate = !block->flag;
 	size_t size;
 	void *q;
-	if (heap.defrag && !(header->flags & GC_PINNED) && should_evacuate
-		&& (q = gc_alloc(size = header->tib->size(*p), header->tib))) {
+	if (heap->defrag && !(header->flags & GC_PINNED) && should_evacuate
+		&& (q = gc_alloc(heap, size = header->tib->size(*p), header->tib))) {
 		printf("Evacuating %p...\n", *p);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 		((struct GcObjectHeader *) q - 1)->flags |= GC_FORWARDED;
+#pragma GCC diagnostic pop
 		memcpy(q, *p, size);
 		*p = q;
 	}
 
-	gc_object_map_add(*p);
-	header->tib->trace(*p);
+	gc_object_map_add(heap, *p);
+	header->tib->trace(heap, *p);
 }
 
-static void gc_pin_and_trace(void *p) {
+static void gc_pin_and_trace(struct Heap *heap, void *p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) p - 1;
 	header->flags = GC_PINNED;
-	gc_trace(&p);
+	gc_trace(heap, &p);
 }
 
 volatile void *gc_noop_sink;
@@ -235,7 +244,8 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 }
 
 extern void *__libc_stack_end;
-static void collect_roots(void *roots) {
+static void collect_roots(void *x) {
+	struct Heap *heap = x;
 	// register void *sp asm ("sp");
 	void *base = __libc_stack_end,
 		*sp = __builtin_frame_address(0);
@@ -245,11 +255,11 @@ static void collect_roots(void *roots) {
 	for (uintptr_t *p = sp; p < (uintptr_t *) base; ++p) {
 		uintptr_t x = *p;
 		if (x % alignof(void *)) continue;
-		for (struct Chunk *chunk = heap.chunks; chunk; chunk = chunk->next)
+		for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
 			if (x >= (uintptr_t) chunk->data && x < (uintptr_t) (chunk->data + BLOCKS_PER_CHUNK)
 				&& roaring_bitmap_remove_checked(&chunk->object_map,
 					(x - (uintptr_t) chunk->data) / alignof(void *))) {
-				vec_push(roots, (void *) x);
+				vec_push(&heap->trace_stack, (void *) x);
 				break;
 			}
 	}
@@ -283,24 +293,23 @@ static struct BlockStats {
 	return result;
 }
 
-__attribute__ ((noinline)) void garbage_collect() {
-	heap.is_gc = true;
-	size_t prev_num_free = heap.num_free;
+void garbage_collect(struct Heap *heap) {
+	heap->is_gc = true;
+	size_t prev_num_free = heap->num_free;
 
 	// Collect conservative roots
-	struct Vec roots = vec_new();
-	with_callee_saves_pushed(collect_roots, &roots);
+	with_callee_saves_pushed(collect_roots, heap);
 	// Empty object map
-	for (struct Chunk *chunk = heap.chunks; chunk; chunk = chunk->next)
+	for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
 		roaring_bitmap_clear(&chunk->object_map);
 
 #define MAX_HOLES ((LINE_COUNT + 1) / 2)
 	unsigned mark_histogram[MAX_HOLES] = { 0 };
 	// Unmark blocks
-	for (struct Chunk *x = heap.chunks; x; x = x->next)
+	for (struct Chunk *x = heap->chunks; x; x = x->next)
 		for (unsigned i = 0; i < BLOCKS_PER_CHUNK; ++i) {
 			struct GcBlock *block = x->data + i;
-			if (heap.defrag) {
+			if (heap->defrag) {
 				struct BlockStats stats = block_stats(block);
 				mark_histogram[stats.num_holes] += stats.num_marks;
 				block->flag = stats.num_holes + 1;
@@ -308,20 +317,20 @@ __attribute__ ((noinline)) void garbage_collect() {
 			memset(block->line_marks, 0, sizeof block->line_marks);
 		}
 
-	if (heap.defrag) {
-		printf("Defragmenting...");
-		ssize_t available_space = BLOCK_CAPACITY * heap.num_free;
+	if (heap->defrag) {
+		printf("Defragmenting...\n");
+		ssize_t available_space = BLOCK_CAPACITY * heap->num_free;
 		unsigned bin = MAX_HOLES;
 		do available_space -= LINE_SIZE * mark_histogram[--bin];
 		while (available_space > 0 && bin);
 
-		for (struct GcBlockList *x = heap.rest; x; x = x->next) {
+		for (struct GcBlockList *x = heap->rest; x; x = x->next) {
 			struct GcBlock *block = x->block;
 			bool is_defrag_candidate = (unsigned) block->flag - 1 > bin;
 			if (is_defrag_candidate) block->flag = 0;
 		}
 		struct GcBlockList *prev = NULL;
-		for (struct GcBlockList *x = heap.recycled; x;) {
+		for (struct GcBlockList *x = heap->recycled; x;) {
 			struct GcBlock *block = x->block;
 			bool is_defrag_candidate = (unsigned) block->flag - 1 > bin;
 			if (is_defrag_candidate) {
@@ -329,9 +338,9 @@ __attribute__ ((noinline)) void garbage_collect() {
 				struct GcBlockList *y = x;
 				x = x->next;
 				// Remove from recycled list so it will not be used for allocation
-				*(prev ? &prev->next : &heap.recycled) = y->next;
-				y->next = heap.rest;
-				heap.rest = y;
+				*(prev ? &prev->next : &heap->recycled) = y->next;
+				y->next = heap->rest;
+				heap->rest = y;
 			} else {
 				prev = x;
 				x = x->next;
@@ -340,36 +349,35 @@ __attribute__ ((noinline)) void garbage_collect() {
 	}
 
 	// Zeroing object marks is impossible since their locations are unknown
-	heap.mark_color = !heap.mark_color;
+	heap->mark_color = !heap->mark_color;
 	// Trace live objects
-	for (size_t i = 0; i < roots.length; ++i)
+	while (heap->trace_stack.length)
 		// Pin to not "evacuate" a false positive root
-		gc_pin_and_trace(roots.items[i]); 
-	vec_free(&roots);
+		gc_pin_and_trace(heap, heap->trace_stack.items[--heap->trace_stack.length]); 
 
 	struct GcBlockList *prev = NULL;
-	for (struct GcBlockList *x = heap.rest; x;) {
+	for (struct GcBlockList *x = heap->rest; x;) {
 		enum BlockStatus status = sweep_block(x->block);
 		if (status == UNAVAILABLE) {
 			prev = x;
 			x = x->next;
 		} else {
-			*(prev ? &prev->next : &heap.rest) = x->next;
+			*(prev ? &prev->next : &heap->rest) = x->next;
 			struct GcBlockList *y = x;
 			x = x->next;
 			if (status == RECYCLABLE) {
 				printf("Recycling a block...\n");
-				y->next = heap.recycled;
-				heap.recycled = y;
+				y->next = heap->recycled;
+				heap->recycled = y;
 			} else {
 				printf("Freeing a block...\n");
-				y->next = heap.free;
-				heap.free = y;
-				++heap.num_free;
+				y->next = heap->free;
+				heap->free = y;
+				++heap->num_free;
 			}
 		}
 	}
 
-	heap.defrag = heap.num_free <= prev_num_free;
-	heap.is_gc = false;
+	heap->defrag = heap->num_free <= prev_num_free;
+	heap->is_gc = false;
 }

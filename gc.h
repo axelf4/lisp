@@ -14,10 +14,12 @@
 // One byte per line is used for flags
 #define GC_BLOCK_CAPACITY (GC_BLOCK_SIZE - GC_LINE_COUNT - 1)
 
+struct Heap;
+
 /** Type information block (TIB). */
 struct GcTypeInfo {
 	size_t (*size)(void *);
-	void (*trace)(void *);
+	void (*trace)(struct Heap *, void *);
 };
 
 enum {
@@ -41,11 +43,12 @@ struct GcBlock {
 	unsigned char flag;
 };
 
-bool gc_init();
+__attribute__ ((malloc, warn_unused_result)) struct Heap *gc_new();
 
-void *gc_alloc(size_t size, struct GcTypeInfo *tib);
+__attribute__ ((alloc_size (2), hot, warn_unused_result))
+void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib);
 
-void gc_trace(void **p);
+__attribute__ ((hot)) void gc_trace(struct Heap *heap, void **p);
 
 /** Mark the lines containing the given pointee. */
 static inline void gc_mark(char *p, size_t size) {
@@ -58,6 +61,6 @@ static inline void gc_mark(char *p, size_t size) {
 	} while ((p += GC_LINE_SIZE) < end);
 }
 
-void garbage_collect();
+__attribute__ ((noinline)) void garbage_collect(struct Heap *heap);
 
 #endif
