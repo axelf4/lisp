@@ -9,6 +9,8 @@
 
 #include "vec.h"
 
+#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+
 #define LINE_SIZE_BITS 7
 #define LINE_SIZE (1 << LINE_SIZE_BITS) // 0x80
 #define BLOCK_SIZE_BITS 15
@@ -18,7 +20,7 @@
 // One byte per line is used for flags
 #define BLOCK_CAPACITY (BLOCK_SIZE - LINE_COUNT - 1)
 
-#define BLOCKS_PER_CHUNK 8 // 128
+#define BLOCKS_PER_CHUNK 128
 
 struct BumpPointer {
 	char *cursor, *limit;
@@ -34,9 +36,10 @@ _Static_assert(sizeof(struct GcBlock) == BLOCK_SIZE);
 
 _Static_assert(!(LINE_SIZE % alignof(max_align_t)));
 /** Locate next gap of unmarked lines of sufficient size. */
+__attribute__ ((pure))
 static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size) {
 	unsigned required_lines = (size + LINE_SIZE - 1) / LINE_SIZE, count = 0,
-		end = ((char *) block - top) / LINE_SIZE;
+		end = (top - (char *) block) / LINE_SIZE;
 	for (unsigned i = end; i-- > 0;)
 		if (block->line_marks[i]) {
 			if (count > required_lines) {
@@ -66,7 +69,7 @@ struct Chunk {
 	struct Chunk *next;
 };
 
-#define MIN_FREE (BLOCKS_PER_CHUNK / 35 + 2)
+#define MIN_FREE (BLOCKS_PER_CHUNK / (100 / 3) + 3)
 
 struct Heap {
 	struct BumpPointer ptr, overflow_ptr;
@@ -87,6 +90,7 @@ static struct GcBlock *acquire_block(struct Heap *heap) {
 		struct GcBlockList *x = heap->free;
 		struct GcBlock *block = x->block;
 		heap->free = x->next;
+		--heap->num_free;
 		free(x);
 		return block;
 	}
@@ -222,7 +226,7 @@ void gc_trace(struct Heap *heap, void **p) {
 	header->tib->trace(heap, *p);
 }
 
-static void gc_pin_and_trace(struct Heap *heap, void *p) {
+static void pin_and_trace(struct Heap *heap, void *p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) p - 1;
 	header->flags = GC_PINNED;
 	gc_trace(heap, &p);
@@ -295,6 +299,7 @@ static struct BlockStats {
 
 void garbage_collect(struct Heap *heap) {
 	heap->is_gc = true;
+	printf("Collecting garbage...\n");
 	size_t prev_num_free = heap->num_free;
 
 	// Collect conservative roots
@@ -353,7 +358,7 @@ void garbage_collect(struct Heap *heap) {
 	// Trace live objects
 	while (heap->trace_stack.length)
 		// Pin to not "evacuate" a false positive root
-		gc_pin_and_trace(heap, heap->trace_stack.items[--heap->trace_stack.length]); 
+		pin_and_trace(heap, heap->trace_stack.items[--heap->trace_stack.length]);
 
 	struct GcBlockList *prev = NULL;
 	for (struct GcBlockList *x = heap->rest; x;) {
@@ -378,6 +383,6 @@ void garbage_collect(struct Heap *heap) {
 		}
 	}
 
-	heap->defrag = heap->num_free <= prev_num_free;
+	heap->defrag = heap->num_free <= MAX(MIN_FREE, prev_num_free);
 	heap->is_gc = false;
 }

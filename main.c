@@ -39,7 +39,6 @@ int main(void) {
 	printf("Allocated: %p\n", p);
 
 	foo();
-	printf("Collecting garbage...\n");
 	garbage_collect(heap);
 
 	printf("Again: %p\n", p);
