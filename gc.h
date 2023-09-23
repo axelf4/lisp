@@ -5,11 +5,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define GC_LINE_SIZE_BITS 7
-#define GC_LINE_SIZE (1 << GC_LINE_SIZE_BITS) // 0x80
-#define GC_BLOCK_SIZE_BITS 15
-#define GC_BLOCK_SIZE (1 << GC_BLOCK_SIZE_BITS) // 0x8000
-
+#define GC_LINE_SIZE 0x80
+#define GC_BLOCK_SIZE 0x8000
 #define GC_LINE_COUNT (GC_BLOCK_SIZE / GC_LINE_SIZE - 1)
 // One byte per line is used for flags
 #define GC_BLOCK_CAPACITY (GC_BLOCK_SIZE - GC_LINE_COUNT - 1)

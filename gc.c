@@ -1,40 +1,44 @@
+/**
+ * Single-threaded immix garbage collector.
+ *
+ * See: BLACKBURN, Stephen M.; MCKINLEY, Kathryn S. Immix: a
+ *      mark-region garbage collector with space efficiency, fast
+ *      collection, and mutator performance. ACM SIGPLAN Notices,
+ *      2008, 43.6: 22-32.
+ */
+
 #include "gc.h"
+#include <stdalign.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <stdalign.h>
 #include <roaring/roaring.h>
-
 #include <sys/mman.h>
 #include <ucontext.h>
 
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
-#define LINE_SIZE_BITS 7
-#define LINE_SIZE (1 << LINE_SIZE_BITS) // 0x80
-#define BLOCK_SIZE_BITS 15
-#define BLOCK_SIZE (1 << BLOCK_SIZE_BITS) // 0x8000
-
+#define LINE_SIZE 0x80
+#define BLOCK_SIZE 0x8000
 #define LINE_COUNT (BLOCK_SIZE / LINE_SIZE - 1)
 // One byte per line is used for flags
 #define BLOCK_CAPACITY (BLOCK_SIZE - LINE_COUNT - 1)
-
 #define BLOCKS_PER_CHUNK 128
 
 struct BumpPointer {
 	char *cursor, *limit;
 };
 
-static void *bump_alloc(struct BumpPointer *ptr, size_t size, size_t align) {
+__attribute__ ((alloc_align (2), alloc_size (3)))
+static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
+	// Bump allocate downward to align with a single AND instruction
 	return (size_t) (ptr->cursor - ptr->limit) >= size
 		? ptr->cursor = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1))
 		: NULL;
 }
 
 _Static_assert(sizeof(struct GcBlock) == BLOCK_SIZE);
-
 _Static_assert(!(LINE_SIZE % alignof(max_align_t)));
 /** Locate next gap of unmarked lines of sufficient size. */
-__attribute__ ((pure))
 static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size) {
 	unsigned required_lines = (size + LINE_SIZE - 1) / LINE_SIZE, count = 0,
 		end = (top - (char *) block) / LINE_SIZE;
@@ -115,14 +119,13 @@ static struct GcBlock *acquire_block(struct Heap *heap) {
 
 	struct Chunk *chunk;
 	if (!(chunk = malloc(sizeof *chunk))) return NULL;
-	chunk->data = blocks;
+	*chunk = (struct Chunk) { .data = blocks, .next = heap->chunks };
 	roaring_bitmap_init_cleared(&chunk->object_map);
-	chunk->next = heap->chunks;
 	heap->chunks = chunk;
+
 #ifndef __linux__
 	memset(blocks->line_marks, 0, sizeof blocks->line_marks);
 #endif
-
 	return blocks;
 }
 
@@ -132,13 +135,11 @@ static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
 
 struct Heap *gc_new() {
 	struct Heap *heap;
-	if (!(heap = malloc(sizeof *heap))
-		|| !(heap->head = acquire_block(heap))) goto error;
+	if (!((heap = calloc(1, sizeof *heap))
+			&& (heap->head = acquire_block(heap)))) goto error;
 	heap->ptr = empty_block_ptr(heap->head);
 	return heap;
-error:
-	free(heap);
-	return NULL;
+error: free(heap); return NULL;
 }
 
 /** Remember @arg x as a live allocated object location. */
@@ -146,8 +147,7 @@ static void gc_object_map_add(struct Heap *heap, char *x) {
 	struct Chunk *chunk = heap->chunks;
 	while (!((char *) chunk->data <= x && x < (char *) (chunk->data + BLOCKS_PER_CHUNK)))
 		chunk = chunk->next;
-	roaring_bitmap_add(&chunk->object_map,
-		(x - (char *) chunk->data) / alignof(void *));
+	roaring_bitmap_add(&chunk->object_map, (x - (char *) chunk->data) / alignof(void *));
 }
 
 enum {
@@ -157,29 +157,30 @@ enum {
 
 #define MIN_FREE (BLOCKS_PER_CHUNK / (100 / 3) + 3)
 
+_Static_assert(!(sizeof(struct GcObjectHeader) % alignof(max_align_t)));
 void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 	if ((size += sizeof(struct GcObjectHeader)) > BLOCK_CAPACITY) return NULL;
 	char *p;
 	struct GcBlock **block = &heap->head;
 	struct BumpPointer *ptr = &heap->ptr;
-	if ((p = bump_alloc(ptr, size, alignof(max_align_t)))) goto success;
+	if ((p = bump_alloc(ptr, alignof(max_align_t), size))) goto success;
 	if (size <= LINE_SIZE) {
 		if ((*ptr = next_gap(*block, ptr->limit, size)).cursor) {
-			p = bump_alloc(ptr, size, alignof(max_align_t));
+			p = bump_alloc(ptr, alignof(max_align_t), size);
 			goto success;
 		}
 		struct GcBlock *new_block;
 		if ((new_block = vec_pop(&heap->recycled))) {
 			// Recycled blocks have gaps of >=1 lines; enough for a small obj
 			*ptr = next_gap(*block = new_block, new_block->data + BLOCK_CAPACITY, size);
-			p = bump_alloc(ptr, size, alignof(max_align_t));
+			p = bump_alloc(ptr, alignof(max_align_t), size);
 			goto success;
 		}
 	} else {
 		// Demand-driven overflow allocation
 		block = &heap->overflow;
 		ptr = &heap->overflow_ptr;
-		if (block && (p = bump_alloc(ptr, size, alignof(max_align_t)))) goto success;
+		if (block && (p = bump_alloc(ptr, alignof(max_align_t), size))) goto success;
 	}
 
 	// Acquire a free block
@@ -187,7 +188,7 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 	if (!((new_block = acquire_block(heap)) && vec_push(&heap->rest, *block)))
 		return NULL;
 	*ptr = empty_block_ptr(*block = new_block);
-	p = bump_alloc(ptr, size, alignof(max_align_t));
+	p = bump_alloc(ptr, alignof(max_align_t), size);
 success:
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) {
 		.mark = heap->mark_color, .tib = tib,
@@ -270,9 +271,8 @@ static void collect_roots(void *x) {
 
 enum BlockStatus {
 	FREE,
-	/// Partly used with at least F=1 free lines.
-	RECYCLABLE,
-	UNAVAILABLE,
+	RECYCLABLE, ///< Partly used with at least F=1 free lines.
+	UNAVAILABLE, ///< No unmarked lines.
 };
 
 static enum BlockStatus sweep_block(struct GcBlock *block) {
@@ -327,25 +327,25 @@ void garbage_collect(struct Heap *heap) {
 
 		for (size_t i = 0; i < heap->rest.length; ++i) {
 			struct GcBlock *block = heap->rest.items[i];
-			bool is_defrag_candidate = (unsigned) block->flag - 1 > bin;
+			bool is_defrag_candidate = block->flag > 1 + bin;
 			if (is_defrag_candidate) block->flag = 0;
 		}
 		for (size_t i = 0; i < heap->recycled.length;) {
 			struct GcBlock *block = heap->recycled.items[i];
-			bool is_defrag_candidate = (unsigned) block->flag - 1 > bin;
+			bool is_defrag_candidate = block->flag > 1 + bin;
 			if (is_defrag_candidate) {
 				block->flag = 0;
-				// Remove from recycled list so it will not be used for allocation
+				// Remove from recycled list to not evacuate into itself
 				vec_push(&heap->rest, block);
 				heap->recycled.items[i] = vec_pop(&heap->recycled);
 			} else ++i;
 		}
 	}
 
-	// Zeroing object marks is impossible since their locations are unknown
+	// Zeroing object marks is impossible since their locations are
+	// unknown. Alternate the value that indicates liveness instead.
 	heap->mark_color = !heap->mark_color;
-	// Trace live objects
-	while (heap->trace_stack.length)
+	while (heap->trace_stack.length) // Trace live objects
 		// Pin to not "evacuate" a false positive root
 		pin_and_trace(heap, heap->trace_stack.items[--heap->trace_stack.length]);
 
