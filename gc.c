@@ -14,8 +14,7 @@
 #include <roaring/roaring.h>
 #include <sys/mman.h>
 #include <ucontext.h>
-
-#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+#include "util.h"
 
 #define LINE_SIZE 0x80
 #define BLOCK_SIZE 0x8000

@@ -8,7 +8,7 @@ find_package(roaring REQUIRED)
 
 add_compile_options(-Wall -Wextra -pedantic)
 
-add_library(lisp gc.c lisp.c lread.c)
+add_library(lisp gc.c tbl.c lisp.c lread.c)
 set_target_properties(lisp PROPERTIES C_STANDARD 23)
 target_include_directories(lisp PRIVATE roaring::roaring)
 target_link_libraries(lisp PRIVATE roaring::roaring)
