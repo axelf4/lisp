@@ -86,7 +86,6 @@ struct Chunk {
 
 struct Heap {
 	struct BumpPointer ptr, overflow_ptr;
-
 	struct GcBlock *head, ///< The current block being allocated into.
 		*overflow; ///< Block kept for writing medium objects.
 	struct Vec free, recycled, rest;

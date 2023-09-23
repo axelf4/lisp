@@ -49,7 +49,7 @@
     };
   in {
     devShells.x86_64-linux.default = pkgs.mkShell {
-      buildInputs = [ pkgs.cmake pkgs.croaring ];
+      buildInputs = [ pkgs.cmake pkgs.croaring pkgs.cmocka ];
     };
   };
 }
