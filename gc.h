@@ -46,8 +46,8 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib);
 __attribute__ ((hot)) void gc_trace(struct Heap *heap, void **p);
 
 /** Mark the lines containing the given pointee. */
-static inline void gc_mark(char *p, size_t size) {
-	char *end = p + size;
+static inline void gc_mark(size_t len, char p[static len]) {
+	char *end = p + len;
 	p -= sizeof(struct GcObjectHeader);
 	do {
 		struct GcBlock *block = (struct GcBlock *) ((uintptr_t) p & ~(GC_BLOCK_SIZE - 1));

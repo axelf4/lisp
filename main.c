@@ -12,6 +12,16 @@ static void foo() {
 int main(void) {
 	if (!(heap = gc_new())) return 1;
 
+	struct LispObject *object;
+	enum LispReadError error;
+	if ((error = lisp_read_whole("(nil . ((42) . nil))", &object)))
+		fprintf(stderr, "Error: %d\n", error);
+	else {
+		printf("Read object: ");
+		lisp_print(object);
+		printf("\n");
+	}
+
 	void *p = cons(NULL, cons(NULL, NULL));
 	printf("Allocated: %p\n", p);
 
