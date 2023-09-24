@@ -5,6 +5,8 @@
 
 extern struct Heap *heap;
 
+struct LispContext;
+
 enum LispObjectType {
 	LISP_NULL,
 	LISP_CONS,
@@ -35,7 +37,7 @@ LispObject *cons(LispObject *car, LispObject *cdr);
 
 LispObject *lisp_integer(int i);
 
-LispObject *intern(size_t len, __attribute__ ((unused)) char s[static len]);
+LispObject *intern(struct LispContext *ctx, size_t len, char s[static len]);
 
 enum LispReadError {
 	LISP_READ_OK,
@@ -45,10 +47,12 @@ enum LispReadError {
 	LISP_READ_TRAILING,
 };
 
-enum LispReadError lisp_read(char **s, LispObject **result);
+enum LispReadError lisp_read(struct LispContext *ctx, char **s, LispObject **result);
 
-enum LispReadError lisp_read_whole(char *s, LispObject **result);
+enum LispReadError lisp_read_whole(struct LispContext *ctx, char *s, LispObject **result);
 
 void lisp_print(LispObject *object);
+
+struct LispContext *lisp_init();
 
 #endif

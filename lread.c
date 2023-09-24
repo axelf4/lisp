@@ -32,7 +32,7 @@ static int read_integer(char **s) {
 	return sign * result;
 }
 
-static struct LispObject *read_symbol(char **s) {
+static struct LispObject *read_symbol(struct LispContext *ctx, char **s) {
 	char *start = *s;
 	for (;; ++*s)
 		switch (**s) {
@@ -41,7 +41,7 @@ static struct LispObject *read_symbol(char **s) {
 			if (is_whitespace(**s)) goto done;
 			break;
 		}
-done: return intern(*s - start, start);
+done: return intern(ctx, *s - start, start);
 }
 
 union StackElement {
@@ -54,7 +54,7 @@ union StackElement {
 	};
 };
 
-enum LispReadError lisp_read(char **s, LispObject **result) {
+enum LispReadError lisp_read(struct LispContext *ctx, char **s, LispObject **result) {
 	union StackElement stack[256], *cur = stack, *ctn = NULL;
 
 	skip_whitespace(s);
@@ -64,7 +64,7 @@ val_beg:
 	if (**s == '(') { ++*s; goto list_beg; }
 	if (is_integer(**s) || **s == '-') value = lisp_integer(read_integer(s));
 	else if (__builtin_expect(!**s, false)) return LISP_READ_EOF;
-	else value = read_symbol(s);
+	else value = read_symbol(ctx, s);
 val_end:
 	if (!ctn) { *result = value; return LISP_READ_OK; } // Not in a container context
 
@@ -95,9 +95,9 @@ list_end:
 	goto val_end;
 }
 
-enum LispReadError lisp_read_whole(char *s, LispObject **result) {
+enum LispReadError lisp_read_whole(struct LispContext *ctx, char *s, LispObject **result) {
 	enum LispReadError error;
-	if ((error = lisp_read(&s, result))) return error;
+	if ((error = lisp_read(ctx, &s, result))) return error;
 	if (*s != '\0') return LISP_READ_TRAILING;
 	return LISP_READ_OK;
 }

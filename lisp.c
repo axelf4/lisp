@@ -23,6 +23,10 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 #define KEY_EQUAL symbol_equal
 #include "tbl.h"
 
+struct LispContext {
+	struct SymbolTable symbol_tbl;
+};
+
 static size_t string_size(void *x) { return strlen(x) + 1; }
 
 static void string_trace(struct Heap *, void *x) { gc_mark(string_size(x), x); }
@@ -69,14 +73,12 @@ LispObject *cons(LispObject *car, LispObject *cdr) {
 	return (LispObject *) cell;
 }
 
-static struct SymbolTable symbol_tbl = { .ctrl = empty_ctrl };
-
-LispObject *intern(size_t len, char s[static len]) {
+LispObject *intern(struct LispContext *ctx, size_t len, char s[static len]) {
 	char nil[3] = "nil";
 	if (len == 3 && memcmp(s, nil, LENGTH(nil)) == 0) return NULL;
 
 	struct Symbol key = { .len = len, .name = s }, **entry;
-	if (!symbol_tbl_entry(&symbol_tbl, &key, &entry)) {
+	if (!symbol_tbl_entry(&ctx->symbol_tbl, &key, &entry)) {
 		struct Symbol *sym = *entry = gc_alloc(heap, sizeof **entry, &symbol_tib.gc_tib);
 		memcpy(sym->name = gc_alloc(heap, len + 1, &string_tib), s, sym->len = len);
 		sym->name[len] = '\0';
@@ -117,4 +119,26 @@ void lisp_print(LispObject *object) {
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
 	default: puts("Bad tag"); exit(1); break;
 	}
+}
+
+size_t lisp_ctx_size(void *) { return sizeof(struct LispContext); }
+
+static void lisp_ctx_trace(struct Heap *, void *x) {
+	struct LispContext *ctx = x;
+	gc_mark(sizeof *ctx, x);
+
+	for (size_t i = 0; i < ctx->symbol_tbl.bucket_mask + 1; ++i)
+		if (IS_FULL(ctx->symbol_tbl.ctrl[i]))
+			gc_trace(heap, (void **) &ctx->symbol_tbl.buckets[i]);
+}
+
+struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_size, lisp_ctx_trace };
+
+struct LispContext *lisp_init() {
+	struct LispContext *ctx = gc_alloc(heap, sizeof(struct LispContext), &lisp_ctx_tib);
+	*ctx = (struct LispContext) {
+		.symbol_tbl = symbol_tbl_new(),
+	};
+
+	return ctx;
 }
