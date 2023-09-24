@@ -22,4 +22,13 @@ static inline uint64_t fxhash64(uint64_t a, uint64_t b) {
 	return (rotate_left(a, 5) ^ b) * FX_SEED64;
 }
 
+static inline uint64_t moremur(uint64_t x) {
+	x ^= x >> 27;
+	x *= 0x3C79AC492BA7B653;
+	x ^= x >> 33;
+	x *= 0x1C69B3F74AC4AE35;
+	x ^= x >> 27;
+	return x;
+}
+
 #endif
