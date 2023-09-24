@@ -145,9 +145,8 @@ static void JOIN(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	*table = new_table;
 }
 
-void JOIN(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
-	KEY *entry;
-	if ((entry = JOIN(NAME, _tbl_find)(*table, key))) { *entry = key; return; }
+bool JOIN(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
+	if ((*entry = JOIN(NAME, _tbl_find)(*table, key))) { return true; }
 
 	uint64_t h = KEY_HASH(key);
 	if (__builtin_expect(table->growth_left == 0, false)) JOIN(NAME, _tbl_reserve)(table, 1);
@@ -158,7 +157,14 @@ void JOIN(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
 	table->growth_left -= (old_ctrl & 1) != 0; // Avoid decrementing if was tombstone
 	++table->len;
 	SET_CTRL(*table, i, h2(h));
-	table->buckets[i] = key;
+	*(*entry = table->buckets + i) = key;
+	return false;
+}
+
+void JOIN(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
+	KEY *entry;
+	JOIN(NAME, _tbl_entry)(table, key, &entry);
+	*entry = key;
 }
 
 #undef NAME

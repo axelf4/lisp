@@ -14,7 +14,7 @@ int main(void) {
 
 	LispObject *object;
 	enum LispReadError error;
-	if ((error = lisp_read_whole("(nil . ((42) . nil))", &object)))
+	if ((error = lisp_read_whole("(x x y nil . ((42) . nil))", &object)))
 		fprintf(stderr, "Error: %d\n", error);
 	else {
 		printf("Read object: ");

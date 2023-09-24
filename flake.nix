@@ -49,7 +49,7 @@
     };
   in {
     devShells.x86_64-linux.default = pkgs.mkShell {
-      buildInputs = with pkgs; [ cmake croaring cmocka valgrind ];
+      buildInputs = with pkgs; [ cmake croaring xxHash cmocka valgrind ];
     };
   };
 }

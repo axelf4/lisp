@@ -5,13 +5,14 @@ enable_testing()
 
 find_package(cmocka 1.1.0 REQUIRED)
 find_package(roaring REQUIRED)
+find_package(xxHash REQUIRED)
 
 add_compile_options(-Wall -Wextra -pedantic)
 
 add_library(lisp gc.c lisp.c lread.c)
 set_target_properties(lisp PROPERTIES C_STANDARD 23)
-target_include_directories(lisp PRIVATE roaring::roaring)
-target_link_libraries(lisp PRIVATE roaring::roaring)
+target_include_directories(lisp PRIVATE roaring::roaring xxHash::xxhash)
+target_link_libraries(lisp PRIVATE roaring::roaring xxHash::xxhash)
 
 add_executable(gc-test main.c)
 set_target_properties(gc-test PROPERTIES C_STANDARD 23)
