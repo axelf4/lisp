@@ -42,18 +42,18 @@ void lisp_print(LispObject *object) {
 	case LISP_NULL: printf("nil"); break;
 	case LISP_CONS:
 		struct Cons *cell = (struct Cons *) object;
-		printf("(");
+		putchar('(');
 	print_next_cell:
 		lisp_print(cell->car);
 		if (!cell->cdr) printf(")");
 		else if (lisp_tag(cell->cdr) == LISP_CONS) {
-			printf(" ");
+			putchar(' ');
 			cell = (struct Cons *) cell->cdr;
 			goto print_next_cell;
 		} else {
 			printf(" . ");
 			lisp_print(cell->cdr);
-			printf(")");
+			putchar(')');
 		}
 		break;
 	case LISP_INTEGER: printf("%d", *(int *) object); break;

@@ -9,9 +9,7 @@ static bool is_whitespace(char c) {
 	return c == ' ' || c == '\t' || c == '\t' || c == '\r';
 }
 
-static bool is_integer(char c) {
-	return '0' <= c && c <= '9';
-}
+static bool is_integer(char c) { return '0' <= c && c <= '9'; }
 
 /** Skip whitespace and comments. */
 static void skip_whitespace(char **s) {
@@ -47,7 +45,7 @@ done: return intern(*s - start, start);
 }
 
 union StackElement {
-	void *object;
+	LispObject *object;
 	// Container entry
 	struct {
 		union StackElement *prev_container;
@@ -74,9 +72,9 @@ val_end:
 	++ctn->len;
 
 	skip_whitespace(s);
-	if (**s == '.') { ++*s; skip_whitespace(s); ctn->is_dotted_pair = true; goto val_beg; }
 	if (**s == ')') { ++*s; goto list_end; }
-	if (ctn->is_dotted_pair) return LISP_READ_EXPECTED_RPAREN;
+	if (**s == '.') { ++*s; skip_whitespace(s); ctn->is_dotted_pair = true; }
+	else if (ctn->is_dotted_pair) return LISP_READ_EXPECTED_RPAREN;
 	goto val_beg;
 
 list_beg:
