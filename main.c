@@ -12,7 +12,7 @@ static void foo() {
 int main(void) {
 	if (!(heap = gc_new())) return 1;
 
-	struct LispObject *object;
+	LispObject *object;
 	enum LispReadError error;
 	if ((error = lisp_read_whole("(nil . ((42) . nil))", &object)))
 		fprintf(stderr, "Error: %d\n", error);

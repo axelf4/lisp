@@ -12,45 +12,41 @@ static void consTrace(struct Heap *heap, void *x) {
 	if (cons->cdr) gc_trace(heap, (void **) &cons->cdr);
 }
 
-static struct GcTypeInfo consTib = { consSize, consTrace };
+static size_t integerSize(void *) { return sizeof(int); }
 
-struct LispObject *cons(struct LispObject *car, struct LispObject *cdr) {
-	struct Cons *cell = gc_alloc(heap, sizeof(struct Cons), &consTib);
-	cell->object.tag = LISP_CONS;
+static void integerTrace(struct Heap *, void *x) { gc_mark(sizeof(int), x); }
+
+static struct LispTypeInfo consTib = {
+	.gcTib = { consSize, consTrace },
+	.tag = LISP_CONS,
+}, integerTib = {
+	.gcTib = { integerSize, integerTrace },
+	.tag = LISP_INTEGER,
+};
+
+LispObject *cons(LispObject *car, LispObject *cdr) {
+	struct Cons *cell = gc_alloc(heap, sizeof(struct Cons), &consTib.gcTib);
 	cell->car = car;
 	cell->cdr = cdr;
-	return &cell->object;
+	return (LispObject *) cell;
 }
 
-static size_t integerSize(void *) { return sizeof(struct LispInteger); }
-
-static void integerTrace(struct Heap *, void *x) {
-	gc_mark(sizeof(struct LispObject), x);
+LispObject *lisp_integer(int i) {
+	int *p = gc_alloc(heap, sizeof(int), &integerTib.gcTib);
+	*p = i;
+	return (LispObject *) p;
 }
 
-static struct GcTypeInfo integerTib = { integerSize, integerTrace };
-
-struct LispObject *lisp_integer(int i) {
-	struct LispInteger *obj = gc_alloc(heap, sizeof(struct LispInteger), &integerTib);
-	obj->object.tag = LISP_INTEGER;
-	obj->i = i;
-	return &obj->object;
-}
-
-void lisp_print(struct LispObject *object) {
-	if (!object) {
-		printf("nil");
-		return;
-	}
-
-	switch (object->tag) {
+void lisp_print(LispObject *object) {
+	switch (lisp_tag(object)) {
+	case LISP_NULL: printf("nil"); break;
 	case LISP_CONS:
 		struct Cons *cell = (struct Cons *) object;
 		printf("(");
 	print_next_cell:
 		lisp_print(cell->car);
 		if (!cell->cdr) printf(")");
-		else if (cell->cdr->tag == LISP_CONS) {
+		else if (lisp_tag(cell->cdr) == LISP_CONS) {
 			printf(" ");
 			cell = (struct Cons *) cell->cdr;
 			goto print_next_cell;
@@ -60,6 +56,7 @@ void lisp_print(struct LispObject *object) {
 			printf(")");
 		}
 		break;
-	case LISP_INTEGER: printf("%d", ((struct LispInteger *) object)->i); break;
+	case LISP_INTEGER: printf("%d", *(int *) object); break;
+	default: printf("INVALID_TAG"); break;
 	}
 }

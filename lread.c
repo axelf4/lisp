@@ -56,7 +56,7 @@ union StackElement {
 	};
 };
 
-enum LispReadError lisp_read(char **s, struct LispObject **result) {
+enum LispReadError lisp_read(char **s, LispObject **result) {
 	union StackElement stack[256], *cur = stack, *ctn = NULL;
 
 	skip_whitespace(s);
@@ -97,7 +97,7 @@ list_end:
 	goto val_end;
 }
 
-enum LispReadError lisp_read_whole(char *s, struct LispObject **result) {
+enum LispReadError lisp_read_whole(char *s, LispObject **result) {
 	enum LispReadError error;
 	if ((error = lisp_read(&s, result))) return error;
 	if (*s != '\0') return LISP_READ_TRAILING;
