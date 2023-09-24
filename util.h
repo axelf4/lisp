@@ -2,14 +2,19 @@
 #define UTIL_H
 
 #include <stdint.h>
+#include <limits.h>
 
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
 /// Number of elements in an array.
 #define LENGTH(x) (sizeof(x) / sizeof *(x))
 
+#define _CAT(a, b) a ## b
+#define CAT(a, b) _CAT(a, b)
+
+/** Returns the smallest power of two greater than or equal to @arg x. */
 static inline unsigned int next_power_of_2(unsigned int x) {
-	return x == 1 ? 2 : 1 << (8 * sizeof x - __builtin_clz(x - 1));
+	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - __builtin_clz(x)) : x;
 }
 
 static inline uint64_t rotate_left(uint64_t x, uint64_t n) {

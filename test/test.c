@@ -10,6 +10,11 @@ void test1(void **) {
 	assert_non_null(cons(NULL, NULL));
 }
 
+void test_next_power_of_2(void **) {
+	assert_int_equal(next_power_of_2(3), 4);
+	assert_int_equal(next_power_of_2(8), 8);
+}
+
 struct Key {
 	unsigned key;
 	void *value;
@@ -40,6 +45,7 @@ int main(void) {
 
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test1),
+		cmocka_unit_test(test_next_power_of_2),
 		cmocka_unit_test(test_hash_table),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

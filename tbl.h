@@ -13,6 +13,7 @@
 #include <stdalign.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include "util.h"
 
 #define EMPTY 0b1111'1111
@@ -25,7 +26,7 @@
 static size_t h1(uint64_t hash) { return hash; }
 
 /// Secondary hash function, saved in the control byte.
-static char h2(uint64_t hash) { return hash >> (sizeof hash - 7); }
+static char h2(uint64_t hash) { return hash >> (CHAR_BIT * (sizeof hash - 1) + 1); }
 
 static size_t bucket_mask_to_capacity(size_t mask) {
 	return mask < 8 ? mask : ((mask + 1) / 8) * 7;
@@ -61,16 +62,13 @@ static size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80)
 static unsigned char empty_ctrl[] __attribute__ ((aligned (GROUP_WIDTH)))
 	= { EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, };
 _Static_assert(LENGTH(empty_ctrl) >= GROUP_WIDTH);
-
-#define JOIN(x, y) JOIN2(x, y)
-#define JOIN2(x, y) x ## y
 #endif
 
 struct TYPE {
 	size_t bucket_mask, ///< = n - 1
 		growth_left,
 		len;
-	/// Array of n + GROUP_WIDTH "control" bytes.
+	/// Array of n + GROUP_WIDTH - 1 "control" bytes.
 	///
 	/// Each byte is one of:
 	/// * 0b1111_1111 (EMPTY)
@@ -80,15 +78,15 @@ struct TYPE {
 	KEY *buckets; ///< Array of n keys.
 };
 
-struct TYPE JOIN(NAME, _tbl_new)() { return (struct TYPE) { .ctrl = empty_ctrl, }; }
-void JOIN(NAME, _tbl_free)(struct TYPE table) { if (table.buckets) free(table.ctrl); }
+struct TYPE CAT(NAME, _tbl_new)() { return (struct TYPE) { .ctrl = empty_ctrl, }; }
+void CAT(NAME, _tbl_free)(struct TYPE table) { if (table.buckets) free(table.ctrl); }
 
-KEY *JOIN(NAME, _tbl_find)(struct TYPE table, KEY key) {
+KEY *CAT(NAME, _tbl_find)(struct TYPE table, KEY key) {
 	uint64_t h = KEY_HASH(key);
 	PROBE(table, h, bucket, group) {
 		// Search the group for h2 of the key
 		FOR_SET_BITS(i, match_byte(h2(h), group)) {
-			KEY *entry = table.buckets + ((bucket + i / 8) & table.bucket_mask);
+			KEY *entry = table.buckets + ((bucket + i / CHAR_BIT) & table.bucket_mask);
 			// Check if keys are equal
 			if (__builtin_expect(KEY_EQUAL(*entry, key), true)) return entry;
 		}
@@ -97,23 +95,22 @@ KEY *JOIN(NAME, _tbl_find)(struct TYPE table, KEY key) {
 	}
 }
 
-static size_t JOIN(NAME, _tbl__find_insert_slot)(struct TYPE table, uint64_t h) {
+static size_t CAT(NAME, _tbl__find_insert_slot)(struct TYPE table, uint64_t h) {
 	PROBE(table, h, bucket, group) {
 		unsigned x = match_empty_or_deleted(group);
-		if (__builtin_expect(x, true)) {
-			size_t match = (bucket + __builtin_ctz(x) / 8) & table.bucket_mask;
-			// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
-			if (IS_FULL(table.ctrl[match])) {
-				group = *(size_t *) table.ctrl;
-				match = (bucket + __builtin_ctz(match_empty_or_deleted(group)) / 8)
-					& table.bucket_mask;
-			}
-			return match;
+		if (!__builtin_expect(x, true)) continue;
+		size_t match = (bucket + __builtin_ctz(x) / CHAR_BIT) & table.bucket_mask;
+		// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
+		if (IS_FULL(table.ctrl[match])) {
+			group = *(size_t *) table.ctrl;
+			match = (bucket + __builtin_ctz(match_empty_or_deleted(group)) / CHAR_BIT)
+				& table.bucket_mask;
 		}
+		return match;
 	}
 }
 
-static void JOIN(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
+static void CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	if (__builtin_expect(additional <= table->growth_left, true)) return;
 
 	size_t new_len = table->len + additional,
@@ -124,7 +121,7 @@ static void JOIN(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	struct TYPE new_table;
 	new_table.bucket_mask = n - 1;
 	size_t buckets_offset
-		= (n + GROUP_WIDTH - 1 + 1 + alignof(KEY) - 1) & (alignof(KEY) - 1);
+		= (n + GROUP_WIDTH - 1 + alignof(KEY) - 1) & ~(alignof(KEY) - 1);
 	if (!(new_table.ctrl = malloc(buckets_offset + n * sizeof(KEY))))
 		exit(1);
 	memset(new_table.ctrl, EMPTY, n + GROUP_WIDTH);
@@ -134,7 +131,7 @@ static void JOIN(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 		if (!IS_FULL(table->ctrl[i])) continue;
 
 		uint64_t h = KEY_HASH(table->buckets[i]);
-		size_t new_i = JOIN(NAME, _tbl__find_insert_slot)(new_table, h);
+		size_t new_i = CAT(NAME, _tbl__find_insert_slot)(new_table, h);
 		SET_CTRL(new_table, new_i, h2(h));
 		new_table.buckets[new_i] = table->buckets[i];
 	}
@@ -145,25 +142,24 @@ static void JOIN(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	*table = new_table;
 }
 
-bool JOIN(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
-	if ((*entry = JOIN(NAME, _tbl_find)(*table, key))) { return true; }
+bool CAT(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
+	if ((*entry = CAT(NAME, _tbl_find)(*table, key))) return true;
 
 	uint64_t h = KEY_HASH(key);
-	if (__builtin_expect(table->growth_left == 0, false)) JOIN(NAME, _tbl_reserve)(table, 1);
+	if (__builtin_expect(table->growth_left == 0, false)) CAT(NAME, _tbl_reserve)(table, 1);
 
 	// Key is not present: Search for EMPTY/DELETED instead
-	size_t i = JOIN(NAME, _tbl__find_insert_slot)(*table, h);
-	unsigned char old_ctrl = table->ctrl[i];
-	table->growth_left -= (old_ctrl & 1) != 0; // Avoid decrementing if was tombstone
+	size_t i = CAT(NAME, _tbl__find_insert_slot)(*table, h);
+	table->growth_left -= table->ctrl[i] & 1; // Avoid decrementing if replaced tombstone
 	++table->len;
 	SET_CTRL(*table, i, h2(h));
 	*(*entry = table->buckets + i) = key;
 	return false;
 }
 
-void JOIN(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
+void CAT(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
 	KEY *entry;
-	JOIN(NAME, _tbl_entry)(table, key, &entry);
+	CAT(NAME, _tbl_entry)(table, key, &entry);
 	*entry = key;
 }
 
