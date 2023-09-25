@@ -2,12 +2,6 @@
 #include "gc.h"
 #include "lisp.h"
 
-static void foo() {
-	for (int i = 0; i < 2000; ++i) {
-		__attribute__ ((unused)) void *p = cons(NULL, NULL);
-	}
-}
-
 int main(void) {
 	if (!(heap = gc_new())) return 1;
 	struct LispContext *ctx = lisp_init();
@@ -22,7 +16,6 @@ int main(void) {
 		printf("\n");
 	}
 
-	foo();
 	garbage_collect(heap);
 
 	char line[256];
@@ -41,4 +34,5 @@ int main(void) {
 			printf("\n");
 		}
 	}
+	lisp_free(ctx);
 }

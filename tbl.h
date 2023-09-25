@@ -1,4 +1,4 @@
-/** SWAR implementation of Swiss tables. */
+/** Swiss tables SWAR implementation. */
 
 #if !(defined(NAME) && defined(KEY) && defined(TYPE) && defined(KEY_HASH) && defined(KEY_EQUAL))
 #error
@@ -24,23 +24,20 @@
 
 /// Primary hash function, used for probing.
 static size_t h1(uint64_t hash) { return hash; }
-
 /// Secondary hash function, saved in the control byte.
 static char h2(uint64_t hash) { return hash >> (CHAR_BIT * (sizeof hash - 1) + 1); }
 
 static size_t bucket_mask_to_capacity(size_t mask) {
 	return mask < 8 ? mask : ((mask + 1) / 8) * 7;
 }
-
 static size_t capacity_to_buckets(size_t capacity) {
-	return capacity < 8 ? (capacity < 4 ? 4 : 8)
-		: next_power_of_2(capacity * 8 / 7);
+	return capacity < 8 ? (capacity < 4 ? 4 : 8) : next_power_of_2(capacity * 8 / 7);
 }
 
 /** Return the integer with all bytes equal to @arg x. */
 #define REPEAT(x) (x * (~0ULL / 0xff))
 
-#define FOR_SET_BITS(var, x) for (unsigned __i = x, var;			\
+#define FOR_SET_BITS(var, x) for (size_t __i = x, var;			\
 		__i && (var = __builtin_ctz(__i), 1); __i &= (__i - 1))
 
 static size_t match_byte(unsigned char x, size_t group) {
@@ -112,10 +109,8 @@ static size_t CAT(NAME, _tbl__find_insert_slot)(struct TYPE table, uint64_t h) {
 
 static void CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	if (__builtin_expect(additional <= table->growth_left, true)) return;
-
-	size_t new_len = table->len + additional,
-		full_capacity = bucket_mask_to_capacity(table->bucket_mask),
-		new_capacity = MAX(new_len, full_capacity + 1),
+	size_t new_capacity
+		= MAX(table->len + additional, bucket_mask_to_capacity(table->bucket_mask) + 1),
 		n = capacity_to_buckets(new_capacity);
 
 	struct TYPE new_table;

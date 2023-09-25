@@ -48,13 +48,15 @@ enum LispReadError {
 	LISP_READ_TRAILING,
 };
 
-enum LispReadError lisp_read(struct LispContext *ctx, char **s, LispObject **result);
+enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject **result);
 
-enum LispReadError lisp_read_whole(struct LispContext *ctx, char *s, LispObject **result);
+enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject **result);
 
 void lisp_print(LispObject *object);
 
 struct LispContext *lisp_init();
+
+void lisp_free(struct LispContext *);
 
 LispObject *lisp_eval(struct LispContext *ctx, LispObject *x);
 

@@ -1,12 +1,3 @@
-/**
- * Single-threaded immix garbage collector.
- *
- * See: BLACKBURN, Stephen M.; MCKINLEY, Kathryn S. Immix: a
- *      mark-region garbage collector with space efficiency, fast
- *      collection, and mutator performance. ACM SIGPLAN Notices,
- *      2008, 43.6: 22-32.
- */
-
 #include "gc.h"
 #include <stdalign.h>
 #include <stdlib.h>
@@ -15,11 +6,6 @@
 #include <ucontext.h>
 #include "util.h"
 
-#define LINE_SIZE 0x80
-#define BLOCK_SIZE 0x8000
-#define LINE_COUNT (BLOCK_SIZE / LINE_SIZE - 1)
-// One byte per line is used for flags
-#define BLOCK_CAPACITY (BLOCK_SIZE - LINE_COUNT - 1)
 #define BLOCKS_PER_CHUNK 128
 
 struct BumpPointer { char *cursor, *limit; };
@@ -32,27 +18,27 @@ static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 		: NULL;
 }
 
-_Static_assert(sizeof(struct GcBlock) == BLOCK_SIZE);
-_Static_assert(!(LINE_SIZE % alignof(max_align_t)));
+_Static_assert(sizeof(struct GcBlock) == GC_BLOCK_SIZE);
+_Static_assert(!(GC_LINE_SIZE % alignof(max_align_t)));
 /** Locate next gap of unmarked lines of sufficient size. */
 static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size) {
-	unsigned required_lines = (size + LINE_SIZE - 1) / LINE_SIZE, count = 0,
-		end = (top - (char *) block) / LINE_SIZE;
+	unsigned required_lines = (size + GC_LINE_SIZE - 1) / GC_LINE_SIZE, count = 0,
+		end = (top - (char *) block) / GC_LINE_SIZE;
 	for (unsigned i = end; i-- > 0;)
 		if (block->line_marks[i]) {
 			if (count > required_lines) {
 				// At least 2 preceeding lines were unmarked. Consider
 				// the previous block as conservatively marked.
 				return (struct BumpPointer) {
-					block->data + LINE_SIZE * end,
-					block->data + LINE_SIZE * (i + 2),
+					block->data + GC_LINE_SIZE * end,
+					block->data + GC_LINE_SIZE * (i + 2),
 				};
 			}
 			count = 0;
 			end = i;
 		} else ++count;
 	return count >= required_lines
-		? (struct BumpPointer) { block->data + LINE_SIZE * end, block->data }
+		? (struct BumpPointer) { block->data + GC_LINE_SIZE * end, block->data }
 		: (struct BumpPointer) { NULL, NULL };
 }
 
@@ -105,7 +91,7 @@ static struct GcBlock *acquire_block(struct Heap *heap) {
 		== MAP_FAILED)
 		return NULL;
 	// Align to block boundary
-	blocks = (void *) (((uintptr_t) (blocks + 1) - 1) & ~(sizeof *blocks - 1));
+	blocks = (struct GcBlock *) (((uintptr_t) (blocks + 1) - 1) & ~(sizeof *blocks - 1));
 	for (struct GcBlock *block = blocks + 1; block < blocks + BLOCKS_PER_CHUNK; ++block) {
 #ifndef __linux__
 		memset(block->line_marks, 0, sizeof block->line_marks);
@@ -155,12 +141,12 @@ enum {
 
 _Static_assert(!(sizeof(struct GcObjectHeader) % alignof(max_align_t)));
 void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
-	if ((size += sizeof(struct GcObjectHeader)) > BLOCK_CAPACITY) return NULL;
+	if ((size += sizeof(struct GcObjectHeader)) > GC_BLOCK_CAPACITY) return NULL;
 	char *p;
 	struct GcBlock **block = &heap->head;
 	struct BumpPointer *ptr = &heap->ptr;
 	if ((p = bump_alloc(ptr, alignof(max_align_t), size))) goto success;
-	if (size <= LINE_SIZE) {
+	if (size <= GC_LINE_SIZE) {
 		if ((*ptr = next_gap(*block, ptr->limit, size)).cursor) {
 			p = bump_alloc(ptr, alignof(max_align_t), size);
 			goto success;
@@ -168,7 +154,7 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 		struct GcBlock *new_block;
 		if ((new_block = vec_pop(&heap->recycled))) {
 			// Recycled blocks have gaps of >=1 lines; enough for a small obj
-			*ptr = next_gap(*block = new_block, new_block->data + BLOCK_CAPACITY, size);
+			*ptr = next_gap(*block = new_block, new_block->data + GC_BLOCK_CAPACITY, size);
 			p = bump_alloc(ptr, alignof(max_align_t), size);
 			goto success;
 		}
@@ -237,7 +223,7 @@ void gc_noop1(void *x) { gc_noop_sink = x; }
 static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 	ucontext_t ctx;
 	if (getcontext(&ctx) < 0) {
-		printf("getcontext() failed\n");
+		puts("getcontext() failed");
 		__builtin_unwind_init();
 	}
 	fn(arg);
@@ -273,10 +259,10 @@ enum BlockStatus {
 
 static enum BlockStatus sweep_block(struct GcBlock *block) {
 	unsigned unavailable_lines = 0;
-	for (unsigned i = 0; i < LINE_COUNT; ++i)
+	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
 		if (block->line_marks[i]) ++unavailable_lines;
 	return !unavailable_lines ? FREE
-		: unavailable_lines < LINE_COUNT ? RECYCLABLE
+		: unavailable_lines < GC_LINE_COUNT ? RECYCLABLE
 		: UNAVAILABLE;
 }
 
@@ -284,10 +270,10 @@ static struct BlockStats {
 	unsigned num_marks, num_holes;
 } block_stats(struct GcBlock *block) {
 	struct BlockStats result = { 0 };
-	for (unsigned i = 0; i < LINE_COUNT; ++i) {
-		while (i < LINE_COUNT && block->line_marks[i]) ++i, ++result.num_marks;
-		if (i < LINE_COUNT) ++result.num_holes;
-		while (i < LINE_COUNT && !block->line_marks[i]) ++i;
+	for (unsigned i = 0; i < GC_LINE_COUNT; ++i) {
+		while (i < GC_LINE_COUNT && block->line_marks[i]) ++i, ++result.num_marks;
+		if (i < GC_LINE_COUNT) ++result.num_holes;
+		while (i < GC_LINE_COUNT && !block->line_marks[i]) ++i;
 	}
 	return result;
 }
@@ -302,7 +288,7 @@ void garbage_collect(struct Heap *heap) {
 	for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
 		roaring_bitmap_clear(&chunk->object_map);
 
-#define MAX_HOLES ((LINE_COUNT + 1) / 2)
+#define MAX_HOLES ((GC_LINE_COUNT + 1) / 2)
 	unsigned mark_histogram[MAX_HOLES] = { 0 };
 	// Unmark blocks
 	for (struct Chunk *x = heap->chunks; x; x = x->next)
@@ -316,9 +302,9 @@ void garbage_collect(struct Heap *heap) {
 		}
 
 	if (heap->defrag) {
-		ssize_t available_space = BLOCK_CAPACITY * heap->free.length;
+		ssize_t available_space = GC_BLOCK_CAPACITY * heap->free.length;
 		unsigned bin = MAX_HOLES;
-		do available_space -= LINE_SIZE * mark_histogram[--bin];
+		do available_space -= GC_LINE_SIZE * mark_histogram[--bin];
 		while (available_space > 0 && bin);
 
 		for (size_t i = 0; i < heap->rest.length; ++i) {

@@ -1,3 +1,12 @@
+/**
+ * Single-threaded immix garbage collector.
+ *
+ * See: BLACKBURN, Stephen M.; MCKINLEY, Kathryn S. Immix: a
+ *      mark-region garbage collector with space efficiency, fast
+ *      collection, and mutator performance. ACM SIGPLAN Notices,
+ *      2008, 43.6: 22-32.
+ */
+
 #ifndef GC_H
 #define GC_H
 
@@ -28,7 +37,6 @@ struct GcObjectHeader {
 	};
 };
 
-/// Aligned to block boundary.
 struct GcBlock {
 	char data[GC_BLOCK_CAPACITY];
 	char line_marks[GC_LINE_COUNT];

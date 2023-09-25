@@ -73,7 +73,7 @@ static void cons_trace(struct Heap *heap, void *x) {
 	struct Cons *cons = x;
 	gc_mark(sizeof *cons, x);
 	if (cons->car) gc_trace(heap, &cons->car);
-	if (cons->car) gc_trace(heap, &cons->cdr);
+	if (cons->cdr) gc_trace(heap, &cons->cdr);
 }
 
 static size_t symbol_size(void *) { return sizeof(struct Symbol); }
@@ -107,7 +107,7 @@ static struct LispTypeInfo cons_tib = {
 };
 
 LispObject *cons(LispObject *car, LispObject *cdr) {
-	struct Cons *cell = gc_alloc(heap, sizeof(struct Cons), &cons_tib.gc_tib);
+	struct Cons *cell = gc_alloc(heap, sizeof *cell, &cons_tib.gc_tib);
 	cell->car = car;
 	cell->cdr = cdr;
 	return cell;
@@ -129,7 +129,7 @@ LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]
 }
 
 LispObject *lisp_integer(int i) {
-	int *p = gc_alloc(heap, sizeof(int), &integer_tib.gc_tib);
+	int *p = gc_alloc(heap, sizeof *p, &integer_tib.gc_tib);
 	*p = i;
 	return p;
 }
@@ -179,19 +179,23 @@ static void lisp_ctx_trace(struct Heap *, void *x) {
 struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_size, lisp_ctx_trace };
 
 struct LispContext *lisp_init() {
-	struct LispContext *ctx = gc_alloc(heap, sizeof(struct LispContext), &lisp_ctx_tib);
+	struct LispContext *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
 	*ctx = (struct LispContext) {
 		.symbol_tbl = symbol_tbl_new(),
 	};
 
 	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
 		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
-		struct Function *f = gc_alloc(heap, sizeof(struct Function), &function_tib.gc_tib);
+		struct Function *f = gc_alloc(heap, sizeof *f, &function_tib.gc_tib);
 		*f = (struct Function) { subr };
 		sym->value = f;
 	}
 
 	return ctx;
+}
+
+void lisp_free(struct LispContext *ctx) {
+	symbol_tbl_free(ctx->symbol_tbl);
 }
 
 static LispObject *pop(LispObject **x) {

@@ -10,7 +10,7 @@ static bool is_whitespace(char c) {
 static bool is_integer(char c) { return '0' <= c && c <= '9'; }
 
 /** Skip whitespace and comments. */
-static void skip_whitespace(char **s) {
+static void skip_whitespace(const char **s) {
 	for (;;) {
 		if (**s == ';') while (*++*s != '\n') ;
 		if (!is_whitespace(**s)) break;
@@ -18,7 +18,7 @@ static void skip_whitespace(char **s) {
 	}
 }
 
-static int read_integer(char **s) {
+static int read_integer(const char **s) {
 	int sign = 1;
 	switch (**s) {
 	case '-': sign = -1; // Intentional fall through
@@ -30,8 +30,8 @@ static int read_integer(char **s) {
 	return sign * result;
 }
 
-static struct LispObject *read_symbol(struct LispContext *ctx, char **s) {
-	char *start = *s;
+static struct LispObject *read_symbol(struct LispContext *ctx, const char **s) {
+	const char *start = *s;
 	for (;; ++*s)
 		switch (**s) {
 		case '\0': case '(': case ')': case '.': goto done;
@@ -52,7 +52,7 @@ union StackElement {
 	};
 };
 
-enum LispReadError lisp_read(struct LispContext *ctx, char **s, LispObject **result) {
+enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject **result) {
 	union StackElement stack[256], *cur = stack, *ctn = NULL;
 
 	skip_whitespace(s);
@@ -60,7 +60,7 @@ enum LispReadError lisp_read(struct LispContext *ctx, char **s, LispObject **res
 	struct LispObject *value;
 val_beg:
 	if (**s == '(') { ++*s; goto list_beg; }
-	if (is_integer(**s) || ((**s == '+' || **s == '-') && is_integer((*s)[1])))
+	if (is_integer(**s) || ((**s == '+' || **s == '-') && is_integer(1[*s])))
 		value = lisp_integer(read_integer(s));
 	else if (__builtin_expect(!**s, false)) return LISP_READ_EOF;
 	else value = read_symbol(ctx, s);
@@ -94,7 +94,7 @@ list_end:
 	goto val_end;
 }
 
-enum LispReadError lisp_read_whole(struct LispContext *ctx, char *s, LispObject **result) {
+enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject **result) {
 	enum LispReadError error;
 	if ((error = lisp_read(ctx, &s, result))) return error;
 	skip_whitespace(&s);
