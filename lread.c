@@ -1,12 +1,10 @@
 #include <stddef.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
-
 #include "lisp.h"
 
 static bool is_whitespace(char c) {
-	return c == ' ' || c == '\t' || c == '\t' || c == '\r';
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
 static bool is_integer(char c) { return '0' <= c && c <= '9'; }
@@ -62,7 +60,8 @@ enum LispReadError lisp_read(struct LispContext *ctx, char **s, LispObject **res
 	struct LispObject *value;
 val_beg:
 	if (**s == '(') { ++*s; goto list_beg; }
-	if (is_integer(**s) || **s == '-') value = lisp_integer(read_integer(s));
+	if (is_integer(**s) || ((**s == '+' || **s == '-') && is_integer((*s)[1])))
+		value = lisp_integer(read_integer(s));
 	else if (__builtin_expect(!**s, false)) return LISP_READ_EOF;
 	else value = read_symbol(ctx, s);
 val_end:
@@ -98,6 +97,7 @@ list_end:
 enum LispReadError lisp_read_whole(struct LispContext *ctx, char *s, LispObject **result) {
 	enum LispReadError error;
 	if ((error = lisp_read(ctx, &s, result))) return error;
+	skip_whitespace(&s);
 	if (*s != '\0') return LISP_READ_TRAILING;
 	return LISP_READ_OK;
 }

@@ -8,9 +8,10 @@ extern struct Heap *heap;
 struct LispContext;
 
 enum LispObjectType {
-	LISP_NULL,
+	LISP_NIL,
 	LISP_CONS,
 	LISP_SYMBOL,
+	LISP_FUNCTION,
 	LISP_INTEGER,
 };
 
@@ -22,8 +23,8 @@ struct LispTypeInfo {
 typedef uintptr_t LispSymbol;
 typedef void LispObject;
 
-static inline enum LispObjectType lisp_tag(LispObject *p) {
-	if (!p) return LISP_NULL;
+static inline enum LispObjectType lisp_type(LispObject *p) {
+	if (!p) return LISP_NIL;
 	struct LispTypeInfo *tib
 		= (struct LispTypeInfo *) ((struct GcObjectHeader *) p - 1)->tib;
 	return tib->tag;
@@ -37,7 +38,7 @@ LispObject *cons(LispObject *car, LispObject *cdr);
 
 LispObject *lisp_integer(int i);
 
-LispObject *intern(struct LispContext *ctx, size_t len, char s[static len]);
+LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]);
 
 enum LispReadError {
 	LISP_READ_OK,
@@ -54,5 +55,7 @@ enum LispReadError lisp_read_whole(struct LispContext *ctx, char *s, LispObject 
 void lisp_print(LispObject *object);
 
 struct LispContext *lisp_init();
+
+LispObject *lisp_eval(struct LispContext *ctx, LispObject *x);
 
 #endif

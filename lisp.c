@@ -2,12 +2,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <xxh3.h>
+#include "util.h"
 
 struct Heap *heap;
 
 struct Symbol {
 	size_t len;
-	char *name;
+	const char *name;
+	LispObject *value;
 };
 
 static uint64_t symbol_hash(struct Symbol *x) { return XXH3_64bits(x->name, x->len); }
@@ -22,6 +24,38 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 #define KEY_HASH symbol_hash
 #define KEY_EQUAL symbol_equal
 #include "tbl.h"
+
+struct Subr {
+	union {
+		LispObject *(*a0)();
+		LispObject *(*a1)(LispObject *);
+		LispObject *(*a2)(LispObject *, LispObject *);
+		LispObject *(*a3)(LispObject *, LispObject *, LispObject *);
+	};
+	const char *name;
+	unsigned char min_args;
+	struct Subr *next;
+} *subr_head;
+
+#define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
+#define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+#define DEFUN(lname, cname, args, ...)									\
+	static LispObject *F ## cname args;									\
+	__attribute__ ((constructor)) static void lisp_constructor_ ## cname(void) { \
+		static struct Subr lisp_subr_ ## cname = {						\
+			.CAT(a, NUM_ARGS args) = F ## cname,						\
+			.name = lname,												\
+			.min_args = NUM_ARGS args,									\
+		};																\
+		lisp_subr_ ## cname.next = subr_head;							\
+		subr_head = &lisp_subr_ ## cname;								\
+	}																	\
+	static LispObject *F ## cname args
+
+struct Function {
+	struct Subr *subr;
+};
 
 struct LispContext {
 	struct SymbolTable symbol_tbl;
@@ -47,8 +81,11 @@ static size_t symbol_size(void *) { return sizeof(struct Symbol); }
 static void symbol_trace(struct Heap *heap, void *x) {
 	struct Symbol *sym = x;
 	gc_mark(sizeof *sym, x);
-	gc_trace(heap, (void **) &sym->name);
+	gc_mark(sym->len + 1, sym->name);
+	if (sym->value) gc_trace(heap, &sym->value);
 }
+
+static size_t function_size(void *) { return sizeof(struct Function); }
 
 static size_t integer_size(void *) { return sizeof(int); }
 
@@ -61,6 +98,9 @@ static struct LispTypeInfo cons_tib = {
 }, symbol_tib = {
 	.gc_tib = { symbol_size, symbol_trace },
 	.tag = LISP_SYMBOL,
+}, function_tib = {
+	.gc_tib = { function_size, trace_small },
+	.tag = LISP_FUNCTION,
 }, integer_tib = {
 	.gc_tib = { integer_size, trace_small },
 	.tag = LISP_INTEGER,
@@ -70,39 +110,40 @@ LispObject *cons(LispObject *car, LispObject *cdr) {
 	struct Cons *cell = gc_alloc(heap, sizeof(struct Cons), &cons_tib.gc_tib);
 	cell->car = car;
 	cell->cdr = cdr;
-	return (LispObject *) cell;
+	return cell;
 }
 
-LispObject *intern(struct LispContext *ctx, size_t len, char s[static len]) {
+LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]) {
 	char nil[3] = "nil";
 	if (len == 3 && memcmp(s, nil, LENGTH(nil)) == 0) return NULL;
 
 	struct Symbol key = { .len = len, .name = s }, **entry;
 	if (!symbol_tbl_entry(&ctx->symbol_tbl, &key, &entry)) {
-		struct Symbol *sym = *entry = gc_alloc(heap, sizeof **entry, &symbol_tib.gc_tib);
-		memcpy(sym->name = gc_alloc(heap, len + 1, &string_tib), s, sym->len = len);
-		sym->name[len] = '\0';
+		char *name = gc_alloc(heap, len + 1, &string_tib);
+		memcpy(name, s, len);
+		name[len] = '\0';
+		*entry = gc_alloc(heap, sizeof **entry, &symbol_tib.gc_tib);
+		**entry = (struct Symbol) { .name = name, .len = len, };
 	}
-
 	return *entry;
 }
 
 LispObject *lisp_integer(int i) {
 	int *p = gc_alloc(heap, sizeof(int), &integer_tib.gc_tib);
 	*p = i;
-	return (LispObject *) p;
+	return p;
 }
 
 void lisp_print(LispObject *object) {
-	switch (lisp_tag(object)) {
-	case LISP_NULL: printf("nil"); break;
+	switch (lisp_type(object)) {
+	case LISP_NIL: printf("nil"); break;
 	case LISP_CONS:
 		struct Cons *cell = object;
 		putchar('(');
 	print_next_cell:
 		lisp_print(cell->car);
 		if (!cell->cdr) printf(")");
-		else if (lisp_tag(cell->cdr) == LISP_CONS) {
+		else if (lisp_type(cell->cdr) == LISP_CONS) {
 			putchar(' ');
 			cell = cell->cdr;
 			goto print_next_cell;
@@ -116,8 +157,11 @@ void lisp_print(LispObject *object) {
 		struct Symbol *sym = object;
 		fwrite(sym->name, sizeof(char), sym->len, stdout);
 		break;
+	case LISP_FUNCTION:
+		printf("#<subr %s>", ((struct Function *) object)->subr->name);
+		break;
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
-	default: puts("Bad tag"); exit(1); break;
+	default: puts("Tried to print object with bad type"); exit(1); break;
 	}
 }
 
@@ -140,5 +184,55 @@ struct LispContext *lisp_init() {
 		.symbol_tbl = symbol_tbl_new(),
 	};
 
+	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
+		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
+		struct Function *f = gc_alloc(heap, sizeof(struct Function), &function_tib.gc_tib);
+		*f = (struct Function) { subr };
+		sym->value = f;
+	}
+
 	return ctx;
 }
+
+static LispObject *pop(LispObject **x) {
+	if (lisp_type(*x) != LISP_CONS) return NULL;
+	struct Cons *cell = *x, *result = cell->car;
+	*x = cell->cdr;
+	return result;
+}
+
+LispObject *lisp_eval(struct LispContext *, LispObject *x) {
+	switch (lisp_type(x)) {
+	case LISP_NIL: case LISP_INTEGER: return x;
+	case LISP_SYMBOL:
+		struct Symbol *sym = x;
+		return sym->value;
+	case LISP_CONS:
+		LispObject *head = pop(&x);
+		if (lisp_type(head) != LISP_SYMBOL) { puts("Bad symbol"); return NULL; }
+		LispObject *fun_val = ((struct Symbol *) head)->value;
+		if (lisp_type(fun_val) != LISP_FUNCTION) { puts("Bad function"); return NULL; }
+		struct Subr *subr = ((struct Function *) fun_val)->subr;
+		LispObject *args[8];
+		for (unsigned i = 0; i < subr->min_args; ++i) {
+			if (lisp_type(x) != LISP_CONS) { printf("Too few arguments\n"); return NULL; }
+			args[i] = pop(&x);
+		}
+		switch (subr->min_args) {
+		case 0: return subr->a0();
+		case 1: return subr->a1(args[0]);
+		case 2: return subr->a2(args[0], args[1]);
+		case 3: return subr->a3(args[0], args[1], args[2]);
+		}
+		return NULL;
+	default: exit(1);
+	}
+}
+
+DEFUN("+", add, (LispObject *a, LispObject *b)) {
+	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
+		return NULL;
+	return lisp_integer(*(int *) a + *(int *) b);
+}
+
+DEFUN("nop", nop, ()) { return NULL; }

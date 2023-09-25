@@ -10,7 +10,6 @@
 #include "gc.h"
 #include <stdalign.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <roaring/roaring.h>
 #include <sys/mman.h>
 #include <ucontext.h>
@@ -23,9 +22,7 @@
 #define BLOCK_CAPACITY (BLOCK_SIZE - LINE_COUNT - 1)
 #define BLOCKS_PER_CHUNK 128
 
-struct BumpPointer {
-	char *cursor, *limit;
-};
+struct BumpPointer { char *cursor, *limit; };
 
 __attribute__ ((alloc_align (2), alloc_size (3)))
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
@@ -108,7 +105,7 @@ static struct GcBlock *acquire_block(struct Heap *heap) {
 		== MAP_FAILED)
 		return NULL;
 	// Align to block boundary
-	blocks = (void *) ((uintptr_t) (blocks + 1) & ~(sizeof *blocks - 1));
+	blocks = (void *) (((uintptr_t) (blocks + 1) - 1) & ~(sizeof *blocks - 1));
 	for (struct GcBlock *block = blocks + 1; block < blocks + BLOCKS_PER_CHUNK; ++block) {
 #ifndef __linux__
 		memset(block->line_marks, 0, sizeof block->line_marks);
