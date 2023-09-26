@@ -99,7 +99,10 @@ static size_t CAT(NAME, _tbl__find_insert_slot)(struct TYPE table, uint64_t h) {
 		size_t match = (bucket + __builtin_ctz(x) / CHAR_BIT) & table.bucket_mask;
 		// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
 		if (IS_FULL(table.ctrl[match])) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
 			group = *(size_t *) table.ctrl;
+#pragma GCC diagnostic pop
 			match = (bucket + __builtin_ctz(match_empty_or_deleted(group)) / CHAR_BIT)
 				& table.bucket_mask;
 		}
@@ -120,7 +123,10 @@ static void CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	if (!(new_table.ctrl = malloc(buckets_offset + n * sizeof(KEY))))
 		exit(1);
 	memset(new_table.ctrl, EMPTY, n + GROUP_WIDTH);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
 	new_table.buckets = (KEY *) (new_table.ctrl + buckets_offset);
+#pragma GCC diagnostic pop
 
 	for (size_t i = 0; i < table->bucket_mask + 1; ++i) {
 		if (!IS_FULL(table->ctrl[i])) continue;

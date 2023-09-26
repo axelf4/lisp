@@ -172,9 +172,12 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 	*ptr = empty_block_ptr(*block = new_block);
 	p = bump_alloc(ptr, alignof(max_align_t), size);
 success:
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) {
 		.mark = heap->mark_color, .tib = tib,
 	};
+#pragma GCC diagnostic pop
 	p += sizeof(struct GcObjectHeader);
 	gc_object_map_add(heap, p);
 	if (heap->free.length <= MIN_FREE && !heap->is_gc) garbage_collect(heap);
