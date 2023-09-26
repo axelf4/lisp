@@ -232,7 +232,7 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 }
 
 extern void *__libc_stack_end;
-static void collect_roots(void *x) {
+__attribute__ ((no_sanitize_address)) static void collect_roots(void *x) {
 	struct Heap *heap = x;
 	void *base = __libc_stack_end,
 		*sp = __builtin_frame_address(0);
