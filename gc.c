@@ -273,7 +273,7 @@ static enum BlockStatus sweep_block(struct GcBlock *block) {
 static struct BlockStats {
 	unsigned num_marks, num_holes;
 } block_stats(struct GcBlock *block) {
-	struct BlockStats result = { 0 };
+	struct BlockStats result = {};
 	for (unsigned i = 0; i < GC_LINE_COUNT; ++i) {
 		while (i < GC_LINE_COUNT && block->line_marks[i]) ++i, ++result.num_marks;
 		if (i < GC_LINE_COUNT) ++result.num_holes;
@@ -293,7 +293,7 @@ void garbage_collect(struct Heap *heap) {
 		roaring_bitmap_clear(&chunk->object_map);
 
 #define MAX_HOLES ((GC_LINE_COUNT + 1) / 2)
-	unsigned mark_histogram[MAX_HOLES] = { 0 };
+	unsigned mark_histogram[MAX_HOLES] = {};
 	// Unmark blocks
 	for (struct Chunk *x = heap->chunks; x; x = x->next)
 		for (struct GcBlock *block = x->data; block < x->data + BLOCKS_PER_CHUNK; ++block) {

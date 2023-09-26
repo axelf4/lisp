@@ -48,7 +48,7 @@
       }) ];
     };
   in {
-    devShells.x86_64-linux.default = pkgs.mkShell {
+    devShells.x86_64-linux.default = pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } {
       buildInputs = with pkgs; [ cmake croaring xxHash cmocka valgrind ];
     };
   };
