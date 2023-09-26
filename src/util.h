@@ -17,6 +17,17 @@ static inline unsigned int next_power_of_2(unsigned int x) {
 	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - __builtin_clz(x)) : x;
 }
 
+/** Converts @arg x to little endian from the target's endianness. */
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+#define HTOL(x) x
+#elif __BYTE_ORDER == __BIG_ENDIAN
+#define HTOL(x) _Generic((x),					\
+		uint32_t: __builtin_bswap32,			\
+		uint64_t: __builtin_bswap64)(x)
+#else
+#error Unknown byte-order
+#endif
+
 static inline uint64_t rotate_left(uint64_t x, unsigned n) {
 	const unsigned mask = CHAR_BIT * sizeof n - 1;
 	n &= mask;

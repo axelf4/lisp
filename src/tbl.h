@@ -48,7 +48,7 @@ static size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80)
 
 #define PROBE(table, hash, bucket, group)								\
 	for (size_t bucket = h1(hash) & (table)->bucket_mask, _probe_distance = 0, group; \
-			memcpy(&group, (table)->ctrl + bucket, sizeof group), true;	\
+			memcpy(&group, (table)->ctrl + bucket, sizeof group), group = HTOL(group), true; \
 			/* Triangular probing */									\
 			bucket = (bucket + sizeof(Group) * ++_probe_distance) & (table)->bucket_mask)
 
@@ -110,7 +110,7 @@ static size_t CAT(NAME, _tbl__find_insert_slot)(struct TYPE *table, uint64_t h) 
 		size_t match = (bucket + __builtin_ctzll(x) / CHAR_BIT) & table->bucket_mask;
 		// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
 		if (IS_FULL(table->ctrl[match])) {
-			group = *(size_t *) table->ctrl;
+			group = HTOL(*(size_t *) table->ctrl);
 			match = (bucket + __builtin_ctzll(match_empty_or_deleted(group)) / CHAR_BIT)
 				& table->bucket_mask;
 		}
@@ -149,7 +149,7 @@ bool CAT(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
 
 	// Key is not present: Search for EMPTY/DELETED instead
 	size_t i = CAT(NAME, _tbl__find_insert_slot)(table, h);
-	table->growth_left -= table->ctrl[i] & 1; // Avoid decrementing if replaced tombstone
+	table->growth_left -= table->ctrl[i] & 1; // Decrement unless replaced tombstone
 	++table->len;
 	SET_CTRL(*table, i, h2(h));
 	*(*entry = BUCKETS(*table) + i) = key;
