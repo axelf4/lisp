@@ -10,7 +10,7 @@
 
 struct BumpPointer { char *cursor, *limit; };
 
-__attribute__ ((alloc_align (2), alloc_size (3)))
+[[gnu::alloc_align (2), gnu::alloc_size (3)]]
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 	// Bump allocate downward to align with a single AND instruction
 	return (size_t) (ptr->cursor - ptr->limit) >= size
@@ -174,6 +174,7 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 success:
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
+#pragma GCC diagnostic ignored "-Wanalyzer-null-dereference"
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) {
 		.mark = heap->mark_color, .tib = tib,
 	};
@@ -235,7 +236,7 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 }
 
 extern void *__libc_stack_end;
-__attribute__ ((no_sanitize_address)) static void collect_roots(void *x) {
+[[gnu::no_sanitize_address]] static void collect_roots(void *x) {
 	struct Heap *heap = x;
 	void *base = __libc_stack_end,
 		*sp = __builtin_frame_address(0);

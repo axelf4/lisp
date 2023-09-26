@@ -21,7 +21,7 @@ static void skip_whitespace(const char **s) {
 static int read_integer(const char **s) {
 	int sign = 1;
 	switch (**s) {
-	case '-': sign = -1; // Intentional fall through
+	case '-': sign = -1; [[fallthrough]];
 	case '+': ++*s;
 	}
 	int result = 0;

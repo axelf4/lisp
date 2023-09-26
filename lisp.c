@@ -21,8 +21,6 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 #define NAME symbol
 #define KEY struct Symbol *
 #define TYPE SymbolTable
-#define KEY_HASH symbol_hash
-#define KEY_EQUAL symbol_equal
 #include "tbl.h"
 
 struct Subr {
@@ -42,7 +40,7 @@ struct Subr {
 
 #define DEFUN(lname, cname, args, ...)									\
 	static LispObject *F ## cname args;									\
-	__attribute__ ((constructor)) static void lisp_constructor_ ## cname(void) { \
+	[[gnu::constructor]] static void lisp_constructor_ ## cname(void) { \
 		static struct Subr lisp_subr_ ## cname = {						\
 			.CAT(a, NUM_ARGS args) = F ## cname,						\
 			.name = lname,												\
@@ -171,9 +169,10 @@ static void lisp_ctx_trace(struct Heap *, void *x) {
 	struct LispContext *ctx = x;
 	gc_mark(sizeof *ctx, x);
 
-	for (size_t i = 0; i < ctx->symbol_tbl.bucket_mask + 1; ++i)
-		if (IS_FULL(ctx->symbol_tbl.ctrl[i]))
-			gc_trace(heap, (void **) &ctx->symbol_tbl.buckets[i]);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+	TBL_FOR_EACH(ctx->symbol_tbl, x) gc_trace(heap, (void **) x);
+#pragma GCC diagnostic pop
 }
 
 struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_size, lisp_ctx_trace };
@@ -185,9 +184,10 @@ struct LispContext *lisp_init() {
 	};
 
 	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
-		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
 		struct Function *f = gc_alloc(heap, sizeof *f, &function_tib.gc_tib);
 		*f = (struct Function) { subr };
+		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
+		if (!sym) exit(1);
 		sym->value = f;
 	}
 
@@ -195,7 +195,7 @@ struct LispContext *lisp_init() {
 }
 
 void lisp_free(struct LispContext *ctx) {
-	symbol_tbl_free(ctx->symbol_tbl);
+	symbol_tbl_free(&ctx->symbol_tbl);
 }
 
 static LispObject *pop(LispObject **x) {

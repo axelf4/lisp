@@ -1,6 +1,6 @@
 /** Swiss tables SWAR implementation. */
 
-#if !(defined(NAME) && defined(KEY) && defined(TYPE) && defined(KEY_HASH) && defined(KEY_EQUAL))
+#if !(defined(NAME) && defined(KEY) && defined(TYPE))
 #error
 #else
 
@@ -20,8 +20,6 @@
 #define DELETED 0b1000'0000
 #define IS_FULL(ctrl) !(ctrl & 0x80)
 
-#define GROUP_WIDTH sizeof(size_t)
-
 /// Primary hash function, used for probing.
 static size_t h1(uint64_t hash) { return hash; }
 /// Secondary hash function, saved in the control byte.
@@ -34,11 +32,13 @@ static size_t capacity_to_buckets(size_t capacity) {
 	return capacity < 8 ? (capacity < 4 ? 4 : 8) : next_power_of_2(capacity * 8 / 7);
 }
 
+typedef size_t Group;
+
 /** Return the integer with all bytes equal to @arg x. */
 #define REPEAT(x) (x * (~0ULL / 0xff))
 
-#define FOR_SET_BITS(var, x) for (size_t __i = x, var;			\
-		__i && (var = __builtin_ctz(__i), 1); __i &= (__i - 1))
+#define FOR_SET_BITS(var, x) for (typeof(x) _i = x, var;			\
+		_i && (var = __builtin_ctzll(_i), true); _i &= (_i - 1))
 
 static size_t match_byte(unsigned char x, size_t group) {
 	size_t cmp = group ^ REPEAT(x);
@@ -47,64 +47,72 @@ static size_t match_byte(unsigned char x, size_t group) {
 static size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80); }
 
 #define PROBE(table, hash, bucket, group)								\
-	for (size_t bucket = h1(hash) & (table).bucket_mask, __probe_distance = 0, group; \
-			memcpy(&group, (table).ctrl + bucket, sizeof group), true;	\
+	for (size_t bucket = h1(hash) & (table)->bucket_mask, _probe_distance = 0, group; \
+			memcpy(&group, (table)->ctrl + bucket, sizeof group), true;	\
 			/* Triangular probing */									\
-			bucket = (bucket + GROUP_WIDTH * ++__probe_distance) & (table).bucket_mask)
+			bucket = (bucket + sizeof(Group) * ++_probe_distance) & (table)->bucket_mask)
+
+#define BUCKETS(table) ((typeof((table).buckets)) (table).ctrl - ((table).bucket_mask + 1))
+
+#define TBL_FOR_EACH(table, entry) for (typeof((table).buckets) _start = BUCKETS(table), \
+			entry = _start;	entry < _start + (table).bucket_mask + 1; ++entry) \
+		if (!IS_FULL((table).ctrl[entry - _start])) ; else
+
+#define CTRL_OFFSET(n) (((n) * sizeof(KEY) + MAX(alignof(KEY), alignof(Group)) - 1) \
+		& ~(MAX(alignof(KEY), alignof(Group)) - 1))
 
 #define SET_CTRL(table, i, x) \
-	((table).ctrl[(((i) - GROUP_WIDTH) & (table).bucket_mask) + GROUP_WIDTH] \
+	((table).ctrl[(((i) - sizeof(Group)) & (table).bucket_mask) + sizeof(Group)] \
 		= (table).ctrl[i] = (x))
 
-static unsigned char empty_ctrl[] __attribute__ ((aligned (GROUP_WIDTH)))
+static unsigned char empty_ctrl[] [[gnu::aligned (alignof(Group))]]
 	= { EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, };
-_Static_assert(LENGTH(empty_ctrl) >= GROUP_WIDTH);
+_Static_assert(LENGTH(empty_ctrl) >= sizeof(Group));
 #endif
 
 struct TYPE {
 	size_t bucket_mask, ///< = n - 1
 		growth_left,
 		len;
-	/// Array of n + GROUP_WIDTH - 1 "control" bytes.
+	/// Array of n + GROUP_WIDTH "control" bytes, preceded by n buckets of keys.
 	///
 	/// Each byte is one of:
 	/// * 0b1111_1111 (EMPTY)
 	/// * 0b1000_0000 (DELETED (tombstone))
 	/// * 0b0xxx_xxxx (FULL (x is a hash fragment))
-	unsigned char *ctrl;
-	KEY *buckets; ///< Array of n keys.
+	union { KEY *buckets; unsigned char *ctrl; };
 };
 
 struct TYPE CAT(NAME, _tbl_new)() { return (struct TYPE) { .ctrl = empty_ctrl, }; }
-void CAT(NAME, _tbl_free)(struct TYPE table) { if (table.buckets) free(table.ctrl); }
+void CAT(NAME, _tbl_free)(struct TYPE *table) {
+	if (table->bucket_mask) free(table->ctrl - CTRL_OFFSET(table->bucket_mask + 1));
+}
 
-KEY *CAT(NAME, _tbl_find)(struct TYPE table, KEY key) {
-	uint64_t h = KEY_HASH(key);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+KEY *CAT(NAME, _tbl_find)(struct TYPE *table, KEY key) {
+	uint64_t h = CAT(NAME, _hash)(key);
 	PROBE(table, h, bucket, group) {
 		// Search the group for h2 of the key
 		FOR_SET_BITS(i, match_byte(h2(h), group)) {
-			KEY *entry = table.buckets + ((bucket + i / CHAR_BIT) & table.bucket_mask);
-			// Check if keys are equal
-			if (__builtin_expect(KEY_EQUAL(*entry, key), true)) return entry;
+			KEY *entry = BUCKETS(*table) + ((bucket + i / CHAR_BIT) & table->bucket_mask);
+			if (__builtin_expect(CAT(NAME, _equal)(*entry, key), true)) return entry;
 		}
 		// Check if there were any empty matches
 		if (__builtin_expect(match_byte(EMPTY, group), true)) return NULL;
 	}
 }
 
-static size_t CAT(NAME, _tbl__find_insert_slot)(struct TYPE table, uint64_t h) {
+static size_t CAT(NAME, _tbl__find_insert_slot)(struct TYPE *table, uint64_t h) {
 	PROBE(table, h, bucket, group) {
-		unsigned x = match_empty_or_deleted(group);
+		size_t x = match_empty_or_deleted(group);
 		if (!__builtin_expect(x, true)) continue;
-		size_t match = (bucket + __builtin_ctz(x) / CHAR_BIT) & table.bucket_mask;
+		size_t match = (bucket + __builtin_ctzll(x) / CHAR_BIT) & table->bucket_mask;
 		// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
-		if (IS_FULL(table.ctrl[match])) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-			group = *(size_t *) table.ctrl;
-#pragma GCC diagnostic pop
-			match = (bucket + __builtin_ctz(match_empty_or_deleted(group)) / CHAR_BIT)
-				& table.bucket_mask;
+		if (IS_FULL(table->ctrl[match])) {
+			group = *(size_t *) table->ctrl;
+			match = (bucket + __builtin_ctzll(match_empty_or_deleted(group)) / CHAR_BIT)
+				& table->bucket_mask;
 		}
 		return match;
 	}
@@ -116,47 +124,38 @@ static void CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 		= MAX(table->len + additional, bucket_mask_to_capacity(table->bucket_mask) + 1),
 		n = capacity_to_buckets(new_capacity);
 
-	struct TYPE new_table;
-	new_table.bucket_mask = n - 1;
-	size_t buckets_offset
-		= (n + GROUP_WIDTH - 1 + alignof(KEY) - 1) & ~(alignof(KEY) - 1);
-	if (!(new_table.ctrl = malloc(buckets_offset + n * sizeof(KEY))))
-		exit(1);
-	memset(new_table.ctrl, EMPTY, n + GROUP_WIDTH);
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-	new_table.buckets = (KEY *) (new_table.ctrl + buckets_offset);
-#pragma GCC diagnostic pop
-
-	for (size_t i = 0; i < table->bucket_mask + 1; ++i) {
-		if (!IS_FULL(table->ctrl[i])) continue;
-
-		uint64_t h = KEY_HASH(table->buckets[i]);
-		size_t new_i = CAT(NAME, _tbl__find_insert_slot)(new_table, h);
+	unsigned char *ctrl;
+	size_t ctrl_offset = CTRL_OFFSET(n);
+	if (!(ctrl = malloc(ctrl_offset + n + sizeof(Group)))) exit(1);
+	memset(ctrl += ctrl_offset, EMPTY, n + sizeof(Group));
+	struct TYPE new_table = {
+		n - 1, bucket_mask_to_capacity(n - 1) - table->len, table->len, .ctrl = ctrl,
+	};
+	TBL_FOR_EACH(*table, x) {
+		uint64_t h = CAT(NAME, _hash)(*x);
+		size_t new_i = CAT(NAME, _tbl__find_insert_slot)(&new_table, h);
 		SET_CTRL(new_table, new_i, h2(h));
-		new_table.buckets[new_i] = table->buckets[i];
+		BUCKETS(new_table)[new_i] = *x;
 	}
-	new_table.growth_left = bucket_mask_to_capacity(new_table.bucket_mask)
-		- (new_table.len = table->len);
-
-	if (table->ctrl != empty_ctrl) free(table->ctrl);
+	CAT(NAME, _tbl_free)(table);
 	*table = new_table;
 }
 
 bool CAT(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
-	if ((*entry = CAT(NAME, _tbl_find)(*table, key))) return true;
+	if ((*entry = CAT(NAME, _tbl_find)(table, key))) return true;
 
-	uint64_t h = KEY_HASH(key);
-	if (__builtin_expect(table->growth_left == 0, false)) CAT(NAME, _tbl_reserve)(table, 1);
+	uint64_t h = CAT(NAME, _hash)(key);
+	if (__builtin_expect(!table->growth_left, false)) CAT(NAME, _tbl_reserve)(table, 1);
 
 	// Key is not present: Search for EMPTY/DELETED instead
-	size_t i = CAT(NAME, _tbl__find_insert_slot)(*table, h);
+	size_t i = CAT(NAME, _tbl__find_insert_slot)(table, h);
 	table->growth_left -= table->ctrl[i] & 1; // Avoid decrementing if replaced tombstone
 	++table->len;
 	SET_CTRL(*table, i, h2(h));
-	*(*entry = table->buckets + i) = key;
+	*(*entry = BUCKETS(*table) + i) = key;
 	return false;
 }
+#pragma GCC diagnostic pop
 
 void CAT(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
 	KEY *entry;
@@ -167,6 +166,4 @@ void CAT(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
 #undef NAME
 #undef KEY
 #undef TYPE
-#undef KEY_HASH
-#undef KEY_EQUAL
 #endif
