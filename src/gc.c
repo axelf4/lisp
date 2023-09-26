@@ -162,7 +162,7 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 		// Demand-driven overflow allocation
 		block = &heap->overflow;
 		ptr = &heap->overflow_ptr;
-		if (block && (p = bump_alloc(ptr, alignof(max_align_t), size))) goto success;
+		if (*block && (p = bump_alloc(ptr, alignof(max_align_t), size))) goto success;
 	}
 
 	// Acquire a free block

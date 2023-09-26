@@ -17,8 +17,10 @@ static inline unsigned int next_power_of_2(unsigned int x) {
 	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - __builtin_clz(x)) : x;
 }
 
-static inline uint64_t rotate_left(uint64_t x, uint64_t n) {
-	return (x << n) | ((x >> (sizeof x - n)) & ~(-1 << n));
+static inline uint64_t rotate_left(uint64_t x, unsigned n) {
+	const unsigned mask = CHAR_BIT * sizeof n - 1;
+	n &= mask;
+	return (x << n) | (x >> (-n & mask));
 }
 
 #define FX_SEED64 0x517cc1b727220a95
