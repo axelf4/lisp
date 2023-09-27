@@ -4,8 +4,8 @@
 #error
 #else
 
-#ifndef TBL_IMPL
-#define TBL_IMPL
+#ifndef TBL_H
+#define TBL_H
 
 #include <stddef.h>
 #include <stdbool.h>
@@ -90,6 +90,8 @@ void CAT(NAME, _tbl_free)(struct TYPE *table) {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
+#pragma GCC diagnostic ignored "-Wanalyzer-out-of-bounds"
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
 KEY *CAT(NAME, _tbl_find)(struct TYPE *table, KEY key) {
 	uint64_t h = CAT(NAME, _hash)(key);
 	PROBE(table, h, bucket, group) {
@@ -156,12 +158,6 @@ bool CAT(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
 	return false;
 }
 #pragma GCC diagnostic pop
-
-void CAT(NAME, _tbl_insert)(struct TYPE *table, KEY key) {
-	KEY *entry;
-	CAT(NAME, _tbl_entry)(table, key, &entry);
-	*entry = key;
-}
 
 #undef NAME
 #undef KEY

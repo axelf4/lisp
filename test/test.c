@@ -23,6 +23,12 @@ static bool my_equal(int a, int b) { return a == b; }
 #define TYPE HashTable
 #include "tbl.h"
 
+void my_tbl_insert(struct HashTable *table, int key) {
+	int *entry;
+	my_tbl_entry(table, key, &entry);
+	*entry = key;
+}
+
 void test_hash_table(void **) {
 	struct HashTable table = my_tbl_new();
 	my_tbl_insert(&table, 1);
