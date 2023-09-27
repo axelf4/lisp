@@ -4,6 +4,7 @@
 #include <roaring/roaring.h>
 #include <sys/mman.h>
 #include <ucontext.h>
+#include <sanitizer/asan_interface.h>
 #include "util.h"
 
 #define BLOCKS_PER_CHUNK 128
@@ -98,6 +99,8 @@ static struct GcBlock *acquire_block(struct Heap *heap) {
 #endif
 		if (!vec_push(&heap->free, block)) return NULL;
 	}
+	for (struct GcBlock *block = blocks; block < blocks + BLOCKS_PER_CHUNK; ++block)
+		ASAN_POISON_MEMORY_REGION(block->data, sizeof blocks->data);
 
 	struct Chunk *chunk;
 	if (!(chunk = malloc(sizeof *chunk))) return NULL;
@@ -172,9 +175,10 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 	*ptr = empty_block_ptr(*block = new_block);
 	p = bump_alloc(ptr, alignof(max_align_t), size);
 success:
+	ASAN_UNPOISON_MEMORY_REGION(p, size);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wanalyzer-null-dereference"
+#pragma GCC diagnostic ignored "-Wnull-dereference"
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) {
 		.mark = heap->mark_color, .tib = tib,
 	};
@@ -238,8 +242,7 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 extern void *__libc_stack_end;
 [[gnu::no_sanitize_address]] static void collect_roots(void *x) {
 	struct Heap *heap = x;
-	void *base = __libc_stack_end,
-		*sp = __builtin_frame_address(0);
+	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
 	sp = (void *) (((uintptr_t) sp + alignof(void *) - 1)
 		& ~(alignof(void *) - 1)); // Round up to alignment
 	for (uintptr_t *p = sp; p < (uintptr_t *) base; ++p) {
@@ -265,6 +268,7 @@ static enum BlockStatus sweep_block(struct GcBlock *block) {
 	unsigned unavailable_lines = 0;
 	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
 		if (block->line_marks[i]) ++unavailable_lines;
+		else ASAN_POISON_MEMORY_REGION(block->data + GC_LINE_SIZE * i, GC_LINE_SIZE);
 	return !unavailable_lines ? FREE
 		: unavailable_lines < GC_LINE_COUNT ? RECYCLABLE
 		: UNAVAILABLE;
