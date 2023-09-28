@@ -6,12 +6,6 @@
 
 struct Heap *heap;
 
-struct Symbol {
-	size_t len;
-	const char *name;
-	LispObject *value;
-};
-
 static uint64_t symbol_hash(struct Symbol *x) { return XXH3_64bits(x->name, x->len); }
 
 static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
@@ -23,20 +17,10 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 #define TYPE SymbolTable
 #include "tbl.h"
 
-struct Subr {
-	union {
-		LispObject *(*a0)();
-		LispObject *(*a1)(LispObject *);
-		LispObject *(*a2)(LispObject *, LispObject *);
-		LispObject *(*a3)(LispObject *, LispObject *, LispObject *);
-	};
-	const char *name;
-	unsigned char min_args;
-	struct Subr *next;
-} *subr_head;
-
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
 #define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+struct Subr *subr_head;
 
 #define DEFUN(lname, cname, args, ...)									\
 	static LispObject *F ## cname args;									\
@@ -50,10 +34,6 @@ struct Subr {
 		subr_head = &lisp_subr_ ## cname;								\
 	}																	\
 	static LispObject *F ## cname args
-
-struct Function {
-	struct Subr *subr;
-};
 
 struct LispContext {
 	struct SymbolTable symbol_tbl;
@@ -126,6 +106,10 @@ LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]
 	return *entry;
 }
 
+LispObject *intern_c_string(struct LispContext *ctx, const char *s) {
+	return intern(ctx, strlen(s), s);
+}
+
 LispObject *lisp_integer(int i) {
 	int *p = gc_alloc(heap, sizeof *p, &integer_tib.gc_tib);
 	*p = i;
@@ -158,8 +142,9 @@ void lisp_print(LispObject *object) {
 	case LISP_FUNCTION:
 		printf("#<subr %s>", ((struct Function *) object)->subr->name);
 		break;
+	case LISP_CLOSURE: printf("#<closure>"); break;
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
-	default: puts("Tried to print object with bad type"); exit(1); break;
+	default: UNREACHABLE("Bad object type\n");
 	}
 }
 
@@ -198,45 +183,18 @@ void lisp_free(struct LispContext *ctx) {
 	symbol_tbl_free(&ctx->symbol_tbl);
 }
 
-static LispObject *pop(LispObject **x) {
-	if (lisp_type(*x) != LISP_CONS) return NULL;
-	struct Cons *cell = *x, *result = cell->car;
-	*x = cell->cdr;
-	return result;
-}
-
-LispObject *lisp_eval(struct LispContext *, LispObject *x) {
-	switch (lisp_type(x)) {
-	case LISP_NIL: case LISP_INTEGER: return x;
-	case LISP_SYMBOL:
-		struct Symbol *sym = x;
-		return sym->value;
-	case LISP_CONS:
-		LispObject *head = pop(&x);
-		if (lisp_type(head) != LISP_SYMBOL) { puts("Bad symbol"); return NULL; }
-		LispObject *fun_val = ((struct Symbol *) head)->value;
-		if (lisp_type(fun_val) != LISP_FUNCTION) { puts("Bad function"); return NULL; }
-		struct Subr *subr = ((struct Function *) fun_val)->subr;
-		LispObject *args[8];
-		for (unsigned i = 0; i < subr->min_args; ++i) {
-			if (lisp_type(x) != LISP_CONS) { printf("Too few arguments\n"); return NULL; }
-			args[i] = pop(&x);
-		}
-		switch (subr->min_args) {
-		case 0: return subr->a0();
-		case 1: return subr->a1(args[0]);
-		case 2: return subr->a2(args[0], args[1]);
-		case 3: return subr->a3(args[0], args[1], args[2]);
-		}
-		return NULL;
-	default: exit(1);
-	}
-}
-
 DEFUN("+", add, (LispObject *a, LispObject *b)) {
 	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
 		return NULL;
 	return lisp_integer(*(int *) a + *(int *) b);
 }
+
+DEFUN("<", lt, (LispObject *a, LispObject *b)) {
+	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
+		return NULL;
+	return *(int *) a < *(int *) b ? lisp_integer(1) : NULL;
+}
+
+DEFUN("print", print, (LispObject *x)) { lisp_print(x); puts(""); return NULL; }
 
 DEFUN("nop", nop, ()) { return NULL; }

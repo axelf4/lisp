@@ -12,6 +12,7 @@ enum LispObjectType {
 	LISP_CONS,
 	LISP_SYMBOL,
 	LISP_FUNCTION,
+	LISP_CLOSURE,
 	LISP_INTEGER,
 };
 
@@ -20,7 +21,6 @@ struct LispTypeInfo {
 	enum LispObjectType tag;
 };
 
-typedef uintptr_t LispSymbol;
 typedef void LispObject;
 
 static inline enum LispObjectType lisp_type(LispObject *p) {
@@ -29,6 +29,26 @@ static inline enum LispObjectType lisp_type(LispObject *p) {
 		= (struct LispTypeInfo *) ((struct GcObjectHeader *) p - 1)->tib;
 	return tib->tag;
 }
+
+struct Symbol {
+	size_t len;
+	const char *name;
+	LispObject *value;
+};
+
+struct Subr {
+	union {
+		LispObject *(*a0)();
+		LispObject *(*a1)(LispObject *);
+		LispObject *(*a2)(LispObject *, LispObject *);
+		LispObject *(*a3)(LispObject *, LispObject *, LispObject *);
+	};
+	const char *name;
+	unsigned char min_args;
+	struct Subr *next;
+};
+
+struct Function { struct Subr *subr; };
 
 struct Cons {
 	LispObject *car, *cdr;
@@ -39,6 +59,9 @@ LispObject *cons(LispObject *car, LispObject *cdr);
 LispObject *lisp_integer(int i);
 
 LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]);
+
+/** Interns a NULL-terminated string. */
+LispObject *intern_c_string(struct LispContext *ctx, const char *s);
 
 enum LispReadError {
 	LISP_READ_OK,
@@ -58,6 +81,10 @@ struct LispContext *lisp_init();
 
 void lisp_free(struct LispContext *);
 
-LispObject *lisp_eval(struct LispContext *ctx, LispObject *x);
+LispObject *lisp_eval(struct LispContext *ctx, LispObject *form);
+
+static inline bool listp(LispObject *x) {
+	return !x || lisp_type(x) == LISP_CONS;
+}
 
 #endif

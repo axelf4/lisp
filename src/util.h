@@ -28,6 +28,9 @@ static inline unsigned int next_power_of_2(unsigned int x) {
 #error Unknown byte-order
 #endif
 
+#define UNREACHABLE(fmt, ...) do { fprintf(stderr, fmt __VA_OPT__(,) __VA_ARGS__); \
+		__builtin_trap(); } while (0)
+
 static inline uint64_t rotate_left(uint64_t x, unsigned n) {
 	const unsigned mask = CHAR_BIT * sizeof n - 1;
 	n &= mask;
