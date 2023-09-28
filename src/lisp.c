@@ -63,7 +63,7 @@ static size_t string_size(void *x) { return strlen(x) + 1; }
 
 static void string_trace(struct Heap *, void *x) { gc_mark(string_size(x), x); }
 
-static struct GcTypeInfo string_tib = { string_size, string_trace };
+static struct GcTypeInfo string_tib = { string_trace, string_size };
 
 static size_t cons_size(void *) { return sizeof(struct Cons); }
 
@@ -91,16 +91,16 @@ static size_t integer_size(void *) { return sizeof(int); }
 static void trace_small(struct Heap *, void *x) { gc_mark(1, x); }
 
 static struct LispTypeInfo cons_tib = {
-	.gc_tib = { cons_size, cons_trace },
+	.gc_tib = { cons_trace, cons_size },
 	.tag = LISP_CONS,
 }, symbol_tib = {
-	.gc_tib = { symbol_size, symbol_trace },
+	.gc_tib = { symbol_trace, symbol_size },
 	.tag = LISP_SYMBOL,
 }, function_tib = {
-	.gc_tib = { function_size, trace_small },
+	.gc_tib = { trace_small, function_size },
 	.tag = LISP_FUNCTION,
 }, integer_tib = {
-	.gc_tib = { integer_size, trace_small },
+	.gc_tib = { trace_small, integer_size },
 	.tag = LISP_INTEGER,
 };
 
@@ -175,7 +175,7 @@ static void lisp_ctx_trace(struct Heap *, void *x) {
 #pragma GCC diagnostic pop
 }
 
-struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_size, lisp_ctx_trace };
+struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
 
 struct LispContext *lisp_init() {
 	struct LispContext *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);

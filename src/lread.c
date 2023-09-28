@@ -1,5 +1,4 @@
 #include <stddef.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include "lisp.h"
 

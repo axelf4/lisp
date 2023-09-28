@@ -1,11 +1,16 @@
 #include "gc.h"
-#include <stdalign.h>
 #include <stdlib.h>
 #include <roaring/roaring.h>
 #include <sys/mman.h>
 #include <ucontext.h>
-#include <sanitizer/asan_interface.h>
 #include "util.h"
+
+#ifdef __SANITIZE_ADDRESS__
+#include <sanitizer/asan_interface.h>
+#else
+#define ASAN_POISON_MEMORY_REGION(addr, size) ((void) (addr), (void) (size))
+#define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void) (addr), (void) (size))
+#endif
 
 #define BLOCKS_PER_CHUNK 128
 
@@ -19,8 +24,7 @@ static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 		: NULL;
 }
 
-_Static_assert(sizeof(struct GcBlock) == GC_BLOCK_SIZE);
-_Static_assert(!(GC_LINE_SIZE % alignof(max_align_t)));
+static_assert(!(GC_LINE_SIZE % alignof(max_align_t)));
 /** Locate next gap of unmarked lines of sufficient size. */
 static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size) {
 	unsigned required_lines = (size + GC_LINE_SIZE - 1) / GC_LINE_SIZE, count = 0,
@@ -50,8 +54,8 @@ struct Vec {
 
 static bool vec_push(struct Vec *vec, void *x) {
 	if (vec->length >= vec->capacity) {
-		void **items;
 		size_t new_capacity = vec->capacity ? 2 * vec->capacity : 2;
+		void **items;
 		if (!(items = realloc(vec->items, new_capacity * sizeof *items)))
 			return false;
 		vec->items = items;
@@ -86,31 +90,27 @@ static struct GcBlock *acquire_block(struct Heap *heap) {
 	struct GcBlock *block;
 	if ((block = vec_pop(&heap->free))) return block;
 
-	struct GcBlock *blocks;
-	if ((blocks = mmap(NULL, (BLOCKS_PER_CHUNK + 1) * sizeof *blocks - 1,
+	void *p;
+	if ((p = mmap(NULL, (BLOCKS_PER_CHUNK + 1) * sizeof *block - 1,
 				PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
-		== MAP_FAILED)
-		return NULL;
+		== MAP_FAILED) return NULL;
 	// Align to block boundary
-	blocks = (struct GcBlock *) (((uintptr_t) (blocks + 1) - 1) & ~(sizeof *blocks - 1));
-	for (struct GcBlock *block = blocks + 1; block < blocks + BLOCKS_PER_CHUNK; ++block) {
+	struct GcBlock *blocks = (struct GcBlock *)
+		(((uintptr_t) p + sizeof *blocks - 1) & ~(sizeof *blocks - 1));
+	for (struct GcBlock *block = blocks; block < blocks + BLOCKS_PER_CHUNK; ++block) {
+		ASAN_POISON_MEMORY_REGION(block->data, sizeof blocks->data);
 #ifndef __linux__
 		memset(block->line_marks, 0, sizeof block->line_marks);
 #endif
-		if (!vec_push(&heap->free, block)) return NULL;
 	}
-	for (struct GcBlock *block = blocks; block < blocks + BLOCKS_PER_CHUNK; ++block)
-		ASAN_POISON_MEMORY_REGION(block->data, sizeof blocks->data);
+	for (struct GcBlock *block = blocks + 1; block < blocks + BLOCKS_PER_CHUNK; ++block)
+		if (!vec_push(&heap->free, block)) return NULL;
 
 	struct Chunk *chunk;
 	if (!(chunk = malloc(sizeof *chunk))) return NULL;
 	*chunk = (struct Chunk) { .data = blocks, .next = heap->chunks };
 	roaring_bitmap_init_cleared(&chunk->object_map);
 	heap->chunks = chunk;
-
-#ifndef __linux__
-	memset(blocks->line_marks, 0, sizeof blocks->line_marks);
-#endif
 	return blocks;
 }
 
@@ -142,9 +142,8 @@ enum {
 
 #define MIN_FREE (BLOCKS_PER_CHUNK / (100 / 3) + 3)
 
-_Static_assert(!(sizeof(struct GcObjectHeader) % alignof(max_align_t)));
 void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
-	if ((size += sizeof(struct GcObjectHeader)) > GC_BLOCK_CAPACITY) return NULL;
+	if ((size += sizeof(struct GcObjectHeader)) > sizeof heap->head->data) return NULL;
 	char *p;
 	struct GcBlock **block = &heap->head;
 	struct BumpPointer *ptr = &heap->ptr;
@@ -157,7 +156,7 @@ void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
 		struct GcBlock *new_block;
 		if ((new_block = vec_pop(&heap->recycled))) {
 			// Recycled blocks have gaps of >=1 lines; enough for a small obj
-			*ptr = next_gap(*block = new_block, new_block->data + GC_BLOCK_CAPACITY, size);
+			*ptr = next_gap(*block = new_block, new_block->data + sizeof new_block->data, size);
 			p = bump_alloc(ptr, alignof(max_align_t), size);
 			goto success;
 		}
@@ -179,6 +178,7 @@ success:
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
 #pragma GCC diagnostic ignored "-Wnull-dereference"
+#pragma GCC diagnostic ignored "-Wanalyzer-null-dereference"
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) {
 		.mark = heap->mark_color, .tib = tib,
 	};
@@ -258,13 +258,11 @@ extern void *__libc_stack_end;
 	}
 }
 
-enum BlockStatus {
-	FREE,
+static enum BlockStatus {
+	FREE, ///< Unallocated.
 	RECYCLABLE, ///< Partly used with at least F=1 free lines.
 	UNAVAILABLE, ///< No unmarked lines.
-};
-
-static enum BlockStatus sweep_block(struct GcBlock *block) {
+} sweep_block(struct GcBlock *block) {
 	unsigned unavailable_lines = 0;
 	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
 		if (block->line_marks[i]) ++unavailable_lines;
@@ -310,10 +308,10 @@ void garbage_collect(struct Heap *heap) {
 		}
 
 	if (heap->defrag) {
-		ssize_t available_space = GC_BLOCK_CAPACITY * heap->free.length;
+		ssize_t available_space = GC_LINE_SIZE * GC_LINE_COUNT * heap->free.length;
 		unsigned bin = MAX_HOLES;
 		do available_space -= GC_LINE_SIZE * mark_histogram[--bin];
-		while (available_space > 0 && bin);
+		while (available_space && bin);
 
 		for (size_t i = 0; i < heap->rest.length; ++i) {
 			struct GcBlock *block = heap->rest.items[i];
@@ -341,9 +339,9 @@ void garbage_collect(struct Heap *heap) {
 
 	size_t j = 0;
 	for (size_t i = 0; i < heap->rest.length; ++i) {
-		struct GcBlock *block = heap->rest.items[j] = heap->rest.items[i];
+		struct GcBlock *block = heap->rest.items[i];
 		switch (sweep_block(block)) {
-		case UNAVAILABLE: ++j; break;
+		case UNAVAILABLE: heap->rest.items[j++] = block; break;
 		case RECYCLABLE: vec_push(&heap->recycled, block); break;
 		case FREE: vec_push(&heap->free, block); break;
 		}

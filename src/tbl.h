@@ -1,4 +1,8 @@
-/** Swiss tables SWAR implementation. */
+/**
+ * Swiss tables SWAR implementation.
+ *
+ * See: https://abseil.io/about/design/swisstables
+ */
 
 #if !(defined(NAME) && defined(KEY) && defined(TYPE))
 #error
@@ -8,9 +12,7 @@
 #define TBL_H
 
 #include <stddef.h>
-#include <stdbool.h>
 #include <stdint.h>
-#include <stdalign.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
@@ -65,9 +67,9 @@ static size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80)
 	((table).ctrl[(((i) - sizeof(Group)) & (table).bucket_mask) + sizeof(Group)] \
 		= (table).ctrl[i] = (x))
 
-static unsigned char empty_ctrl[] [[gnu::aligned (alignof(Group))]]
+static alignas(Group) unsigned char empty_ctrl[]
 	= { EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, };
-_Static_assert(LENGTH(empty_ctrl) >= sizeof(Group));
+static_assert(LENGTH(empty_ctrl) >= sizeof(Group));
 #endif
 
 struct TYPE {
@@ -143,6 +145,11 @@ static void CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	*table = new_table;
 }
 
+/**
+ * Insert @arg key if not already present, and output the entry into @arg entry.
+ *
+ * @return Whether the key already existed.
+ */
 bool CAT(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
 	if ((*entry = CAT(NAME, _tbl_find)(table, key))) return true;
 
