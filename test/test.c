@@ -15,7 +15,7 @@ void test_next_power_of_2(void **) {
 	assert_int_equal(next_power_of_2(8), 8);
 }
 
-static uint64_t my_hash(int key) { return fxhash64(0, key); }
+static uint64_t my_hash(int key) { return key; }
 static bool my_equal(int a, int b) { return a == b; }
 
 #define NAME my
@@ -38,6 +38,14 @@ void test_hash_table(void **) {
 	my_tbl_free(&table);
 }
 
+void test_reader(void **state) {
+	LispObject *result;
+	assert_int_equal(lisp_read_whole(*state, "(0 .", &result), LISP_READ_EOF);
+}
+
+static int setup_lisp(void **state) { *state = lisp_init(); return 0; }
+static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
+
 int main(void) {
 	if (!(heap = gc_new())) return 1;
 
@@ -46,5 +54,11 @@ int main(void) {
 		cmocka_unit_test(test_next_power_of_2),
 		cmocka_unit_test(test_hash_table),
 	};
-	return cmocka_run_group_tests(tests, NULL, NULL);
+	int result;
+	if ((result = cmocka_run_group_tests(tests, NULL, NULL))) return result;
+
+	const struct CMUnitTest lisp_tests[] = {
+		cmocka_unit_test(test_reader),
+	};
+	return cmocka_run_group_tests(lisp_tests, setup_lisp, teardown_lisp);
 }
