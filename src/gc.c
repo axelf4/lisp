@@ -31,14 +31,13 @@ static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size
 		end = (top - (char *) block) / GC_LINE_SIZE;
 	for (unsigned i = end; i-- > 0;)
 		if (block->line_marks[i]) {
-			if (count > required_lines) {
+			if (count > required_lines)
 				// At least 2 preceeding lines were unmarked. Consider
 				// the previous block as conservatively marked.
 				return (struct BumpPointer) {
 					block->data + GC_LINE_SIZE * end,
 					block->data + GC_LINE_SIZE * (i + 2),
 				};
-			}
 			count = 0;
 			end = i;
 		} else ++count;

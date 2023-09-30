@@ -122,15 +122,15 @@ static size_t CAT(NAME, _tbl__find_insert_slot)(struct TYPE *table, uint64_t h) 
 	}
 }
 
-static void CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
-	if (__builtin_expect(additional <= table->growth_left, true)) return;
+static bool CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
+	if (__builtin_expect(additional <= table->growth_left, true)) return true;
 	size_t new_capacity
 		= MAX(table->len + additional, bucket_mask_to_capacity(table->bucket_mask) + 1),
 		n = capacity_to_buckets(new_capacity);
 
 	unsigned char *ctrl;
 	size_t ctrl_offset = CTRL_OFFSET(n);
-	if (!(ctrl = malloc(ctrl_offset + n + sizeof(Group)))) exit(1);
+	if (!(ctrl = malloc(ctrl_offset + n + sizeof(Group)))) return false;
 	memset(ctrl += ctrl_offset, EMPTY, n + sizeof(Group));
 	struct TYPE new_table = {
 		n - 1, bucket_mask_to_capacity(n - 1) - table->len, table->len, .ctrl = ctrl,
@@ -143,6 +143,7 @@ static void CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 	}
 	CAT(NAME, _tbl_free)(table);
 	*table = new_table;
+	return true;
 }
 
 /**
@@ -154,7 +155,8 @@ bool CAT(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
 	if ((*entry = CAT(NAME, _tbl_find)(table, key))) return true;
 
 	uint64_t h = CAT(NAME, _hash)(key);
-	if (__builtin_expect(!table->growth_left, false)) CAT(NAME, _tbl_reserve)(table, 1);
+	if (!(__builtin_expect(table->growth_left, true) || CAT(NAME, _tbl_reserve)(table, 1)))
+		return (*entry = NULL);
 
 	// Key is not present: Search for EMPTY/DELETED instead
 	size_t i = CAT(NAME, _tbl__find_insert_slot)(table, h);

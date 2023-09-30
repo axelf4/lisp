@@ -6,7 +6,7 @@ static bool is_whitespace(char c) {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-static bool is_integer(char c) { return '0' <= c && c <= '9'; }
+static bool is_digit(char c) { return '0' <= c && c <= '9'; }
 
 /** Skip whitespace and comments. */
 static void skip_whitespace(const char **s) {
@@ -24,21 +24,18 @@ static int read_integer(const char **s) {
 	case '+': ++*s;
 	}
 	int result = 0;
-	while ('0' <= **s && **s <= '9')
-		result = 10 * result + (*(*s)++ - '0');
+	while (is_digit(**s)) result = 10 * result + (*(*s)++ - '0');
 	return sign * result;
 }
 
 static struct LispObject *read_symbol(struct LispContext *ctx, const char **s) {
-	const char *start = *s;
-	for (;; ++*s)
+	for (const char *start = *s;; ++*s)
 		switch (**s) {
-		case '\0': case '(': case ')': case '.': goto done;
 		default:
-			if (is_whitespace(**s)) goto done;
-			break;
+			if (is_whitespace(**s))
+			case '\0': case '(': case ')': case '.':
+				return intern(ctx, *s - start, start);
 		}
-done: return intern(ctx, *s - start, start);
 }
 
 union StackElement {
@@ -59,7 +56,7 @@ enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject
 	struct LispObject *value;
 val_beg:
 	if (**s == '(') { ++*s; goto list_beg; }
-	if (is_integer(**s) || ((**s == '+' || **s == '-') && is_integer(1[*s])))
+	if (is_digit(**s) || ((**s == '+' || **s == '-') && is_digit(1[*s])))
 		value = lisp_integer(read_integer(s));
 	else if (__builtin_expect(!**s, false)) return LISP_READ_EOF;
 	else value = read_symbol(ctx, s);
@@ -97,6 +94,5 @@ enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispO
 	enum LispReadError error;
 	if ((error = lisp_read(ctx, &s, result))) return error;
 	skip_whitespace(&s);
-	if (*s != '\0') return LISP_READ_TRAILING;
-	return LISP_READ_OK;
+	return *s == '\0' ? LISP_READ_OK : LISP_READ_TRAILING;
 }
