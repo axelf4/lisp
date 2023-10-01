@@ -10,34 +10,34 @@
           pname = "croaring";
           version = "1.3.0";
 
-          src = prev.fetchFromGitHub {
+          src = final.fetchFromGitHub {
             owner = "RoaringBitmap";
             repo = "CRoaring";
             rev = "v${version}";
             hash = "sha256-InyGzdGa+5eam5kiSZIna7xFnsImoi7Z5iZ7i8vTRIU=";
           };
 
-          nativeBuildInputs = [ prev.cmake ];
+          # roaring.pc.in cannot handle absolute CMAKE_INSTALL_*DIRs, nor
+          # overridden CMAKE_INSTALL_FULL_*DIRs. With Nix, they are guaranteed
+          # to be absolute so the following patch suffices (see #144170).
+          patches = [ ./croaring-1.patch ];
+
+          nativeBuildInputs = [ final.cmake ];
 
           doCheck = true;
 
-          # cmakeFlags = [ "-DENABLE_ROARING_MICROBENCHMARKS=OFF" ];
-
-          # roaring.pc.in cannot handle absolute CMAKE_INSTALL_*DIRs,
-          # nor overridden CMAKE_INSTALL_FULL_*DIRs. With Nix, they
-          # are guaranteed absolute so the following patch suffices
-          # (see #144170).
-          patches = [ ./croaring-1.patch ];
-
+          # Once commit 0434058, which introduced the OFF-by-default option
+          # ENABLE_ROARING_MICROBENCHMARKS, gets included in a stable release,
+          # the google_benchmarks dependency can be removed.
           preConfigure = ''
             mkdir -p dependencies/.cache
-            ln -s ${prev.fetchFromGitHub {
+            ln -s ${final.fetchFromGitHub {
               owner = "clibs";
               repo = "cmocka";
               rev = "f5e2cd7";
               hash = "sha256-Oq0nFsZhl8IF7kQN/LgUq8VBy+P7gO98ep/siy5A7Js=";
             }} dependencies/.cache/cmocka
-            ln -s ${prev.fetchFromGitHub {
+            ln -s ${final.fetchFromGitHub {
               owner = "google";
               repo = "benchmark";
               rev = "f91b6b4";
@@ -48,8 +48,20 @@
       }) ];
     };
   in {
+    packages.x86_64-linux.default = pkgs.gcc13Stdenv.mkDerivation {
+      name = "lisp";
+      src = builtins.path { path = ./.; name = "lisp"; };
+
+      nativeBuildInputs = [ pkgs.cmake ];
+      buildInputs = with pkgs; [ croaring xxHash ];
+      checkInputs = [ pkgs.cmocka ];
+
+      doCheck = true;
+    };
+
     devShells.x86_64-linux.default = pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } {
-      buildInputs = with pkgs; [ cmake croaring xxHash cmocka valgrind ];
+      inputsFrom = [ self.packages.x86_64-linux.default ];
+      buildInputs = with pkgs; [ valgrind ];
     };
   };
 }

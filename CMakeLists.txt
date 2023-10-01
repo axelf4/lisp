@@ -24,3 +24,5 @@ set_target_properties(unittest PROPERTIES C_STANDARD 23)
 target_include_directories(unittest PRIVATE cmocka "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(unittest cmocka lisplib)
 add_test(unittest unittest)
+
+install(TARGETS lisp)
