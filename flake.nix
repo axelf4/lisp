@@ -8,13 +8,13 @@
       overlays = [ (final: prev: {
         croaring = pkgs.stdenv.mkDerivation rec {
           pname = "croaring";
-          version = "1.3.0";
+          version = "2.0.2";
 
           src = final.fetchFromGitHub {
             owner = "RoaringBitmap";
             repo = "CRoaring";
             rev = "v${version}";
-            hash = "sha256-InyGzdGa+5eam5kiSZIna7xFnsImoi7Z5iZ7i8vTRIU=";
+            hash = "sha256-lskBScll3g8MslyXiDxOxIwCukJm65wwbBMX5PjM1w4=";
           };
 
           # roaring.pc.in cannot handle absolute CMAKE_INSTALL_*DIRs, nor
@@ -26,9 +26,6 @@
 
           doCheck = true;
 
-          # Once commit 0434058, which introduced the OFF-by-default option
-          # ENABLE_ROARING_MICROBENCHMARKS, gets included in a stable release,
-          # the google_benchmarks dependency can be removed.
           preConfigure = ''
             mkdir -p dependencies/.cache
             ln -s ${final.fetchFromGitHub {
@@ -37,12 +34,6 @@
               rev = "f5e2cd7";
               hash = "sha256-Oq0nFsZhl8IF7kQN/LgUq8VBy+P7gO98ep/siy5A7Js=";
             }} dependencies/.cache/cmocka
-            ln -s ${final.fetchFromGitHub {
-              owner = "google";
-              repo = "benchmark";
-              rev = "f91b6b4";
-              hash = "sha256-EAJk3JhLdkuGKRMtspTLejck8doWPd7Z0Lv/Mvf3KFY=";
-            }} dependencies/.cache/google_benchmarks
           '';
         };
       }) ];
