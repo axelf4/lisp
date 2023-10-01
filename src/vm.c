@@ -11,15 +11,14 @@
 enum Op : uint8_t {
 	RET,
 		LOAD_NIL,
+		LOAD_OBJ,
 		LOAD_SHORT,
-		LOAD_INT,
 		GETGLOBAL,
 		GETUPVALUE,
 		CALL,
 		MOV,
 		JMP,
-		// Conditional jump.
-		JNIL,
+		JNIL, ///< Conditional jump.
 		CLOS,
 		CLOSE_UPVALS, ///< Close stack variables up to R(A).
 		};
@@ -60,8 +59,8 @@ void disassemble(struct Chunk *chunk, const char *name) {
 		switch (ins.op) {
 		case RET: printf("RET %d\n", ins.a); break;
 		case LOAD_NIL: printf("LOAD_NIL %d <- NIL\n", ins.a); break;
+		case LOAD_OBJ: printf("LOAD_OBJ %d <- %p\n", ins.a, chunk->ins[i++].v); break;
 		case LOAD_SHORT: printf("LOAD_SHORT %d <- %d\n", ins.a, (int16_t) ins.b); break;
-		case LOAD_INT: printf("LOAD_INT %d <- %d\n", ins.a, chunk->ins[i++].i); break;
 		case GETGLOBAL: printf("GETGLOBAL %d <- [%s]\n", ins.a,
 			((struct Symbol *) chunk->ins[i++].v)->name); break;
 		case GETUPVALUE: printf("GETUPVALUE %d <- %u\n", ins.a, ins.b); break;
@@ -152,8 +151,8 @@ static LispObject *run(struct Chunk *chunk) {
 				break;
 			} else return stack[ins.a];
 		case LOAD_NIL: stack[ins.a] = NULL; break;
+		case LOAD_OBJ: stack[ins.a] = xs[ip++].v; break;
 		case LOAD_SHORT: stack[ins.a] = lisp_integer((int16_t) ins.b); break;
-		case LOAD_INT: stack[ins.a] = lisp_integer(xs[ip++].i); break;
 		case GETGLOBAL:
 			stack[ins.a] = ((struct Symbol *) xs[ip++].v)->value;
 			break;
@@ -211,8 +210,7 @@ static LispObject *run(struct Chunk *chunk) {
 			stack[ins.a] = closure;
 			break;
 		case CLOSE_UPVALS:
-			LispObject **limit = stack + ins.a;
-			while (upvalues && upvalues->location >= limit) {
+			while (upvalues && upvalues->location >= stack + ins.a) {
 				struct ObjUpvalue *x = upvalues;
 				x->closed = *x->location;
 				x->location = &x->closed;
@@ -223,13 +221,6 @@ static LispObject *run(struct Chunk *chunk) {
 		default: UNREACHABLE("Bad instruction\n");
 		}
 	}
-}
-
-static LispObject *pop(LispObject **x) {
-	if (lisp_type(*x) != LISP_CONS) return NULL;
-	struct Cons *cell = *x, *result = cell->car;
-	*x = cell->cdr;
-	return result;
 }
 
 #define MAX_LOCAL_VARS 192
@@ -261,7 +252,7 @@ struct ByteCompCtx {
 	size_t num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
 
-	struct Symbol *flambda, *fif, *flet, *fprogn;
+	struct Symbol *flambda, *fif, *flet, *fprogn, *fquote;
 
 	size_t count, capacity;
 	union Instruction *ins;
@@ -297,7 +288,7 @@ static struct VarRef {
 
 enum FormValueKind {
 	KIND_NIL,
-	KIND_INT,
+	KIND_OBJ,
 	KIND_GLOBAL, ///< Global symbol value. sym = the symbol
 	KIND_LOCAL, ///< Local register. reg = the register
 	KIND_UPVALUE, ///< Upvalue. reg = the upvalue index
@@ -307,7 +298,7 @@ struct FormValue {
 	enum FormValueKind kind;
 	union {
 		Register reg;
-		int32_t i;
+		LispObject *obj;
 		struct Symbol *sym;
 	};
 };
@@ -329,12 +320,14 @@ static void store(struct ByteCompCtx *ctx, Register reg, struct FormValue x) {
 	case KIND_NIL: 
 		emit(ctx, (union Instruction) { .op = LOAD_NIL, .a = reg });
 		break;
-	case KIND_INT:
-		if (INT16_MIN <= x.i && x.i <= INT16_MAX)
-			emit(ctx, (union Instruction) { .op = LOAD_SHORT, .a = reg, .b = x.i });
+	case KIND_OBJ:
+		int i;
+		if (lisp_type(x.obj) == LISP_INTEGER &&
+			INT16_MIN <= (i = *(int *) x.obj) && i <= INT16_MAX)
+			emit(ctx, (union Instruction) { .op = LOAD_SHORT, .a = reg, .b = i });
 		else {
-			emit(ctx, (union Instruction) { .op = LOAD_INT, .a = reg });
-			emit(ctx, (union Instruction) { .i = x.i });
+			emit(ctx, (union Instruction) { .op = LOAD_OBJ, .a = reg });
+			emit(ctx, (union Instruction) { .v = x.obj });
 		}
 		break;
 	case KIND_LOCAL:
@@ -380,8 +373,7 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 		case VAR_UPVALUE: return (struct FormValue) { .kind = KIND_UPVALUE, .reg = var.slot };
 		default: __builtin_unreachable();
 		}
-	case LISP_INTEGER:
-		return (struct FormValue) { .kind = KIND_INT, .i = *(int *) x, };
+	case LISP_INTEGER: return (struct FormValue) { .kind = KIND_OBJ, .obj = x };
 	case LISP_FUNCTION: UNREACHABLE("Cannot evaluate function\n");
 	case LISP_CONS:
 		struct Cons *cell = x;
@@ -389,6 +381,7 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 		if (!listp(cell->cdr)) UNREACHABLE("Bad list"); 
 
 		if (head == ctx->fprogn) return compile_progn(ctx, x, reg_hint);
+		else if (head == ctx->fquote) return (struct FormValue) { KIND_OBJ, .obj = pop(&x) };
 		else if (head == ctx->flambda) {
 			LispObject *args = pop(&x);
 			struct FuncState fun = {
@@ -509,6 +502,7 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 		.fif = intern_c_string(lisp_ctx, "if"),
 		.flet = intern_c_string(lisp_ctx, "let"),
 		.fprogn = intern_c_string(lisp_ctx, "progn"),
+		.fquote = intern_c_string(lisp_ctx, "quote"),
 	};
 	Register reg = ctx.num_regs++;
 	store(&ctx, reg, compile_form(&ctx, form, reg)); // TODO Ensure any register (does not have to be first)

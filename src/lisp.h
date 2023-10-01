@@ -87,4 +87,11 @@ static inline bool listp(LispObject *x) {
 	return !x || lisp_type(x) == LISP_CONS;
 }
 
+static inline LispObject *pop(LispObject **x) {
+	if (lisp_type(*x) != LISP_CONS) return NULL;
+	struct Cons *cell = *x, *result = cell->car;
+	*x = cell->cdr;
+	return result;
+}
+
 #endif
