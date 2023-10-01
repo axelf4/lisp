@@ -43,8 +43,9 @@ static int setup_lisp(void **state) { *state = lisp_init(); return 0; }
 static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
 
 void test_reader(void **state) {
-	LispObject *result;
-	assert_int_equal(lisp_read_whole(*state, "(0 .", &result), LISP_READ_EOF);
+	LispObject *obj;
+	assert_int_equal(lisp_read_whole(*state, "(0 .", &obj), LISP_READ_EOF);
+	assert_int_equal(lisp_read_whole(*state, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
 }
 
 static LispObject *eval(struct LispContext *ctx, const char *s) {

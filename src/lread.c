@@ -33,7 +33,7 @@ static struct LispObject *read_symbol(struct LispContext *ctx, const char **s) {
 		switch (**s) {
 		default:
 			if (is_whitespace(**s))
-			case '\0': case '(': case ')': case '.':
+			case '\0': case '(': case ')': case '.': case '\'':
 				return intern(ctx, *s - start, start);
 		}
 }
@@ -43,8 +43,15 @@ union StackElement {
 	// Container entry
 	struct {
 		union StackElement *prev_container;
-		unsigned len;
-		bool is_dotted_pair;
+		enum ContainerType {
+			CTN_LIST,
+			CTN_DOTTED,
+			CTN_PREFIX,
+		} type;
+		union {
+			unsigned len;
+			struct Symbol *prefix_sym;
+		};
 	};
 };
 
@@ -56,6 +63,15 @@ enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject
 	struct LispObject *value;
 val_beg:
 	if (**s == '(') { ++*s; goto list_beg; }
+	if (**s == '\'') {
+		++*s;
+		skip_whitespace(s);
+		union StackElement *prev_ctn = ctn;
+		*(ctn = cur++) = (union StackElement)
+			{ .prev_container = prev_ctn, .type = CTN_PREFIX,
+			  .prefix_sym = intern_c_string(ctx, "quote") };
+		goto val_beg;
+	}
 	if (is_digit(**s) || ((**s == '+' || **s == '-') && is_digit(1[*s])))
 		value = lisp_integer(read_integer(s));
 	else if (__builtin_expect(!**s, false)) return LISP_READ_EOF;
@@ -63,13 +79,19 @@ val_beg:
 val_end:
 	if (!ctn) { *result = value; return LISP_READ_OK; } // Not in a container context
 
+	if (ctn->type == CTN_PREFIX) {
+		value = cons(ctn->prefix_sym, cons(value, NULL));
+		ctn = ctn->prev_container;
+		goto val_end;
+	}
+
 	(cur++)->object = value;
 	++ctn->len;
 
 	skip_whitespace(s);
 	if (**s == ')') { ++*s; goto list_end; }
-	if (**s == '.') { ++*s; skip_whitespace(s); ctn->is_dotted_pair = true; }
-	else if (ctn->is_dotted_pair) return LISP_READ_EXPECTED_RPAREN;
+	if (ctn->type == CTN_DOTTED) return LISP_READ_EXPECTED_RPAREN;
+	if (**s == '.') { ++*s; skip_whitespace(s); ctn->type = CTN_DOTTED; }
 	goto val_beg;
 
 list_beg:
@@ -77,13 +99,11 @@ list_beg:
 	if (**s == ')') { ++*s; value = NULL; goto val_end; }
 
 	union StackElement *prev_ctn = ctn;
-	*(ctn = cur++) = (union StackElement) {
-		.prev_container = prev_ctn,
-	};
+	*(ctn = cur++) = (union StackElement) { .prev_container = prev_ctn };
 	goto val_beg;
 
 list_end:
-	value = ctn->is_dotted_pair ? --ctn->len, (--cur)->object : NULL;
+	value = ctn->type == CTN_DOTTED ? --ctn->len, (--cur)->object : NULL;
 	do value = cons((--cur)->object, value); while (--ctn->len);
 	ctn = ctn->prev_container;
 	--cur; // Pop container stack element
