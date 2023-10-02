@@ -53,7 +53,7 @@ struct Vec {
 
 static bool vec_push(struct Vec *vec, void *x) {
 	if (vec->length >= vec->capacity) {
-		size_t new_capacity = vec->capacity ? 2 * vec->capacity : 2;
+		size_t new_capacity = vec->capacity ? 2 * vec->capacity : 4;
 		void **items;
 		if (!(items = realloc(vec->items, new_capacity * sizeof *items)))
 			return false;
@@ -195,7 +195,7 @@ void gc_trace(struct Heap *heap, void **p) {
 		return;
 	}
 	header->mark = heap->mark_color;
-	header->flags &= ~GC_FORWARDED;
+	header->flags = 0;
 
 	// Opportunistic evacuation if block is marked as defrag candidate
 	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) header & ~(GC_BLOCK_SIZE - 1));
@@ -219,8 +219,10 @@ void gc_trace(struct Heap *heap, void **p) {
 
 static void pin_and_trace(struct Heap *heap, void *p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) p - 1;
+	header->mark = heap->mark_color;
 	header->flags = GC_PINNED;
-	gc_trace(heap, &p);
+	gc_object_map_add(heap, p);
+	header->tib->trace(heap, p);
 }
 
 volatile void *gc_noop_sink;
