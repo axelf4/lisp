@@ -67,9 +67,10 @@ static size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80)
 	((table).ctrl[(((i) - sizeof(Group)) & (table).bucket_mask) + sizeof(Group)] \
 		= (table).ctrl[i] = (x))
 
-static alignas(Group) unsigned char empty_ctrl[]
-	= { EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, };
-static_assert(LENGTH(empty_ctrl) >= sizeof(Group));
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+static alignas(Group) unsigned char empty_ctrl[] = { [0 ... sizeof(Group) - 1] = EMPTY };
+#pragma GCC diagnostic pop
 #endif
 
 struct TYPE {
