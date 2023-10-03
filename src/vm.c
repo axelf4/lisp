@@ -131,6 +131,20 @@ struct CallFrame {
 	struct Closure *closure;
 };
 
+union SsaInstruction {
+	struct {
+		uint8_t op;
+	};
+};
+
+#define MAX_TRACE_LEN 256
+
+struct TraceRecording {
+	struct Closure *start;
+	union SsaInstruction trace[MAX_TRACE_LEN];
+	uint8_t count;
+};
+
 static LispObject *run(struct Chunk *chunk) {
 	union Instruction *xs = chunk->ins;
 	LispObject *stack_top[256], **stack = stack_top;
@@ -138,9 +152,27 @@ static LispObject *run(struct Chunk *chunk) {
 	size_t num_frames = 0;
 	struct ObjUpvalue *upvalues;
 
+#define NUM_HOT_COUNT_BINS 64
+	uint8_t hotcounts[NUM_HOT_COUNT_BINS];
+	bool is_recording = false;
+	struct TraceRecording recording = {};
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
-	static void *dispatch_table[] = {
+	static void *normal_dispatch_table[] = {
+		[RET] = &&op_ret,
+		[LOAD_NIL] = &&op_load_nil,
+		[LOAD_OBJ] = &&op_load_obj,
+		[LOAD_SHORT] = &&op_load_short,
+		[GETGLOBAL] = &&op_getglobal,
+		[GETUPVALUE] = &&op_getupvalue,
+		[CALL] = &&op_call,
+		[MOV] = &&op_mov,
+		[JMP] = &&op_jmp,
+		[JNIL] = &&op_jnil,
+		[CLOS] = &&op_clos,
+		[CLOSE_UPVALS] = &&op_close_upvals,
+	}, *recording_dispatch_table[] = {
 		[RET] = &&op_ret,
 		[LOAD_NIL] = &&op_load_nil,
 		[LOAD_OBJ] = &&op_load_obj,
@@ -155,8 +187,10 @@ static LispObject *run(struct Chunk *chunk) {
 		[CLOSE_UPVALS] = &&op_close_upvals,
 	};
 
+	void **dispatch_table = normal_dispatch_table;
+	// TODO Rename to pc
 	for (size_t ip = 0;;) {
-		/* printf("Executing instruction at %lu\n", ip); */
+		if (is_recording) printf("Recording instruction at %lu\n", ip);
 		union Instruction ins = xs[ip++];
 		goto *dispatch_table[ins.op];
 #pragma GCC diagnostic pop
@@ -193,6 +227,28 @@ static LispObject *run(struct Chunk *chunk) {
 		case LISP_CLOSURE:
 			struct Closure *closure = *vals;
 			if (ins.b != closure->arity) UNREACHABLE("Wrong number of arguments\n");
+
+			// Increment hotcount
+			if (is_recording) {
+				if (closure == recording.start) {
+					printf("Found loop start!\n");
+					is_recording = false;
+				}
+			} else {
+				union Instruction *to = closure->chunk->ins + closure->offset;
+				uint64_t hash = (ip ^ ((uintptr_t) to / alignof(void *))) / 4;
+				uint8_t *hotcount = hotcounts + hash % NUM_HOT_COUNT_BINS;
+				printf("Incrementing hotcount to %u\n", 1 + *hotcount);
+#define JIT_THRESHOLD 3
+				if (++*hotcount >= JIT_THRESHOLD) {
+					*hotcount = 0;
+					// Start recording trace
+					dispatch_table = recording_dispatch_table;
+					is_recording = true;
+					recording.start = closure;
+				}
+			}
+
 			frames[num_frames++] = (struct CallFrame) {
 				.ip = ip, .bp = vals - stack_top, .closure = closure,
 			};
