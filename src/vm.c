@@ -138,88 +138,102 @@ static LispObject *run(struct Chunk *chunk) {
 	size_t num_frames = 0;
 	struct ObjUpvalue *upvalues;
 
-	size_t ip = 0;
-	for (;;) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+	static void *dispatch_table[] = {
+		[RET] = &&op_ret,
+		[LOAD_NIL] = &&op_load_nil,
+		[LOAD_OBJ] = &&op_load_obj,
+		[LOAD_SHORT] = &&op_load_short,
+		[GETGLOBAL] = &&op_getglobal,
+		[GETUPVALUE] = &&op_getupvalue,
+		[CALL] = &&op_call,
+		[MOV] = &&op_mov,
+		[JMP] = &&op_jmp,
+		[JNIL] = &&op_jnil,
+		[CLOS] = &&op_clos,
+		[CLOSE_UPVALS] = &&op_close_upvals,
+	};
+
+	for (size_t ip = 0;;) {
 		/* printf("Executing instruction at %lu\n", ip); */
 		union Instruction ins = xs[ip++];
-		switch (ins.op) {
-		case RET:
-			if (num_frames) {
-				*stack = stack[ins.a];
-				ip = frames[--num_frames].ip;
-				stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
-				break;
-			} else return stack[ins.a];
-		case LOAD_NIL: stack[ins.a] = NULL; break;
-		case LOAD_OBJ: stack[ins.a] = xs[ip++].v; break;
-		case LOAD_SHORT: stack[ins.a] = lisp_integer((int16_t) ins.b); break;
-		case GETGLOBAL:
-			stack[ins.a] = ((struct Symbol *) xs[ip++].v)->value;
-			break;
-		case GETUPVALUE:
-			stack[ins.a] = *frames[num_frames - 1].closure->upvalues[ins.b]->location;
-			break;
-		case CALL:
-			LispObject **fun = stack + ins.a;
-			switch (lisp_type(*fun)) {
-			case LISP_FUNCTION:
-				struct Subr *subr = ((struct Function *) *fun)->subr;
-				if (ins.b != subr->min_args) UNREACHABLE("Too few arguments\n");
-				LispObject **args = fun + 1;
-				switch (subr->min_args) {
-				case 0: *fun = subr->a0(); break;
-				case 1: *fun = subr->a1(*args); break;
-				case 2: *fun = subr->a2(*args, args[1]); break;
-				case 3: *fun = subr->a3(*args, args[1], args[2]); break;
-				default: UNREACHABLE("Bad min_args\n");
-				}
-				break;
-			case LISP_CLOSURE:
-				struct Closure *closure = *fun;
-				if (ins.b != closure->arity) UNREACHABLE("Wrong number of arguments\n");
-				frames[num_frames++] = (struct CallFrame) {
-					.ip = ip, .bp = fun - stack_top, .closure = closure,
-				};
-				ip = closure->offset;
-				stack = fun;
-				break;
-			default: UNREACHABLE("Bad function\n");
+		goto *dispatch_table[ins.op];
+#pragma GCC diagnostic pop
+
+	op_ret:
+		if (num_frames) {
+			*stack = stack[ins.a];
+			ip = frames[--num_frames].ip;
+			stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
+			continue;
+		} else return stack[ins.a];
+	op_load_nil: stack[ins.a] = NULL; continue;
+	op_load_obj: stack[ins.a] = xs[ip++].v; continue;
+	op_load_short: stack[ins.a] = lisp_integer((int16_t) ins.b); continue;
+	op_getglobal: stack[ins.a] = ((struct Symbol *) xs[ip++].v)->value; continue;
+	op_getupvalue:
+		stack[ins.a] = *frames[num_frames - 1].closure->upvalues[ins.b]->location;
+		continue;
+	op_call:
+		LispObject **vals = stack + ins.a;
+		switch (lisp_type(*vals)) {
+		case LISP_FUNCTION:
+			struct Subr *subr = ((struct Function *) *vals)->subr;
+			if (ins.b != subr->min_args) UNREACHABLE("Too few arguments\n");
+			LispObject **args = vals + 1;
+			switch (subr->min_args) {
+			case 0: *vals = subr->a0(); break;
+			case 1: *vals = subr->a1(*args); break;
+			case 2: *vals = subr->a2(*args, args[1]); break;
+			case 3: *vals = subr->a3(*args, args[1], args[2]); break;
+			default: UNREACHABLE("Bad min_args\n");
 			}
 			break;
-		case MOV: stack[ins.a] = stack[ins.b]; break;
-		case JMP: ip += (int32_t) ins.b; break;
-		case JNIL: if (!stack[ins.a]) ip += (int32_t) ins.b; break;
-		case CLOS:
-			size_t len = xs[ip++].i, num_upvalues = ins.d;
-			struct Closure *closure
-				= gc_alloc(heap, sizeof *closure + num_upvalues * sizeof *closure->upvalues,
-					&closure_tib.gc_tib);
-			*closure = (struct Closure) {
-				.offset = ip, .arity = ins.c, .num_upvalues = num_upvalues,
+		case LISP_CLOSURE:
+			struct Closure *closure = *vals;
+			if (ins.b != closure->arity) UNREACHABLE("Wrong number of arguments\n");
+			frames[num_frames++] = (struct CallFrame) {
+				.ip = ip, .bp = vals - stack_top, .closure = closure,
 			};
-			ip += len;
-			// Read upvalues
-			for (unsigned i = 0; i < num_upvalues; ++i) {
-				union Instruction ins = xs[ip++];
-				uint8_t is_local = ins.a, index = ins.b;
-				struct CallFrame *frame = num_frames ? frames + num_frames - 1 : NULL;
-				closure->upvalues[i] = is_local
-					? capture_upvalue(&upvalues, stack_top + (frame ? frame->bp : 0) + index)
-					: frame->closure->upvalues[index];
-			}
-			stack[ins.a] = closure;
+			ip = closure->offset;
+			stack = vals;
 			break;
-		case CLOSE_UPVALS:
-			while (upvalues && upvalues->location >= stack + ins.a) {
-				struct ObjUpvalue *x = upvalues;
-				x->closed = *x->location;
-				x->location = &x->closed;
-				upvalues = x->next;
-				x->next = NULL;
-			}
-			break;
-		default: UNREACHABLE("Bad instruction\n");
+		default: UNREACHABLE("Bad function\n");
 		}
+		continue;
+	op_mov: stack[ins.a] = stack[ins.b]; continue;
+	op_jmp: ip += (int32_t) ins.b; continue;
+	op_jnil: if (!stack[ins.a]) ip += (int32_t) ins.b; continue;
+	op_clos:
+		size_t len = xs[ip++].i, num_upvalues = ins.d;
+		struct Closure *closure
+			= gc_alloc(heap, sizeof *closure + num_upvalues * sizeof *closure->upvalues,
+				&closure_tib.gc_tib);
+		*closure = (struct Closure) {
+			.chunk = chunk, .offset = ip, .arity = ins.c, .num_upvalues = num_upvalues,
+		};
+		ip += len;
+		// Read upvalues
+		for (unsigned i = 0; i < num_upvalues; ++i) {
+			union Instruction ins = xs[ip++];
+			uint8_t is_local = ins.a, index = ins.b;
+			struct CallFrame *frame = num_frames ? frames + num_frames - 1 : NULL;
+			closure->upvalues[i] = is_local
+				? capture_upvalue(&upvalues, stack_top + (frame ? frame->bp : 0) + index)
+				: frame->closure->upvalues[index];
+		}
+		stack[ins.a] = closure;
+		continue;
+	op_close_upvals:
+		while (upvalues && upvalues->location >= stack + ins.a) {
+			struct ObjUpvalue *x = upvalues;
+			x->closed = *x->location;
+			x->location = &x->closed;
+			upvalues = x->next;
+			x->next = NULL;
+		}
+		continue;
 	}
 }
 
