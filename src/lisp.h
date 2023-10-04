@@ -3,7 +3,7 @@
 
 #include "gc.h"
 
-extern struct Heap *heap;
+extern struct GcHeap *heap;
 
 struct LispContext;
 

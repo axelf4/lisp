@@ -52,7 +52,7 @@ struct Vec {
 };
 
 static bool vec_push(struct Vec *vec, void *x) {
-	if (vec->length >= vec->capacity) {
+	if (__builtin_expect(vec->length >= vec->capacity, false)) {
 		size_t new_capacity = vec->capacity ? 2 * vec->capacity : 4;
 		void **items;
 		if (!(items = realloc(vec->items, new_capacity * sizeof *items)))
@@ -69,12 +69,12 @@ static void *vec_pop(struct Vec *vec) {
 }
 
 struct Chunk {
-	struct GcBlock *data;
+	struct GcBlock *blocks;
 	roaring_bitmap_t object_map;
 	struct Chunk *next;
 };
 
-struct Heap {
+struct GcHeap {
 	struct BumpPointer ptr, overflow_ptr;
 	struct GcBlock *head, ///< The current block being allocated into.
 		*overflow; ///< Block kept for writing medium objects.
@@ -85,7 +85,7 @@ struct Heap {
 	struct Vec trace_stack;
 };
 
-static struct GcBlock *acquire_block(struct Heap *heap) {
+static struct GcBlock *acquire_block(struct GcHeap *heap) {
 	struct GcBlock *block;
 	if ((block = vec_pop(&heap->free))) return block;
 
@@ -107,7 +107,7 @@ static struct GcBlock *acquire_block(struct Heap *heap) {
 
 	struct Chunk *chunk;
 	if (!(chunk = malloc(sizeof *chunk))) return NULL;
-	*chunk = (struct Chunk) { .data = blocks, .next = heap->chunks };
+	*chunk = (struct Chunk) { .blocks = blocks, .next = heap->chunks };
 	roaring_bitmap_init_cleared(&chunk->object_map);
 	heap->chunks = chunk;
 	return blocks;
@@ -117,8 +117,8 @@ static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
 	return (struct BumpPointer) { block->data + sizeof block->data, block->data };
 }
 
-struct Heap *gc_new() {
-	struct Heap *heap;
+struct GcHeap *gc_new() {
+	struct GcHeap *heap;
 	if (!((heap = calloc(1, sizeof *heap))
 			&& (heap->head = acquire_block(heap)))) goto error;
 	heap->ptr = empty_block_ptr(heap->head);
@@ -127,11 +127,11 @@ error: free(heap); return NULL;
 }
 
 /** Remember @arg x as a live allocated object location. */
-static void gc_object_map_add(struct Heap *heap, char *x) {
+static void gc_object_map_add(struct GcHeap *heap, char *x) {
 	struct Chunk *chunk = heap->chunks;
-	while (!((char *) chunk->data <= x && x < (char *) (chunk->data + BLOCKS_PER_CHUNK)))
+	while (!((char *) chunk->blocks <= x && x < (char *) (chunk->blocks + BLOCKS_PER_CHUNK)))
 		chunk = chunk->next;
-	roaring_bitmap_add(&chunk->object_map, (x - (char *) chunk->data) / alignof(void *));
+	roaring_bitmap_add(&chunk->object_map, (x - (char *) chunk->blocks) / alignof(void *));
 }
 
 enum {
@@ -141,7 +141,7 @@ enum {
 
 #define MIN_FREE (BLOCKS_PER_CHUNK / (100 / 3) + 3)
 
-void *gc_alloc(struct Heap *heap, size_t size, struct GcTypeInfo *tib) {
+void *gc_alloc(struct GcHeap *heap, size_t size, struct GcTypeInfo *tib) {
 	if ((size += sizeof(struct GcObjectHeader)) > sizeof heap->head->data) return NULL;
 	char *p;
 	struct GcBlock **block = &heap->head;
@@ -188,10 +188,10 @@ success:
 	return p;
 }
 
-void gc_trace(struct Heap *heap, void **p) {
+void gc_trace(struct GcHeap *heap, void **p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) *p - 1;
 	if (header->mark == heap->mark_color) { // Already traced
-		if (header->flags & GC_FORWARDED) *p = header->forwarding;
+		if (header->flags & GC_FORWARDED) *p = header->fwd;
 		return;
 	}
 	header->mark = heap->mark_color;
@@ -202,22 +202,18 @@ void gc_trace(struct Heap *heap, void **p) {
 	bool should_evacuate = !block->flag;
 	size_t size;
 	void *q;
-	if (heap->defrag && !(header->flags & GC_PINNED) && should_evacuate
+	if (heap->defrag && should_evacuate && !(header->flags & GC_PINNED)
 		&& (q = gc_alloc(heap, size = header->tib->size(*p), header->tib))) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Warray-bounds"
-#pragma GCC diagnostic ignored "-Wstringop-overflow"
-		((struct GcObjectHeader *) q - 1)->flags |= GC_FORWARDED;
-#pragma GCC diagnostic pop
 		memcpy(q, *p, size);
-		*p = q;
+		header->fwd = *p = q;
+		header->flags |= GC_FORWARDED;
 	}
 
 	gc_object_map_add(heap, *p);
 	header->tib->trace(heap, *p);
 }
 
-static void pin_and_trace(struct Heap *heap, void *p) {
+static void pin_and_trace(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) p - 1;
 	header->mark = heap->mark_color;
 	header->flags = GC_PINNED;
@@ -242,7 +238,7 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 
 extern void *__libc_stack_end;
 [[gnu::no_sanitize_address]] static void collect_roots(void *x) {
-	struct Heap *heap = x;
+	struct GcHeap *heap = x;
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
 	sp = (void *) (((uintptr_t) sp + alignof(void *) - 1)
 		& ~(alignof(void *) - 1)); // Round up to alignment
@@ -250,9 +246,9 @@ extern void *__libc_stack_end;
 		uintptr_t x = *p;
 		if (x % alignof(void *)) continue;
 		for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
-			if (x >= (uintptr_t) chunk->data && x < (uintptr_t) (chunk->data + BLOCKS_PER_CHUNK)
+			if (x >= (uintptr_t) chunk->blocks && x < (uintptr_t) (chunk->blocks + BLOCKS_PER_CHUNK)
 				&& roaring_bitmap_remove_checked(&chunk->object_map,
-					(x - (uintptr_t) chunk->data) / alignof(void *))) {
+					(x - (uintptr_t) chunk->blocks) / alignof(void *))) {
 				vec_push(&heap->trace_stack, (void *) x);
 				break;
 			}
@@ -285,7 +281,7 @@ static struct BlockStats {
 	return result;
 }
 
-void garbage_collect(struct Heap *heap) {
+void garbage_collect(struct GcHeap *heap) {
 	heap->is_gc = true;
 	size_t prev_num_free = heap->free.length;
 
@@ -299,7 +295,7 @@ void garbage_collect(struct Heap *heap) {
 	unsigned mark_histogram[MAX_HOLES] = {};
 	// Unmark blocks
 	for (struct Chunk *x = heap->chunks; x; x = x->next)
-		for (struct GcBlock *block = x->data; block < x->data + BLOCKS_PER_CHUNK; ++block) {
+		for (struct GcBlock *block = x->blocks; block < x->blocks + BLOCKS_PER_CHUNK; ++block) {
 			if (heap->defrag) {
 				struct BlockStats stats = block_stats(block);
 				mark_histogram[stats.num_holes] += stats.num_marks;

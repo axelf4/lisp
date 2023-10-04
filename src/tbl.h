@@ -20,7 +20,7 @@
 
 #define EMPTY 0b1111'1111
 #define DELETED 0b1000'0000
-#define IS_FULL(ctrl) !(ctrl & 0x80)
+#define IS_FULL(ctrl) (!(ctrl & 0x80))
 
 /// Primary hash function, used for probing.
 static size_t h1(uint64_t hash) { return hash; }
@@ -80,9 +80,9 @@ struct TYPE {
 	/// Array of n + GROUP_WIDTH "control" bytes, preceded by n buckets of keys.
 	///
 	/// Each byte is one of:
-	/// * 0b1111_1111 (EMPTY)
-	/// * 0b1000_0000 (DELETED (tombstone))
-	/// * 0b0xxx_xxxx (FULL (x is a hash fragment))
+	/// * 0b1111_1111: EMPTY
+	/// * 0b1000_0000: DELETED (tombstone)
+	/// * 0b0xxx_xxxx: FULL (x is a hash fragment)
 	union { KEY *buckets; unsigned char *ctrl; };
 };
 

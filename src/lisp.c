@@ -4,7 +4,7 @@
 #include <xxh3.h>
 #include "util.h"
 
-struct Heap *heap;
+struct GcHeap *heap;
 
 static uint64_t symbol_hash(struct Symbol *x) { return XXH3_64bits(x->name, x->len); }
 
@@ -41,13 +41,13 @@ struct LispContext {
 
 static size_t string_size(void *x) { return strlen(x) + 1; }
 
-static void string_trace(struct Heap *, void *x) { gc_mark(string_size(x), x); }
+static void string_trace(struct GcHeap *, void *x) { gc_mark(string_size(x), x); }
 
 static struct GcTypeInfo string_tib = { string_trace, string_size };
 
 static size_t cons_size(void *) { return sizeof(struct Cons); }
 
-static void cons_trace(struct Heap *heap, void *x) {
+static void cons_trace(struct GcHeap *heap, void *x) {
 	struct Cons *cons = x;
 	gc_mark(sizeof *cons, x);
 	if (cons->car) gc_trace(heap, &cons->car);
@@ -56,7 +56,7 @@ static void cons_trace(struct Heap *heap, void *x) {
 
 static size_t symbol_size(void *) { return sizeof(struct Symbol); }
 
-static void symbol_trace(struct Heap *heap, void *x) {
+static void symbol_trace(struct GcHeap *heap, void *x) {
 	struct Symbol *sym = x;
 	gc_mark(sizeof *sym, x);
 	gc_mark(sym->len + 1, sym->name);
@@ -68,7 +68,7 @@ static size_t function_size(void *) { return sizeof(struct Function); }
 static size_t integer_size(void *) { return sizeof(int); }
 
 // Generic trace function for objects that fit in a line.
-static void trace_small(struct Heap *, void *x) { gc_mark(1, x); }
+static void trace_small(struct GcHeap *, void *x) { gc_mark(1, x); }
 
 static struct LispTypeInfo cons_tib = {
 	.gc_tib = { cons_trace, cons_size },
@@ -150,7 +150,7 @@ void lisp_print(LispObject *object) {
 
 size_t lisp_ctx_size(void *) { return sizeof(struct LispContext); }
 
-static void lisp_ctx_trace(struct Heap *, void *x) {
+static void lisp_ctx_trace(struct GcHeap *, void *x) {
 	struct LispContext *ctx = x;
 	gc_mark(sizeof *ctx, x);
 

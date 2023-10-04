@@ -47,7 +47,7 @@ static size_t chunk_size(void *x) {
 	struct Chunk *chunk = x;
 	return sizeof *chunk + chunk->count + sizeof *chunk->ins;
 }
-static void chunk_trace(struct Heap *, void *x) { gc_mark(chunk_size(x), x); }
+static void chunk_trace(struct GcHeap *, void *x) { gc_mark(chunk_size(x), x); }
 static struct GcTypeInfo chunk_tib = { chunk_trace, chunk_size };
 
 void disassemble(struct Chunk *chunk, const char *name) {
@@ -87,7 +87,7 @@ struct ObjUpvalue {
 };
 
 static size_t obj_upvalue_size(void *) { return sizeof(struct ObjUpvalue); }
-static void obj_upvalue_trace(struct Heap *heap, void *x) {
+static void obj_upvalue_trace(struct GcHeap *heap, void *x) {
 	struct ObjUpvalue *upvalue = x;
 	gc_mark(sizeof *upvalue, x);
 	if (upvalue->next) gc_trace(heap, (void **) &upvalue->next);
@@ -106,7 +106,7 @@ static size_t closure_size(void *x) {
 	struct Closure *closure = x;
 	return sizeof *closure + closure->num_upvalues * sizeof *closure->upvalues;
 }
-static void closure_trace(struct Heap *heap, void *x) {
+static void closure_trace(struct GcHeap *heap, void *x) {
 	struct Closure *closure = x;
 	gc_mark(closure_size(x), x);
 	for (size_t i = 0; i < closure->num_upvalues; ++i)
@@ -301,7 +301,7 @@ typedef uint16_t Register;
 struct Local {
 	struct Symbol *symbol;
 	Register slot; ///< The register.
-	bool is_captured;
+	char is_captured;
 };
 
 struct Upvalue {
@@ -311,7 +311,7 @@ struct Upvalue {
 
 struct FuncState {
 	struct FuncState *prev;
-	size_t prev_num_regs, vars_start, num_upvalues;
+	uint16_t prev_num_regs, vars_start, num_upvalues;
 	struct Upvalue upvalues[MAX_UPVALUES];
 };
 
