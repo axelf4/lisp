@@ -83,9 +83,9 @@ void lisp_free(struct LispContext *);
 
 LispObject *lisp_eval(struct LispContext *ctx, LispObject *form);
 
-static inline bool listp(LispObject *x) {
-	return !x || lisp_type(x) == LISP_CONS;
-}
+static inline bool consp(LispObject *x) { return lisp_type(x) == LISP_CONS; }
+
+static inline bool listp(LispObject *x) { return !x || consp(x); }
 
 static inline LispObject *pop(LispObject **x) {
 	if (lisp_type(*x) != LISP_CONS) return NULL;
