@@ -13,7 +13,7 @@ find_package(xxHash REQUIRED)
 add_compile_options(-Wall -Wextra -pedantic -Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2 -fsanitize=address,undefined)
 add_link_options(-fsanitize=address,undefined)
 
-add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c)
+add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c src/tui.c)
 target_include_directories(lisplib PRIVATE roaring::roaring xxHash::xxhash)
 target_link_libraries(lisplib roaring::roaring xxHash::xxhash)
 

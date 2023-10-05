@@ -4,6 +4,8 @@
 
 void go(struct LispContext *ctx);
 
+void start_tui();
+
 int main(void) {
 	if (!(heap = gc_new())) return 1;
 	struct LispContext *ctx = lisp_init();
@@ -22,6 +24,9 @@ int main(void) {
 
 	garbage_collect(heap);
 
+	start_tui();
+
+	/*
 	char line[256];
 	while (fgets(line, sizeof line, stdin)) {
 		LispObject *object;
@@ -38,5 +43,7 @@ int main(void) {
 			printf("\n");
 		}
 	}
+	*/
+
 	lisp_free(ctx);
 }
