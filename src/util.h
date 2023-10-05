@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <limits.h>
 
+#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
 /// Number of elements in an array.
@@ -11,6 +12,8 @@
 
 #define _CAT(a, b) a ## b
 #define CAT(a, b) _CAT(a, b)
+
+#define SWAP(x, y) do {	typeof(x) _tmp = (x); (x) = (y); (y) = _tmp; } while(0)
 
 /** Returns the smallest power of two greater than or equal to @arg x. */
 static inline unsigned int next_power_of_2(unsigned int x) {

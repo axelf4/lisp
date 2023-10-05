@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include "gc.h"
 #include "lisp.h"
+#include "rope.h"
 #include "util.h"
 
 void test1(void **) {
@@ -37,6 +38,16 @@ void test_hash_table(void **) {
 	assert_int_equal(entry ? *entry : 0, 1);
 	assert_null(my_tbl_find(&table, 2));
 	my_tbl_free(&table);
+}
+
+void test_rope(void **) {
+	struct Rope rope;
+	if (!rope_init(&rope)) UNREACHABLE("malloc failed");
+	rope_replace(&rope, (struct Range) {}, "abcdefghijklmnopqrstuvwxyz");
+	assert_int_equal(rope_size(&rope), 26);
+	rope_replace(&rope, (struct Range) { 1, 17 }, "");
+	assert_int_equal(rope_size(&rope), 10);
+	rope_free(&rope);
 }
 
 static int setup_lisp(void **state) { *state = lisp_init(); return 0; }
@@ -88,6 +99,7 @@ int main(void) {
 		cmocka_unit_test(test1),
 		cmocka_unit_test(test_next_power_of_2),
 		cmocka_unit_test(test_hash_table),
+		cmocka_unit_test(test_rope),
 	};
 	int result;
 	if ((result = cmocka_run_group_tests(tests, NULL, NULL))) return result;
