@@ -129,7 +129,7 @@ static struct ObjUpvalue *capture_upvalue(struct ObjUpvalue **upvalues, LispObje
 }
 
 struct CallFrame {
-	size_t ip, bp;
+	size_t pc, bp;
 	struct Closure *closure;
 };
 
@@ -194,24 +194,23 @@ static LispObject *run(struct Chunk *chunk) {
 	};
 
 	void **dispatch_table = normal_dispatch_table;
-	// TODO Rename to pc
-	for (size_t ip = 0;;) {
-		if (is_recording) printf("Recording instruction at %lu\n", ip);
-		union Instruction ins = xs[ip++];
+	for (size_t pc = 0;;) {
+		if (is_recording) printf("Recording instruction at %lu\n", pc);
+		union Instruction ins = xs[pc++];
 		goto *dispatch_table[ins.op];
 #pragma GCC diagnostic pop
 
 	op_ret:
 		if (num_frames) {
 			*stack = stack[ins.a];
-			ip = frames[--num_frames].ip;
+			pc = frames[--num_frames].pc;
 			stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
 			continue;
 		} else return stack[ins.a];
 	op_load_nil: stack[ins.a] = NULL; continue;
-	op_load_obj: stack[ins.a] = xs[ip++].v; continue;
+	op_load_obj: stack[ins.a] = xs[pc++].v; continue;
 	op_load_short: stack[ins.a] = lisp_integer((int16_t) ins.b); continue;
-	op_getglobal: stack[ins.a] = ((struct Symbol *) xs[ip++].v)->value; continue;
+	op_getglobal: stack[ins.a] = ((struct Symbol *) xs[pc++].v)->value; continue;
 	op_getupvalue:
 		stack[ins.a] = *frames[num_frames - 1].closure->upvalues[ins.b]->location;
 		continue;
@@ -242,7 +241,7 @@ static LispObject *run(struct Chunk *chunk) {
 				}
 			} else {
 				union Instruction *to = closure->chunk->ins + closure->offset;
-				uint64_t hash = (ip ^ ((uintptr_t) to / alignof(void *))) / 4;
+				uint64_t hash = (pc ^ ((uintptr_t) to / alignof(void *))) / 4;
 				uint8_t *hotcount = hotcounts + hash % NUM_HOT_COUNT_BINS;
 				printf("Incrementing hotcount to %u\n", 1 + *hotcount);
 #define JIT_THRESHOLD 3
@@ -261,30 +260,30 @@ static LispObject *run(struct Chunk *chunk) {
 				frames[num_frames - 1].closure = closure;
 			} else {
 				frames[num_frames++] = (struct CallFrame) {
-					.ip = ip, .bp = vals - stack_top, .closure = closure,
+					.pc = pc, .bp = vals - stack_top, .closure = closure,
 				};
 				stack = vals;
 			}
-			ip = closure->offset;
+			pc = closure->offset;
 			break;
 		default: UNREACHABLE("Bad function\n");
 		}
 		continue;
 	op_mov: stack[ins.a] = stack[ins.b]; continue;
-	op_jmp: ip += (int32_t) ins.b; continue;
-	op_jnil: if (!stack[ins.a]) ip += (int32_t) ins.b; continue;
+	op_jmp: pc += (int32_t) ins.b; continue;
+	op_jnil: if (!stack[ins.a]) pc += (int32_t) ins.b; continue;
 	op_clos:
-		size_t len = xs[ip++].i, num_upvalues = ins.d;
+		size_t len = xs[pc++].i, num_upvalues = ins.d;
 		struct Closure *closure
 			= gc_alloc(heap, sizeof *closure + num_upvalues * sizeof *closure->upvalues,
 				&closure_tib.gc_tib);
 		*closure = (struct Closure) {
-			.chunk = chunk, .offset = ip, .arity = ins.c, .num_upvalues = num_upvalues,
+			.chunk = chunk, .offset = pc, .arity = ins.c, .num_upvalues = num_upvalues,
 		};
-		ip += len;
+		pc += len;
 		// Read upvalues
 		for (unsigned i = 0; i < num_upvalues; ++i) {
-			union Instruction ins = xs[ip++];
+			union Instruction ins = xs[pc++];
 			uint8_t is_local = ins.a, index = ins.b;
 			struct CallFrame *frame = num_frames ? frames + num_frames - 1 : NULL;
 			closure->upvalues[i] = is_local
