@@ -8,13 +8,13 @@
       overlays = [ (final: prev: {
         croaring = pkgs.stdenv.mkDerivation rec {
           pname = "croaring";
-          version = "2.0.2";
+          version = "2.0.3";
 
           src = final.fetchFromGitHub {
             owner = "RoaringBitmap";
             repo = "CRoaring";
             rev = "v${version}";
-            hash = "sha256-lskBScll3g8MslyXiDxOxIwCukJm65wwbBMX5PjM1w4=";
+            hash = "sha256-WaFyJ/6zstJ05e3vfrwhaZKQsjRAEvVTs688Hw0fr94=";
           };
 
           # roaring.pc.in cannot handle absolute CMAKE_INSTALL_*DIRs, nor
