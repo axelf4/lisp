@@ -52,68 +52,74 @@ static size_t gap_buffer_len(struct GapBuffer *x) { return x->len_left + x->len_
  */
 typedef struct RopeNode {
 	unsigned char depth; ///< Height of subtree, i.e. zero signifies leaf node.
-	union {
-		struct { // Internal node
-			unsigned char num_children;
-			struct RopeNode *children[MAX_CHILDREN];
-			size_t byte_size; ///< The total byte size of the leaves in this subtree.
-		};
-		struct GapBuffer *value; // Leaf node
-	};
 } Node;
 
-static bool is_underfilled(Node *x) { return x->num_children < MIN_CHILDREN; }
+struct Internal {
+	Node node;
+	unsigned char num_children;
+	Node *children[MAX_CHILDREN];
+	size_t byte_size; ///< The total byte size of the leaves in this subtree.
+};
+
+struct Leaf {
+	Node node;
+	struct GapBuffer value;
+};
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+static bool is_underfilled(Node *x) {
+	return x->depth ? ((struct Internal *) x)->num_children < MIN_CHILDREN
+		: gap_buffer_len(&((struct Leaf *) x)->value) < MIN_BYTES;
+}
 
 static size_t node_byte_size(Node *x) {
-	return x->depth ? x->byte_size : gap_buffer_len(x->value);
+	return x->depth ? ((struct Internal *) x)->byte_size
+		: gap_buffer_len(&((struct Leaf *) x)->value);
 }
 
 static void node_free(Node *node) {
 	if (node->depth)
-		for (unsigned i = 0; i < node->num_children; ++i)
-			node_free(node->children[i]);
-	else free(node->value);
+		for (unsigned i = 0; i < ((struct Internal *) node)->num_children; ++i)
+			node_free(((struct Internal *) node)->children[i]);
 	free(node);
 }
 
-static void replace_with_single_child(Node *node) {
-	while (node->depth && node->num_children == 1) {
-		Node *child = *node->children;
-		*node = *child;
-		free(child);
+static void replace_with_single_child(Node **node) {
+	while ((*node)->depth && ((struct Internal *) *node)->num_children == 1) {
+		Node *child = *((struct Internal *) *node)->children;
+		free(*node);
+		*node = child;
 	}
 }
 
-static inline void node_count_child(Node *parent, int sign, Node *child) {
+static inline void count_child(struct Internal *parent, int sign, Node *child) {
 	parent->byte_size += sign * node_byte_size(child);
 }
 
-struct NodeSlice { size_t len; Node **xs; };
-
-static inline void insert_children(Node *node, unsigned i,
+static inline void insert_children(struct Internal *node, unsigned i,
 	unsigned len, Node *xs[static len]) {
-	assert(node->num_children + len <= MAX_CHILDREN);
 	memmove(node->children + i + len, node->children + i,
 		(node->num_children - i) * sizeof *node->children);
 	memcpy(node->children + i, xs, len * sizeof *xs);
 	node->num_children += len;
-	for (Node **x = xs; x < xs + len; ++x) node_count_child(node, 1, *x);
+	for (Node **x = xs; x < xs + len; ++x) count_child(node, 1, *x);
 }
 
-static inline void remove_children(Node *parent, unsigned i, unsigned len) {
-	assert(i + len <= parent->num_children);
+static inline void remove_children(struct Internal *parent, unsigned i, unsigned len) {
 	for (Node **x = parent->children + i; x < parent->children + i + len; ++x)
-		node_count_child(parent, -1, *x);
+		count_child(parent, -1, *x);
 	memmove(parent->children + i, parent->children + i + len,
-		(parent->num_children - (i + len)) * sizeof *parent->children);
-	parent->num_children -= len;
+		((parent->num_children -= len) - i) * sizeof *parent->children);
 }
 
-static inline Node *remove_child(Node *parent, unsigned i) {
+static inline Node *remove_child(struct Internal *parent, unsigned i) {
 	Node *child = parent->children[i];
 	remove_children(parent, i, 1);
 	return child;
 }
+
+struct NodeSlice { size_t len; Node **xs; };
 
 static size_t make_parents(size_t count, struct NodeSlice xs[static count], size_t total, Node **out) {
 	size_t out_len = 0;
@@ -131,11 +137,11 @@ static size_t make_parents(size_t count, struct NodeSlice xs[static count], size
 			x->xs += n;
 
 			if (acc_len >= MAX_CHILDREN || (total <= MIN_CHILDREN && MAX_CHILDREN - acc_len < total)) {
-				Node *node;
+				struct Internal *node;
 				if (!(node = malloc(sizeof *node))) UNREACHABLE("bad malloc\n");
-				*node = (Node) { .depth = (*acc)->depth + 1 };
+				*node = (struct Internal) { .node = { .depth = (*acc)->depth + 1 } };
 				insert_children(node, 0, acc_len, acc);
-				out[out_len++] = node;
+				out[out_len++] = &node->node;
 				acc_len = 0;
 			}
 	} while (x->len);
@@ -147,7 +153,7 @@ static size_t make_parents(size_t count, struct NodeSlice xs[static count], size
  *
  * @return Number of extra siblings outputted into @arg new to insert after @arg node.
  */
-static size_t insert_children_overflowing(Node *node, unsigned i, struct NodeSlice new) {
+static size_t insert_children_overflowing(struct Internal *node, unsigned i, struct NodeSlice new) {
 	if (node->num_children + new.len <= MAX_CHILDREN) {
 		insert_children(node, i, new.len, new.xs);
 		return 0;
@@ -161,9 +167,9 @@ static size_t insert_children_overflowing(Node *node, unsigned i, struct NodeSli
 	if (lchildren_len) {
 		memcpy(lchildren, node->children + i - lchildren_len, sizeof lchildren);
 		remove_children(node, i - lchildren_len, lchildren_len);
-	} else while (is_underfilled(node)) {
+	} else while (node->num_children < MIN_CHILDREN) {
 			Node *x = new.len ? (--new.len, *new.xs++) : (--rchildren_len, *rchildren++);
-			node_count_child(node, 1, x);
+			count_child(node, 1, x);
 			node->children[node->num_children++] = x;
 	}
 	struct NodeSlice slices[]
@@ -173,15 +179,16 @@ static size_t insert_children_overflowing(Node *node, unsigned i, struct NodeSli
 
 /** Balances the two siblings and returns whether @arg b became empty. */
 static bool balance(Node *a, Node *b) {
-	if (!b->depth) {
-		struct GapBuffer *x = a->value, *y = b->value;
+	if (a->depth != b->depth) __builtin_unreachable();
+	if (!(is_underfilled(b) || is_underfilled(a))) ;
+	else if (!b->depth) {
+		struct GapBuffer *x = &((struct Leaf *) a)->value, *y = &((struct Leaf *) b)->value;
 		unsigned x_size = gap_buffer_len(x), y_size = gap_buffer_len(y);
-		if (x_size >= MIN_BYTES && y_size >= MIN_BYTES) ;
-		else if (x_size + y_size <= MAX_BYTES) {
+		if (x_size + y_size <= MAX_BYTES) {
 			move_gap(x, x_size);
 			memcpy(x->data + x_size, y->data, y->len_left);
-			x->len_left += y->len_left;
-			memcpy(x->data + x->len_left, y->data + MAX_BYTES - y->len_right, y->len_right);
+			memcpy(x->data + (x->len_left += y->len_left),
+				y->data + MAX_BYTES - y->len_right, y->len_right);
 			x->len_left += y->len_right;
 			return true;
 		} else if (x_size > y_size) { // Move bytes from x to y
@@ -190,78 +197,90 @@ static bool balance(Node *a, Node *b) {
 			unsigned n = MIN_BYTES - y_size;
 			memcpy(y->data + y_size, x->data + (x->len_left -= n), n);
 			y->len_left += n;
-		} else balance(b, a); // Move bytes from y to x
-	} else if (!(is_underfilled(b) || is_underfilled(a))) ;
-	else if (a->num_children + b->num_children <= MAX_CHILDREN) {
-		insert_children(a, a->num_children, b->num_children, b->children);
-		remove_children(b, 0, b->num_children);
-		return true;
-	} else if (a->num_children > b->num_children) { // Move children from a to b
-		unsigned n = MIN_CHILDREN - b->num_children;
-		insert_children(b, 0, n, a->children + a->num_children - n);
-		remove_children(a, a->num_children - n, n);
-	} else balance(b, a);  // Move children from b to a
+		} else { // Move bytes from y to x
+			move_gap(x, x_size);
+			move_gap(y, y_size);
+			unsigned n = MIN_BYTES - x_size;
+			memcpy(x->data + x_size, y->data, n);
+			x->len_left += n;
+			memmove(y->data, y->data + n, y->len_left -= n);
+		}
+	} else {
+		struct Internal *x = (struct Internal *) a, *y = (struct Internal *) b;
+		if (x->num_children + y->num_children <= MAX_CHILDREN) {
+			insert_children(x, x->num_children, y->num_children, y->children);
+			remove_children(y, 0, y->num_children);
+			return true;
+		} else if (x->num_children > y->num_children) { // Move children from a to b
+			unsigned n = MIN_CHILDREN - y->num_children;
+			insert_children(y, 0, n, x->children + x->num_children - n);
+			remove_children(x, x->num_children - n, n);
+		} else { // Move children from b to a
+			unsigned n = MIN_CHILDREN - x->num_children;
+			if (n != 1) __builtin_unreachable();
+			insert_children(y, y->num_children, n, x->children);
+			remove_children(x, 0, n);
+		}
+	}
 	return false;
 }
 
-static Node *append_child(Node *parent, Node *x) {
-	if (x->depth + 1 < parent->depth) {
+static Node *append_child(struct Internal *parent, Node *x) {
+	if (x->depth + 1 < parent->node.depth) {
 		Node *last = parent->children[parent->num_children - 1];
-		node_count_child(parent, -1, last);
-		x = append_child(last, x);
-		node_count_child(parent, 1, last);
-	} else if (is_underfilled(x)) {
-		balance(parent->children[parent->num_children - 1], x);
-		if (!x->num_children) return NULL;
-	}
+		count_child(parent, -1, last);
+		x = append_child((struct Internal *) last, x);
+		count_child(parent, 1, last);
+	} else if (is_underfilled(x) && balance(parent->children[parent->num_children - 1], x))
+		return NULL;
 	if (parent->num_children < MAX_CHILDREN) {
 		insert_children(parent, parent->num_children, 1, (Node *[]) { x });
 		return NULL;
 	}
-	Node *new;
+	struct Internal *new;
 	if (!(new = malloc(sizeof *new))) UNREACHABLE("malloc failed\n");
 	Node *last = remove_child(parent, MAX_CHILDREN - 1);
-	*new = (Node) { .depth = last->depth + 1 };
+	*new = (struct Internal) { .node = { .depth = last->depth + 1 } };
 	insert_children(new, 0, 2, (Node *[]) { last, x });
-	return new;
+	return &new->node;
 }
 
-static Node *prepend_child(Node *parent, Node *x) {
-	if (x->depth + 1 < parent->depth) {
+static Node *prepend_child(struct Internal *parent, Node *x) {
+	if (x->depth + 1 < parent->node.depth) {
 		Node *first = *parent->children;
-		node_count_child(parent, -1, first);
-		x = prepend_child(first, x);
-		node_count_child(parent, 1, first);
-	} else if (is_underfilled(x)) {
-		Node *first = *parent->children;
-		balance(x, first);
-		if (!first->num_children) { *parent->children = x; free(first); return NULL; }
+		count_child(parent, -1, first);
+		x = prepend_child((struct Internal *) first, x);
+		count_child(parent, 1, first);
+	} else if (is_underfilled(x) && balance(x, *parent->children)) {
+		free(*parent->children);
+		*parent->children = x;
+		return NULL; 
 	}
 	if (parent->num_children < MAX_CHILDREN) {
 		insert_children(parent, 0, 1, (Node *[]) { x });
 		return NULL;
 	}
-	Node *new;
+	struct Internal *new;
 	if (!(new = malloc(sizeof *new))) UNREACHABLE("malloc failed\n");
 	Node *first = remove_child(parent, 0);
-	*new = (Node) { .depth = first->depth + 1 };
+	*new = (struct Internal) { .node = { .depth = first->depth + 1 } };
 	insert_children(new, 0, 2, (Node *[]) { x, first });
 	SWAP(new, parent);
-	return new;
+	return &new->node;
 }
 
-static void insert_at_depth(Node *parent, unsigned i, Node *x) {
+static void insert_at_depth(struct Internal *parent, unsigned i, Node *x) {
 	Node *new;
 	if (i > 0) {
 		Node *last = parent->children[i - 1];
-		node_count_child(parent, -1, last);
-		new = append_child(last, x);
-		node_count_child(parent, 1, last);
+		count_child(parent, -1, last);
+		new = append_child((struct Internal *) last, x);
+		count_child(parent, 1, last);
 	} else {
 		Node *first = *parent->children;
-		node_count_child(parent, -1, first);
-		new = prepend_child(first, x);
-		node_count_child(parent, 1, first);
+		count_child(parent, -1, first);
+		new = prepend_child((struct Internal *) first, x);
+		count_child(parent, 1, first);
 	}
 	if (new) insert_children(parent, i, 1, (Node *[]) { new });
 }
@@ -279,16 +298,17 @@ static struct NodeSlice segment_chunks(size_t size, size_t count, struct Str seg
 	Node **nodes, **p;
 	if (!(p = nodes = malloc(capacity * sizeof *nodes))) return (struct NodeSlice) {};
 	for (Node **node = nodes; node < nodes + capacity; ++node) {
-		if (!((*node = malloc(sizeof **node))
-				&& ((*node)->value = malloc(sizeof *(*node)->value)))) {
-			free(*node);
-			for (Node **x = nodes; x < node; ++x) node_free(*x);
+		struct Leaf *leaf;
+		if (!(leaf = malloc(sizeof *leaf))) {
+			for (Node **x = nodes; x < node; ++x) free(*x);
+			free(nodes);
 			return (struct NodeSlice) {};
 		}
-		(*node)->depth = (*node)->value->len_left = (*node)->value->len_right = 0;
+		leaf->node.depth = leaf->value.len_left = leaf->value.len_right = 0;
+		*node = &leaf->node;
 	}
 	for (struct Str *s = segments; s < segments + count; ++s) for (; s->len; ++p) {
-			struct GapBuffer *acc = (*p)->value;
+			struct GapBuffer *acc = &((struct Leaf *) *p)->value;
 			unsigned n = MIN(s->len, MAX_BYTES);
 			if (size > (size_t) MAX_BYTES - acc->len_left) n = MIN(n, size - MIN_BYTES);
 			memcpy(acc->data + acc->len_left, s->p, n);
@@ -301,7 +321,7 @@ static struct NodeSlice segment_chunks(size_t size, size_t count, struct Str seg
 }
 
 /** Returns the number of children removed before @arg child_end. */
-static unsigned replace_child_range_with_leaves(Node *node, unsigned child_start, unsigned child_end,
+static unsigned replace_child_range_with_leaves(struct Internal *node, unsigned child_start, unsigned child_end,
 	struct NodeSlice extra_leaves, size_t *extra_leaves_offset) {
 	for (unsigned i = child_start; i < child_end; ++i) {
 		if (!(extra_leaves.len - *extra_leaves_offset)) {
@@ -310,35 +330,37 @@ static unsigned replace_child_range_with_leaves(Node *node, unsigned child_start
 			return n;
 		}
 		Node *child = node->children[i];
-		node_count_child(node, -1, child);
+		count_child(node, -1, child);
 		if (child->depth)
-			replace_child_range_with_leaves(child, 0, child->num_children,
+			replace_child_range_with_leaves(((struct Internal *) child),
+				0, ((struct Internal *) child)->num_children,
 				extra_leaves, extra_leaves_offset);
 		else {
 			Node *new = extra_leaves.xs[(*extra_leaves_offset)++];
 			*child = *new;
 			free(new);
 		}
-		node_count_child(node, 1, child);
+		count_child(node, 1, child);
 	}
 	return 0;
 }
 
-static struct NodeSlice node_replace(Node *node, struct Range range, struct Str s);
+static struct NodeSlice node_replace(Node **node, struct Range range, struct Str s);
 
 static struct NodeSlice replace_nodes_in_start_subtree(Node *node,
 	size_t start, struct Str s, size_t *extra_leaves_offset) {
 	if (!node->depth) // Leaf node
-		return node_replace(node, (struct Range) { start, node_byte_size(node) }, s);
+		return node_replace(&node, (struct Range) { start, node_byte_size(node) }, s);
 
+	struct Internal *x = (struct Internal *) node;
 	size_t offset = 0;
-	Node **child = node->children;
+	Node **child = x->children;
 	for (size_t n; offset + (n = node_byte_size(*child)) < start; offset += n) ++child;
-	unsigned child_idx = child - node->children;
+	unsigned child_idx = child - x->children;
 
 	struct NodeSlice extra_leaves = replace_nodes_in_start_subtree(*child,
 		start - offset, s, extra_leaves_offset);
-	replace_child_range_with_leaves(node, child_idx + 1, node->num_children,
+	replace_child_range_with_leaves(x, child_idx + 1, x->num_children,
 		extra_leaves, extra_leaves_offset);
 	return extra_leaves;
 }
@@ -346,20 +368,20 @@ static struct NodeSlice replace_nodes_in_start_subtree(Node *node,
 static void replace_nodes_in_end_subtree(Node *node, size_t end,
 	struct NodeSlice *extras, size_t *extra_leaves_offset) {
 	if (node->depth) { // Internal node
-		Node **child = node->children;
+		struct Internal *x = (struct Internal *) node;
+		Node **child = x->children;
 		for (size_t n; (n = node_byte_size(*child)) < end; end -= n) ++child;
-		child -= replace_child_range_with_leaves(node, 0, child - node->children,
+		child -= replace_child_range_with_leaves(x, 0, child - x->children,
 			*extras, extra_leaves_offset);
 
 		replace_nodes_in_end_subtree(*child, end, extras, extra_leaves_offset);
-		extras->len = insert_children_overflowing(node, node->children - child, *extras);
+		extras->len = insert_children_overflowing(x, x->children - child, *extras);
 		return;
 	}
 
 	// This is the rightmost leaf affected by the replacement
-	assert(end <= gap_buffer_len(node->value));
-	move_gap(node->value, end);
-	struct GapBuffer *buf = node->value;
+	struct GapBuffer *buf = &((struct Leaf *) node)->value;
+	move_gap(buf, end);
 	memmove(buf->data, buf->data + end, buf->len_left - end);
 	buf->len_left -= end;
 	if (extras->len - *extra_leaves_offset && balance(extras->xs[extras->len - 1], node))
@@ -373,18 +395,21 @@ static void replace_nodes_in_end_subtree(Node *node, size_t end,
 /** Fixes the seam between subtrees @arg left and @arg right made by a deletion. */
 static bool fix_seam(Node *left, Node *right) {
 	// Balance the edges of the left and right subtrees recursively
-	if (left->depth) fix_seam(left->children[left->num_children - 1], *right->children);
+	if (left->depth) {
+		struct Internal *l = (struct Internal *) left;
+		fix_seam(l->children[l->num_children - 1], *((struct Internal *) right)->children);
+	}
 	return balance(left, right);
 }
 
-static struct NodeSlice node_replace(Node *node, struct Range range, struct Str s) {
-	assert(range.end <= node_byte_size(node));
-	if (!node->depth) { // Leaf node
-		struct GapBuffer *buf = node->value;
+static struct NodeSlice node_replace(Node **node, struct Range range, struct Str s) {
+	assert(range.end <= node_byte_size(*node));
+	if (!(*node)->depth) { // Leaf node
+		struct GapBuffer *buf = &((struct Leaf *) *node)->value;
 		if (MAX_BYTES - gap_buffer_len(buf) - (range.end - range.start) >= s.len) {
 			move_gap(buf, range.end);
-			memcpy(buf->data + buf->len_left, s.p, s.len);
-			buf->len_left += (int) s.len - (range.end - range.start);
+			memcpy(buf->data + (buf->len_left -= range.end - range.start), s.p, s.len);
+			buf->len_left += s.len;
 			return (struct NodeSlice) {};
 		}
 
@@ -431,12 +456,13 @@ static struct NodeSlice node_replace(Node *node, struct Range range, struct Str 
 		return extras;
 	}
 
+	struct Internal *x = (struct Internal *) *node;
 	// Find a child that envelops the whole range
 	size_t offset = 0;
-	Node **child = node->children;
+	Node **child = x->children;
 	for (size_t n; offset + (n = node_byte_size(*child)) < range.start; offset += n) ++child;
 	range = (struct Range) { range.start - offset, range.end - offset };
-	unsigned child_idx = child - node->children;
+	unsigned child_idx = child - x->children;
 	if (offset + node_byte_size(*child) < range.end) {
         /* Here node is the deepest node that contains the whole
 		 * range. Proceed by:
@@ -464,59 +490,56 @@ static struct NodeSlice node_replace(Node *node, struct Range range, struct Str 
 		unsigned start_idx = child_idx;
 		offset += node_byte_size(*child);
 		size_t extra_leaves_offset = 0;
-		node_count_child(node, -1, *child);
+		count_child(x, -1, *child);
 		struct NodeSlice extras
 			= replace_nodes_in_start_subtree(*child, range.start, s, &extra_leaves_offset);
-		node_count_child(node, 1, *child);
+		count_child(x, 1, *child);
 
 		for (size_t n; offset + (n = node_byte_size(*++child)) < range.end; offset += n) ;
-		child -= replace_child_range_with_leaves(node, start_idx + 1, child - node->children,
+		child -= replace_child_range_with_leaves(x, start_idx + 1, child - x->children,
 			extras, &extra_leaves_offset);
 
-		unsigned end_idx = child - node->children;
-		node_count_child(node, -1, *child);
+		unsigned end_idx = child - x->children;
+		count_child(x, -1, *child);
 		replace_nodes_in_end_subtree(*child, range.end - offset, &extras, &extra_leaves_offset);
-		node_count_child(node, 1, *child);
+		count_child(x, 1, *child);
 
 		if (extras.len) // Insert new child nodes before the end node
-			extras.len = insert_children_overflowing(node, end_idx, extras);
-		else if (fix_seam(node->children[end_idx - 1], node->children[end_idx])) {
-			node_free(remove_child(node, end_idx));
+			extras.len = insert_children_overflowing(x, end_idx, extras);
+		else if (fix_seam(x->children[end_idx - 1], x->children[end_idx])) {
+			node_free(remove_child(x, end_idx));
 			replace_with_single_child(node);
 		}
 		return extras;
 	}
 
-	node_count_child(node, -1, *child);
-	struct NodeSlice extras = node_replace(*child, range, s);
-	node_count_child(node, 1, *child);
+	count_child(x, -1, *child);
+	struct NodeSlice extras = node_replace(child, range, s);
+	count_child(x, 1, *child);
 	if (extras.len) // There are new child nodes to insert after the child
-		extras.len = insert_children_overflowing(node, child_idx + 1, extras);
-	else if ((*child)->depth < node->depth - 1) {
+		extras.len = insert_children_overflowing(x, child_idx + 1, extras);
+	else if ((*child)->depth < (*node)->depth - 1) {
 		// Child is at lower depth than its siblings and needs to be subsumed
-		insert_at_depth(node, child_idx, remove_child(node, child_idx));
+		insert_at_depth(x, child_idx, remove_child(x, child_idx));
 		replace_with_single_child(node);
 	} else {
 		// Child stayed at same depth but may be underfilled and in need of rebalancing
 		if (child_idx == 0) ++child;
 		if (balance(child[-1], *child)) {
-			node_free(remove_child(node, child - node->children));
+			node_free(remove_child(x, child - x->children));
 			replace_with_single_child(node);
 		}
 	}
 	return extras;
 }
+#pragma GCC diagnostic pop
 
 bool rope_init(struct Rope *rope) {
-	struct GapBuffer *chunk;
-	Node *root;
-	if (!((chunk = malloc(sizeof *chunk)) && (root = malloc(sizeof *root)))) {
-		free(chunk);
-		return false;
-	}
-	chunk->len_left = chunk->len_right = 0;
-	*root = (Node) { .value = chunk };
-	rope->root = root;
+	struct Leaf *root;
+	if (!(root = malloc(sizeof *root))) return false;
+	root->node.depth = 0;
+	root->value.len_left = root->value.len_right = 0;
+	rope->root = &root->node;
 	return true;
 }
 
@@ -524,13 +547,13 @@ void rope_free(struct Rope *rope) { node_free(rope->root); }
 
 static Node *node_from_nodes(Node *first, struct NodeSlice nodes) {
 	if (!!first + nodes.len <= MAX_CHILDREN) {
-		Node *node;
+		struct Internal *node;
 		if (!(node = malloc(sizeof *node))) return NULL;
-		*node = (Node) { .depth = (*nodes.xs)->depth + 1 };
+		*node = (struct Internal) { .node = { .depth = nodes.xs[0]->depth + 1 } };
 		if (first) insert_children(node, 0, 1, (Node *[]) { first });
 		insert_children(node, !!first, nodes.len, nodes.xs);
 		assert(node->num_children >= MIN_CHILDREN);
-		return node;
+		return &node->node;
 	}
 	struct NodeSlice slices[] = { { !!first, (Node *[]) { first } }, nodes };
 	nodes.len = make_parents(LENGTH(slices), slices, !!first + nodes.len, nodes.xs);
@@ -539,7 +562,7 @@ static Node *node_from_nodes(Node *first, struct NodeSlice nodes) {
 
 void rope_replace(struct Rope *rope, struct Range range, const char *text) {
 	struct Str s = { strlen(text), text };
-	struct NodeSlice extras = node_replace(rope->root, range, s);
+	struct NodeSlice extras = node_replace(&rope->root, range, s);
 	if (extras.len && !(rope->root = node_from_nodes(rope->root, extras)))
 		UNREACHABLE("malloc failed\n");
 	free(extras.xs);
