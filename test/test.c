@@ -42,7 +42,7 @@ void test_hash_table(void **) {
 
 void test_rope(void **) {
 	struct Rope rope;
-	if (!rope_init(&rope)) UNREACHABLE("malloc failed");
+	if (!rope_init(&rope)) die("malloc failed");
 	rope_replace(&rope, (struct Range) {}, "abcdefghijklmnopqrstuvwxyz");
 	assert_int_equal(rope_size(&rope), 26);
 	rope_replace(&rope, (struct Range) { 1, 17 }, "");
@@ -76,7 +76,7 @@ static void assert_lisp_equal(LispObject *a, LispObject *b) {
 		assert_lisp_equal(x->cdr, y->cdr);
 		break;
 	case LISP_INTEGER: assert_int_equal(*(int *) a, *(int *) b); break;
-	default: UNREACHABLE("TODO");
+	default: die("TODO");
 	}
 }
 
