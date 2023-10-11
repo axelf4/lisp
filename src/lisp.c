@@ -144,7 +144,7 @@ void lisp_print(LispObject *object) {
 		break;
 	case LISP_CLOSURE: printf("#<closure>"); break;
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
-	default: UNREACHABLE("Bad object type\n");
+	default: __builtin_unreachable();
 	}
 }
 

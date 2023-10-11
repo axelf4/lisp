@@ -219,19 +219,19 @@ static LispObject *run(struct Chunk *chunk) {
 		switch (lisp_type(*vals)) {
 		case LISP_FUNCTION:
 			struct Subr *subr = ((struct Function *) *vals)->subr;
-			if (ins.b != subr->min_args) UNREACHABLE("Too few arguments\n");
+			if (ins.b != subr->min_args) die("Too few arguments");
 			LispObject **args = vals + 1;
 			switch (subr->min_args) {
 			case 0: *vals = subr->a0(); break;
 			case 1: *vals = subr->a1(*args); break;
 			case 2: *vals = subr->a2(*args, args[1]); break;
 			case 3: *vals = subr->a3(*args, args[1], args[2]); break;
-			default: UNREACHABLE("Bad min_args\n");
+			default: die("Bad min_args");
 			}
 			break;
 		case LISP_CLOSURE:
 			struct Closure *closure = *vals;
-			if (ins.b != closure->arity) UNREACHABLE("Wrong number of arguments\n");
+			if (ins.b != closure->arity) die("Wrong number of arguments");
 
 			// Increment hotcount
 			if (is_recording) {
@@ -266,7 +266,7 @@ static LispObject *run(struct Chunk *chunk) {
 			}
 			pc = closure->offset;
 			break;
-		default: UNREACHABLE("Bad function\n");
+		default: die("Bad function");
 		}
 		continue;
 	op_mov: stack[ins.a] = stack[ins.b]; continue;
@@ -424,7 +424,7 @@ static void store(struct ByteCompCtx *ctx, Register reg, struct FormValue x) {
 		emit(ctx, (union Instruction) { .op = GETUPVALUE, .a = reg, .b = x.reg });
 		break;
 	case KIND_NORETURN: break;
-	default: UNREACHABLE("Invalid form value kind\n");
+	default: __builtin_unreachable();
 	}
 }
 
@@ -444,7 +444,7 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 static struct FormValue compile_progn(struct ByteCompCtx *ctx, LispObject *x, Register reg_hint, bool is_return) {
 	struct FormValue value = { .kind = KIND_NIL, };
 	while (x) {
-		if (lisp_type(x) != LISP_CONS) UNREACHABLE("Bad list");
+		if (lisp_type(x) != LISP_CONS) die("Bad list");
 		LispObject *form = pop(&x);
 		value = compile_form(ctx, form, reg_hint, is_return && !x);
 	} 
@@ -469,11 +469,11 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 		default: __builtin_unreachable();
 		}
 	case LISP_INTEGER: return (struct FormValue) { .kind = KIND_OBJ, .obj = x };
-	case LISP_FUNCTION: UNREACHABLE("Cannot evaluate function\n");
+	case LISP_FUNCTION: die("Cannot evaluate function");
 	case LISP_CONS:
 		struct Cons *cell = x;
 		LispObject *head = pop(&x);
-		if (!listp(cell->cdr)) UNREACHABLE("Bad list"); 
+		if (!listp(cell->cdr)) die("Bad list");
 
 		if (head == ctx->fprogn) return compile_progn(ctx, x, reg_hint, is_return);
 		else if (head == ctx->fquote) return (struct FormValue) { KIND_OBJ, .obj = pop(&x) };
@@ -490,7 +490,7 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 			Register retval_reg = ctx->num_regs++;
 			while (args) {
 				LispObject *sym = pop(&args);
-				if (lisp_type(sym) != LISP_SYMBOL) UNREACHABLE("Bad argument\n");
+				if (lisp_type(sym) != LISP_SYMBOL) die("Bad argument");
 				++num_args;
 				ctx->vars[ctx->num_vars++]
 					= (struct Local) { .symbol = sym, .slot = ctx->num_regs++ };
@@ -559,7 +559,7 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 		size_t prev_num_regs = ctx->num_regs, num_args = 0;
 		Register reg = reg_hint == ctx->num_regs - 1 ? reg_hint : ctx->num_regs++;
 		while (x) {
-			if (lisp_type(x) != LISP_CONS) UNREACHABLE("Bad argument list\n");
+			if (lisp_type(x) != LISP_CONS) die("Bad argument list");
 			++num_args;
 			Register arg_reg = ctx->num_regs++;
 			store(ctx, arg_reg, compile_form(ctx, pop(&x), arg_reg, false));

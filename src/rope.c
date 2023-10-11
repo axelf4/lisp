@@ -58,7 +58,7 @@ struct Internal {
 	Node node;
 	unsigned char num_children;
 	Node *children[MAX_CHILDREN];
-	size_t byte_size; ///< The total byte size of the leaves in this subtree.
+	size_t byte_size; ///< Total byte size of the leaves in this subtree.
 };
 
 struct Leaf {
@@ -138,7 +138,7 @@ static size_t make_parents(size_t count, struct NodeSlice xs[static count], size
 
 			if (acc_len >= MAX_CHILDREN || (total <= MIN_CHILDREN && MAX_CHILDREN - acc_len < total)) {
 				struct Internal *node;
-				if (!(node = malloc(sizeof *node))) UNREACHABLE("bad malloc\n");
+				if (!(node = malloc(sizeof *node))) die("malloc failed");
 				*node = (struct Internal) { .node = { .depth = (*acc)->depth + 1 } };
 				insert_children(node, 0, acc_len, acc);
 				out[out_len++] = &node->node;
@@ -238,7 +238,7 @@ static Node *append_child(struct Internal *parent, Node *x) {
 		return NULL;
 	}
 	struct Internal *new;
-	if (!(new = malloc(sizeof *new))) UNREACHABLE("malloc failed\n");
+	if (!(new = malloc(sizeof *new))) die("malloc failed");
 	Node *last = remove_child(parent, MAX_CHILDREN - 1);
 	*new = (struct Internal) { .node = { .depth = last->depth + 1 } };
 	insert_children(new, 0, 2, (Node *[]) { last, x });
@@ -261,7 +261,7 @@ static Node *prepend_child(struct Internal *parent, Node *x) {
 		return NULL;
 	}
 	struct Internal *new;
-	if (!(new = malloc(sizeof *new))) UNREACHABLE("malloc failed\n");
+	if (!(new = malloc(sizeof *new))) die("malloc failed");
 	Node *first = remove_child(parent, 0);
 	*new = (struct Internal) { .node = { .depth = first->depth + 1 } };
 	insert_children(new, 0, 2, (Node *[]) { x, first });
@@ -447,7 +447,7 @@ static struct NodeSlice node_replace(Node **node, struct Range range, struct Str
 		// Now x holds the new segments. Allocate new gap buffers.
 		struct NodeSlice extras
 			= segment_chunks(len - new_len, segments + LENGTH(segments) - x, x);
-		if (!extras.xs) UNREACHABLE("malloc failed\n");
+		if (!extras.xs) die("malloc failed");
 		buf->len_left = (x > segments ? ll.len : 0) + (buf->len_right = 0);
 		for (struct Str *y = segments + 1; y < x; buf->len_left += y++->len)
 			memcpy(buf->data + buf->len_left, y->p, y->len);
@@ -564,7 +564,7 @@ void rope_replace(struct Rope *rope, struct Range range, const char *text) {
 	struct Str s = { strlen(text), text };
 	struct NodeSlice extras = node_replace(&rope->root, range, s);
 	if (extras.len && !(rope->root = node_from_nodes(rope->root, extras)))
-		UNREACHABLE("malloc failed\n");
+		die("malloc failed");
 	free(extras.xs);
 }
 
