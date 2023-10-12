@@ -43,9 +43,9 @@ void test_hash_table(void **) {
 void test_rope(void **) {
 	struct Rope rope;
 	if (!rope_init(&rope)) die("malloc failed");
-	rope_replace(&rope, (struct Range) {}, "abcdefghijklmnopqrstuvwxyz");
+	rope_replace(&rope, 0, 0, "abcdefghijklmnopqrstuvwxyz");
 	assert_int_equal(rope_size(&rope), 26);
-	rope_replace(&rope, (struct Range) { 1, 17 }, "");
+	rope_replace(&rope, 1, 17, "");
 	assert_int_equal(rope_size(&rope), 10);
 	rope_free(&rope);
 }

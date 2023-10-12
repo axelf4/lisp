@@ -15,10 +15,8 @@ bool rope_init(struct Rope *rope);
 
 void rope_free(struct Rope *rope);
 
-struct Range { size_t start, end; };
-
-/** Replaces the bytes in the inclusive-exclusive @arg range with @arg s. */
-void rope_replace(struct Rope *rope, struct Range range, const char *s);
+/** Replaces the bytes from @arg beg (inclusive) to @arg end (exclusive) with @arg s. */
+void rope_replace(struct Rope *rope, size_t beg, size_t end, const char *text);
 
 /** Returns the byte size of @arg rope. */
 size_t rope_size(struct Rope *rope);
