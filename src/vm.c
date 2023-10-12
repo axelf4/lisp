@@ -14,7 +14,9 @@ enum Op : uint8_t {
 		LOAD_OBJ,
 		LOAD_SHORT,
 		GETGLOBAL,
+		SETGLOBAL,
 		GETUPVALUE,
+		SETUPVALUE,
 		CALL,
 		TAIL_CALL,
 		MOV,
@@ -64,7 +66,10 @@ void disassemble(struct Chunk *chunk, const char *name) {
 		case LOAD_SHORT: printf("LOAD_SHORT %d <- %d\n", ins.a, (int16_t) ins.b); break;
 		case GETGLOBAL: printf("GETGLOBAL %d <- [%s]\n", ins.a,
 			((struct Symbol *) chunk->ins[i++].v)->name); break;
+		case SETGLOBAL: printf("SETGLOBAL %d -> [%s]\n", ins.a,
+			((struct Symbol *) chunk->ins[i++].v)->name); break;
 		case GETUPVALUE: printf("GETUPVALUE %d <- %u\n", ins.a, ins.b); break;
+		case SETUPVALUE: printf("SETUPVALUE %d -> %u\n", ins.a, ins.b); break;
 		case CALL: case TAIL_CALL:
 			printf("%sCALL %d <- (%d", ins.op == TAIL_CALL ? "TAIL_" : "", ins.a, ins.a);
 			for (size_t i = 0; i < ins.b; ++i) printf(" %lu", ins.a + 1 + i);
@@ -99,7 +104,7 @@ static struct GcTypeInfo obj_upvalue_tib = { obj_upvalue_trace, obj_upvalue_size
 struct Closure {
 	struct Chunk *chunk;
 	size_t offset; // Offset in the chunk.
-	unsigned char arity,
+	uint8_t arity,
 		num_upvalues;
 	struct ObjUpvalue *upvalues[];
 };
@@ -139,12 +144,12 @@ union SsaInstruction {
 	};
 };
 
-#define MAX_TRACE_LEN 256
+#define MAX_TRACE_LEN 512
 
 struct TraceRecording {
 	struct Closure *start;
 	union SsaInstruction trace[MAX_TRACE_LEN];
-	uint8_t count;
+	unsigned count;
 };
 
 static LispObject *run(struct Chunk *chunk) {
@@ -152,12 +157,11 @@ static LispObject *run(struct Chunk *chunk) {
 	LispObject *stack_top[256], **stack = stack_top;
 	struct CallFrame frames[128] = {};
 	size_t num_frames = 0;
-	struct ObjUpvalue *upvalues;
+	struct ObjUpvalue *upvalues = NULL;
 
 	disassemble(chunk, "my chunk");
 
-#define NUM_HOT_COUNT_BINS 64
-	uint8_t hotcounts[NUM_HOT_COUNT_BINS];
+	uint8_t hotcounts[64] = {};
 	bool is_recording = false;
 	struct TraceRecording recording = {};
 
@@ -168,10 +172,9 @@ static LispObject *run(struct Chunk *chunk) {
 		[LOAD_NIL] = &&op_load_nil,
 		[LOAD_OBJ] = &&op_load_obj,
 		[LOAD_SHORT] = &&op_load_short,
-		[GETGLOBAL] = &&op_getglobal,
-		[GETUPVALUE] = &&op_getupvalue,
-		[CALL] = &&op_call,
-		[TAIL_CALL] = &&op_tail_call,
+		[GETGLOBAL] = &&op_getglobal, [SETGLOBAL] = &&op_setglobal,
+		[GETUPVALUE] = &&op_getupvalue, [SETUPVALUE] = &&op_setupvalue,
+		[CALL] = &&op_call, [TAIL_CALL] = &&op_tail_call,
 		[MOV] = &&op_mov,
 		[JMP] = &&op_jmp,
 		[JNIL] = &&op_jnil,
@@ -182,10 +185,9 @@ static LispObject *run(struct Chunk *chunk) {
 		[LOAD_NIL] = &&op_load_nil,
 		[LOAD_OBJ] = &&op_load_obj,
 		[LOAD_SHORT] = &&op_load_short,
-		[GETGLOBAL] = &&op_getglobal,
-		[GETUPVALUE] = &&op_getupvalue,
-		[CALL] = &&op_call,
-		[TAIL_CALL] = &&op_tail_call,
+		[GETGLOBAL] = &&op_getglobal, [SETGLOBAL] = &&op_setglobal,
+		[GETUPVALUE] = &&op_getupvalue, [SETUPVALUE] = &&op_setupvalue,
+		[CALL] = &&op_call, [TAIL_CALL] = &&op_tail_call,
 		[MOV] = &&op_mov,
 		[JMP] = &&op_jmp,
 		[JNIL] = &&op_jnil,
@@ -204,6 +206,7 @@ static LispObject *run(struct Chunk *chunk) {
 		if (num_frames) {
 			*stack = stack[ins.a];
 			pc = frames[--num_frames].pc;
+			xs = (num_frames ? frames[num_frames - 1].closure->chunk : chunk)->ins;
 			stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
 			continue;
 		} else return stack[ins.a];
@@ -211,8 +214,12 @@ static LispObject *run(struct Chunk *chunk) {
 	op_load_obj: stack[ins.a] = xs[pc++].v; continue;
 	op_load_short: stack[ins.a] = lisp_integer((int16_t) ins.b); continue;
 	op_getglobal: stack[ins.a] = ((struct Symbol *) xs[pc++].v)->value; continue;
+	op_setglobal: ((struct Symbol *) xs[pc++].v)->value = stack[ins.a]; continue;
 	op_getupvalue:
 		stack[ins.a] = *frames[num_frames - 1].closure->upvalues[ins.b]->location;
+		continue;
+	op_setupvalue:
+		*frames[num_frames - 1].closure->upvalues[ins.b]->location = stack[ins.a];
 		continue;
 	op_call: op_tail_call:
 		LispObject **vals = stack + ins.a;
@@ -228,7 +235,8 @@ static LispObject *run(struct Chunk *chunk) {
 			case 3: *vals = subr->a3(*args, args[1], args[2]); break;
 			default: die("Bad min_args");
 			}
-			break;
+			if (ins.op == TAIL_CALL) goto op_ret;
+			continue;
 		case LISP_CLOSURE:
 			struct Closure *closure = *vals;
 			if (ins.b != closure->arity) die("Wrong number of arguments");
@@ -242,7 +250,7 @@ static LispObject *run(struct Chunk *chunk) {
 			} else {
 				union Instruction *to = closure->chunk->ins + closure->offset;
 				uint64_t hash = (pc ^ ((uintptr_t) to / alignof(void *))) / 4;
-				uint8_t *hotcount = hotcounts + hash % NUM_HOT_COUNT_BINS;
+				uint8_t *hotcount = hotcounts + hash % LENGTH(hotcounts);
 				printf("Incrementing hotcount to %u\n", 1 + *hotcount);
 #define JIT_THRESHOLD 3
 				if (++*hotcount >= JIT_THRESHOLD) {
@@ -254,8 +262,7 @@ static LispObject *run(struct Chunk *chunk) {
 				}
 			}
 
-			if (ins.op == TAIL_CALL && num_frames) {
-				// TODO Need to fixup close upvals
+			if (ins.op == TAIL_CALL) {
 				if (vals != stack) memcpy(stack + 1, vals + 1, closure->arity * sizeof *vals);
 				frames[num_frames - 1].closure = closure;
 			} else {
@@ -264,11 +271,11 @@ static LispObject *run(struct Chunk *chunk) {
 				};
 				stack = vals;
 			}
+			xs = closure->chunk->ins;
 			pc = closure->offset;
-			break;
+			continue;
 		default: die("Bad function");
 		}
-		continue;
 	op_mov: stack[ins.a] = stack[ins.b]; continue;
 	op_jmp: pc += (int32_t) ins.b; continue;
 	op_jnil: if (!stack[ins.a]) pc += (int32_t) ins.b; continue;
@@ -307,7 +314,7 @@ static LispObject *run(struct Chunk *chunk) {
 #define MAX_LOCAL_VARS 192
 #define MAX_UPVALUES 64
 
-typedef uint16_t Register;
+typedef uint8_t Register;
 
 struct Local {
 	struct Symbol *symbol;
@@ -316,21 +323,21 @@ struct Local {
 };
 
 struct Upvalue {
-	char is_local; ///< Whether this upvalue captures a local or an upvalue.
+	bool is_local : 1; ///< Whether this upvalue captures a local or an upvalue.
 	uint8_t index;
 };
 
 struct FuncState {
 	struct FuncState *prev;
-	uint16_t prev_num_regs, vars_start, num_upvalues;
+	uint8_t prev_num_regs, vars_start, num_upvalues;
 	struct Upvalue upvalues[MAX_UPVALUES];
 };
 
 struct ByteCompCtx {
 	struct LispContext *lisp_ctx;
 	struct FuncState *fun;
-	size_t num_regs;
-	size_t num_vars;
+	uint8_t num_regs,
+		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
 
 	struct Symbol *flambda, *fif, *flet, *fprogn, *fquote;
@@ -367,24 +374,6 @@ static struct VarRef {
 	return (struct VarRef) { .type = VAR_GLOBAL };
 }
 
-enum FormValueKind {
-	KIND_NIL,
-	KIND_OBJ,
-	KIND_GLOBAL, ///< Global symbol value. sym = the symbol
-	KIND_LOCAL, ///< Local register. reg = the register
-	KIND_UPVALUE, ///< Upvalue. reg = the upvalue index
-	KIND_NORETURN,
-};
-
-struct FormValue {
-	enum FormValueKind kind;
-	union {
-		Register reg;
-		LispObject *obj;
-		struct Symbol *sym;
-	};
-};
-
 static void emit(struct ByteCompCtx *ctx, union Instruction ins) {
 	if (__builtin_expect(ctx->count >= ctx->capacity, false)) {
 		size_t new_capacity = ctx->capacity ? 2 * ctx->capacity : 32;
@@ -397,87 +386,92 @@ static void emit(struct ByteCompCtx *ctx, union Instruction ins) {
 	ctx->ins[ctx->count++] = ins;
 }
 
-static void store(struct ByteCompCtx *ctx, Register reg, struct FormValue x) {
-	switch (x.kind) {
-	case KIND_NIL: 
-		emit(ctx, (union Instruction) { .op = LOAD_NIL, .a = reg });
-		break;
-	case KIND_OBJ:
-		int i;
-		if (lisp_type(x.obj) == LISP_INTEGER &&
-			INT16_MIN <= (i = *(int *) x.obj) && i <= INT16_MAX)
-			emit(ctx, (union Instruction) { .op = LOAD_SHORT, .a = reg, .b = i });
-		else {
-			emit(ctx, (union Instruction) { .op = LOAD_OBJ, .a = reg });
-			emit(ctx, (union Instruction) { .v = x.obj });
-		}
-		break;
-	case KIND_LOCAL:
-		if (x.reg != reg)
-			emit(ctx, (union Instruction) { .op = MOV, .a = reg, .b = x.reg });
-		break;
-	case KIND_GLOBAL:
-		emit(ctx, (union Instruction) { .op = GETGLOBAL, .a = reg });
-		emit(ctx, (union Instruction) { .v = x.sym });
-		break;
-	case KIND_UPVALUE:
-		emit(ctx, (union Instruction) { .op = GETUPVALUE, .a = reg, .b = x.reg });
-		break;
-	case KIND_NORETURN: break;
-	default: __builtin_unreachable();
-	}
-}
-
-/** Emit instructions to move variables greater than or equal to @arg var_limit. */
-static void end_scope(struct ByteCompCtx *ctx, uint16_t vars_start, uint16_t regs_start) {
+/** Emit instructions to move variables greater than or equal to @arg var_limit to the heap. */
+static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, uint16_t regs_start) {
 	for (size_t i = vars_start; i < ctx->num_vars; ++i)
 		if (ctx->vars[i].is_captured) {
 			emit(ctx, (union Instruction) { .op = CLOSE_UPVALS, .a = regs_start });
 			break;
 		}
-	ctx->num_vars = vars_start;
-	ctx->num_regs = regs_start;
 }
 
-static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Register reg_hint, bool is_return);
+enum CompileError {
+	COMP_OK,
+	COMP_NORETURN,
+	COMP_INVALID_FORM,
+	COMP_EXPECTED_LIST,
+	COMP_INVALID_VARIABLE,
+	COMP_EXPECTED_CONSEQUENT,
+};
 
-static struct FormValue compile_progn(struct ByteCompCtx *ctx, LispObject *x, Register reg_hint, bool is_return) {
-	struct FormValue value = { .kind = KIND_NIL, };
+struct Destination {
+	Register reg;
+	bool discarded : 1, ///< Whether anything but side-effects will be ignored.
+		is_return : 1; ///< Whether the form is in return position.
+};
+
+static enum CompileError emit_load_obj(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
+	int i;
+	if (dst.discarded) ;
+	else if (!x) emit(ctx, (union Instruction) { .op = LOAD_NIL, .a = dst.reg });
+	else if (lisp_type(x) == LISP_INTEGER
+		&& INT16_MIN <= (i = *(int *) x) && i <= INT16_MAX)
+		emit(ctx, (union Instruction) { .op = LOAD_SHORT, .a = dst.reg, .b = i });
+	else {
+		emit(ctx, (union Instruction) { .op = LOAD_OBJ, .a = dst.reg });
+		emit(ctx, (union Instruction) { .v = x });
+	}
+	return COMP_OK;
+}
+
+static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst);
+
+static enum CompileError compile_progn(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
+	if (!x) return emit_load_obj(ctx, NULL, dst);
 	while (x) {
-		if (lisp_type(x) != LISP_CONS) die("Bad list");
+		if (lisp_type(x) != LISP_CONS) return COMP_EXPECTED_LIST;
 		LispObject *form = pop(&x);
-		value = compile_form(ctx, form, reg_hint, is_return && !x);
+		struct Destination d = dst;
+		d.is_return &= !x;
+		enum CompileError err;
+		if ((err = compile_form(ctx, form, d))) return err;
 	} 
-	return value;
+	return COMP_OK;
 }
 
-/**
- * Byte-compile the form @arg x.
- *
- * This emits instructions to perform the side-effects of the form and
- * returns directions on how to obtain the resulting value.
- */
-static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Register reg_hint, bool is_return) {
+/** Byte-compile the form @arg x. */
+static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
+	enum CompileError err;
 	switch (lisp_type(x)) {
-	case LISP_NIL: return (struct FormValue) { .kind = KIND_NIL, };
+	case LISP_NIL: return emit_load_obj(ctx, NULL, dst);
 	case LISP_SYMBOL:
+		if (dst.discarded) break;
 		struct VarRef var = lookup_var(ctx, x);
 		switch (var.type) {
-		case VAR_LOCAL: return (struct FormValue) { .kind = KIND_LOCAL, .reg = var.slot };
-		case VAR_GLOBAL: return (struct FormValue) { .kind = KIND_GLOBAL, .sym = x };
-		case VAR_UPVALUE: return (struct FormValue) { .kind = KIND_UPVALUE, .reg = var.slot };
+		case VAR_LOCAL:
+			if (var.slot != dst.reg)
+				emit(ctx, (union Instruction) { .op = MOV, .a = dst.reg, .b = var.slot });
+			break;
+		case VAR_GLOBAL:
+			emit(ctx, (union Instruction) { .op = GETGLOBAL, .a = dst.reg });
+			emit(ctx, (union Instruction) { .v = x });
+			break;
+		case VAR_UPVALUE:
+			emit(ctx, (union Instruction) { .op = GETUPVALUE, .a = dst.reg, .b = var.slot });
+			break;
 		default: __builtin_unreachable();
 		}
-	case LISP_INTEGER: return (struct FormValue) { .kind = KIND_OBJ, .obj = x };
-	case LISP_FUNCTION: die("Cannot evaluate function");
+		break;
+	case LISP_INTEGER: return emit_load_obj(ctx, x, dst);
+	case LISP_FUNCTION: return COMP_INVALID_FORM;
 	case LISP_CONS:
-		struct Cons *cell = x;
 		LispObject *head = pop(&x);
-		if (!listp(cell->cdr)) die("Bad list");
+		if (!listp(x)) return COMP_INVALID_FORM;
 
-		if (head == ctx->fprogn) return compile_progn(ctx, x, reg_hint, is_return);
-		else if (head == ctx->fquote) return (struct FormValue) { KIND_OBJ, .obj = pop(&x) };
+		if (head == ctx->fprogn) return compile_progn(ctx, x, dst);
+		else if (head == ctx->fquote) return emit_load_obj(ctx, pop(&x), dst);
 		else if (head == ctx->flambda) {
+			if (dst.discarded) break;
 			LispObject *args = pop(&x);
 			struct FuncState fun = {
 				.prev = ctx->fun,
@@ -487,33 +481,34 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 			ctx->num_regs = 0;
 
 			size_t num_args = 0;
-			Register retval_reg = ctx->num_regs++;
+			Register ret_reg = ctx->num_regs++;
 			while (args) {
 				LispObject *sym = pop(&args);
-				if (lisp_type(sym) != LISP_SYMBOL) die("Bad argument");
+				if (lisp_type(sym) != LISP_SYMBOL) return COMP_INVALID_VARIABLE;
 				++num_args;
 				ctx->vars[ctx->num_vars++]
 					= (struct Local) { .symbol = sym, .slot = ctx->num_regs++ };
 			}
 
-			Register result_reg = reg_hint != (Register) -1 ? reg_hint : ctx->num_regs++;
-			size_t closurePos = ctx->count;
-			emit(ctx, (union Instruction) { .op = CLOS, .a = result_reg, .c = num_args });
+			size_t closure_pos = ctx->count;
+			emit(ctx, (union Instruction) { .op = CLOS, .a = dst.reg, .c = num_args });
 			emit(ctx, (union Instruction) {}); // Placeholder for #instructions
-			store(ctx, retval_reg, compile_progn(ctx, x, retval_reg, true));
-			end_scope(ctx, fun.vars_start, fun.prev_num_regs);
-			emit(ctx, (union Instruction) { .op = RET, .a = retval_reg });
+			err = compile_progn(ctx, x, (struct Destination) { ret_reg, .is_return = true });
+			if (!err) {
+				emit_close_upvalues(ctx, fun.vars_start, 0);
+				emit(ctx, (union Instruction) { .op = RET, .a = ret_reg });
+			} else if (err != COMP_NORETURN) return err;
 
-			ctx->ins[closurePos + 1].i = ctx->count - (closurePos + 2);
+			ctx->ins[closure_pos + 1].i = ctx->count - (closure_pos + 2);
 			// Write upvalues
-			ctx->ins[closurePos].d = fun.num_upvalues;
+			ctx->ins[closure_pos].d = fun.num_upvalues;
 			for (unsigned i = 0; i < fun.num_upvalues; ++i) {
 				struct Upvalue x = fun.upvalues[i];
 				emit(ctx, (union Instruction) { .a = x.is_local, .b = x.index });
 			}
-
 			ctx->fun = fun.prev;
-			return (struct FormValue) { .kind = KIND_LOCAL, .reg = result_reg };
+			ctx->num_regs = fun.prev_num_regs;
+			ctx->num_vars = fun.vars_start;
 		} else if (head == ctx->flet) {
 			size_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
 			LispObject *vars = pop(&x);
@@ -523,65 +518,61 @@ static struct FormValue compile_form(struct ByteCompCtx *ctx, LispObject *x, Reg
 				else { sym = def; init = NULL; }
 				Register reg = ctx->num_regs++;
 				ctx->vars[ctx->num_vars++] = (struct Local) { .symbol = sym, .slot = reg };
-				store(ctx, reg, compile_form(ctx, init, reg, false));
+				compile_form(ctx, init, (struct Destination) { .reg = reg });
 			}
-			struct FormValue result = compile_progn(ctx, x, reg_hint, is_return);
-			if (result.kind == KIND_LOCAL && result.reg >= prev_num_regs) {
-				Register reg = reg_hint != (Register) -1 ? reg_hint : ctx->num_regs++;
-				store(ctx, reg, result);
-				result = (struct FormValue) { .kind = KIND_LOCAL, .reg = reg };
-			}
-			end_scope(ctx, prev_num_vars, prev_num_regs);
-			return result;
+			err = compile_progn(ctx, x, dst);
+			if (!err) emit_close_upvalues(ctx, prev_num_vars, prev_num_regs);
+			else if (err != COMP_NORETURN) return err;
+			ctx->num_regs = prev_num_regs;
+			ctx->num_vars = prev_num_vars;
 		} else if (head == ctx->fif) {
-			Register reg = reg_hint != (Register) -1 ? reg_hint : ctx->num_regs++;
-			store(ctx, reg, compile_form(ctx, pop(&x), reg, false)); // Emit condition test
-			struct FormValue result = x
-				? (struct FormValue) { .kind = KIND_LOCAL, .reg = reg }
-				: (struct FormValue) { .kind = KIND_NIL };
-
+			// Emit condition evaluation
+			if ((err = compile_form(ctx, pop(&x), (struct Destination) { .reg = dst.reg })))
+				return err;
 			size_t jmp = ctx->count;
-			emit(ctx, (union Instruction) { .op = JNIL, .a = reg });
-			store(ctx, reg, compile_form(ctx, pop(&x), reg, is_return));
-
-			if (x) { // If there is an else form
-				size_t jmp2 = ctx->count;
+			emit(ctx, (union Instruction) { .op = JNIL, .a = dst.reg });
+			if (!x) return COMP_EXPECTED_CONSEQUENT;
+			err = compile_form(ctx, pop(&x), dst); // Emit consequent
+			if (!(err == COMP_OK || err == COMP_NORETURN)) return err;
+			bool noreturn = err == COMP_NORETURN;
+			if (x) { // Emit alternative
 				emit(ctx, (union Instruction) { .op = JMP });
 				ctx->ins[jmp].b = ctx->count - (jmp + 1);
-				jmp = jmp2;
-				store(ctx, reg, compile_progn(ctx, x, reg, is_return));
-			}
+				jmp = ctx->count - 1;
+				err = compile_progn(ctx, x, dst);
+				if (!(err == COMP_OK || err == COMP_NORETURN)) return err;
+				noreturn &= err == COMP_NORETURN;
+			} else noreturn = false;
 			ctx->ins[jmp].b = ctx->count - (jmp + 1);
+			if (noreturn) return COMP_NORETURN;
+		} else { // Function call
+			size_t prev_num_regs = ctx->num_regs, num_args = 0;
+			Register reg = dst.reg == ctx->num_regs - 1 ? dst.reg : ctx->num_regs++;
+			while (x) {
+				if (lisp_type(x) != LISP_CONS) return COMP_EXPECTED_LIST;
+				++num_args;
+				if ((err = compile_form(ctx, pop(&x),
+							(struct Destination) { .reg = ctx->num_regs++ }))) return err;
+			}
+			if ((err = compile_form(ctx, head, (struct Destination) { .reg = reg })))
+				return err;
+			ctx->num_regs = prev_num_regs;
 
-			return result;
+			if (dst.is_return && ctx->fun) {
+				// Close upvalues before tail-call, since there is no opportunity later
+				emit_close_upvalues(ctx, ctx->fun->vars_start, 0);
+				emit(ctx, (union Instruction) { .op = TAIL_CALL, .a = reg, .b = num_args });
+				return COMP_NORETURN;
+			} else {
+				emit(ctx, (union Instruction) { .op = CALL, .a = reg, .b = num_args, });
+				if (reg != dst.reg && !dst.discarded)
+					emit(ctx, (union Instruction) { .op = MOV, .a = dst.reg, .b = reg });
+			}
 		}
-
-		size_t prev_num_regs = ctx->num_regs, num_args = 0;
-		Register reg = reg_hint == ctx->num_regs - 1 ? reg_hint : ctx->num_regs++;
-		while (x) {
-			if (lisp_type(x) != LISP_CONS) die("Bad argument list");
-			++num_args;
-			Register arg_reg = ctx->num_regs++;
-			store(ctx, arg_reg, compile_form(ctx, pop(&x), arg_reg, false));
-		}
-		store(ctx, reg, compile_form(ctx, head, reg, false));
-		ctx->num_regs = prev_num_regs;
-
-		if (is_return) {
-			// Close upvalues before tail-call, since there will not be a later opportunity
-			uint16_t vars_start = ctx->fun ? ctx->fun->vars_start : 0,
-				regs_start = ctx->fun ? ctx->fun->prev_num_regs : 0;
-			end_scope(ctx, vars_start, regs_start);
-			emit(ctx, (union Instruction) { .op = TAIL_CALL, .a = reg, .b = num_args, });
-			// TODO Sometimes tail call creates callframe anyhow
-			/* return (struct FormValue) { .kind = KIND_NORETURN }; */
-		} else {
-			emit(ctx, (union Instruction) { .op = CALL, .a = reg, .b = num_args, });
-		}
-		// CALL places result in function value register
-		return (struct FormValue) { .kind = KIND_LOCAL, .reg = reg };
+		break;
 	default: __builtin_unreachable();
 	}
+	return COMP_OK;
 }
 
 static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
@@ -594,8 +585,9 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 		.fquote = intern_c_string(lisp_ctx, "quote"),
 	};
 	Register reg = ctx.num_regs++;
-	store(&ctx, reg, compile_form(&ctx, form, reg, true)); // TODO Ensure any register (does not have to be first)
-	emit(&ctx, (union Instruction) { .op = RET, .a = reg });
+	enum CompileError err = compile_form(&ctx, form, (struct Destination) { reg, .is_return = true });
+	if (!err) emit(&ctx, (union Instruction) { .op = RET, .a = reg });
+	else if (err != COMP_NORETURN) die("Compilation error: %d", err);
 
 	struct Chunk *chunk = gc_alloc(heap, sizeof *chunk + ctx.count * sizeof *ctx.ins, &chunk_tib);
 	chunk->count = ctx.count;

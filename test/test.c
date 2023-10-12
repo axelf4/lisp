@@ -86,10 +86,9 @@ void test_eval(void **state) {
 (let ((mult (lambda (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x)))))) \
   (mult 4 3 0))"),
 		lisp_integer(12));
+
 	// Test that closures capture the environment
-	assert_lisp_equal(
-		eval(ctx, "((let ((x 1)) (lambda () x)))"),
-		lisp_integer(1));
+	assert_lisp_equal(eval(ctx, "((let ((x 1)) (lambda () x)))"), lisp_integer(1));
 }
 
 int main(void) {
