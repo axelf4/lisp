@@ -25,13 +25,13 @@ struct Subr *subr_head;
 #define DEFUN(lname, cname, args, ...)									\
 	static LispObject *F ## cname args;									\
 	[[gnu::constructor]] static void lisp_constructor_ ## cname(void) { \
-		static struct Subr lisp_subr_ ## cname = {						\
+		static struct Subr subr = {										\
 			.CAT(a, NUM_ARGS args) = F ## cname,						\
 			.name = lname,												\
 			.min_args = NUM_ARGS args,									\
 		};																\
-		lisp_subr_ ## cname.next = subr_head;							\
-		subr_head = &lisp_subr_ ## cname;								\
+		subr.next = subr_head;											\
+		subr_head = &subr;												\
 	}																	\
 	static LispObject *F ## cname args
 
@@ -196,5 +196,17 @@ DEFUN("<", lt, (LispObject *a, LispObject *b)) {
 }
 
 DEFUN("print", print, (LispObject *x)) { lisp_print(x); puts(""); return NULL; }
+
+DEFUN("cons", Fcons, (LispObject *car, LispObject *cdr)) {
+	return cons(car, cdr);
+}
+
+DEFUN("car", car, (LispObject *x)) {
+	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->car : NULL;
+}
+
+DEFUN("cdr", cdr, (LispObject *x)) {
+	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->cdr : NULL;
+}
 
 DEFUN("nop", nop, ()) { return NULL; }
