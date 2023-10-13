@@ -340,7 +340,7 @@ struct ByteCompCtx {
 		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
 
-	struct Symbol *flambda, *fif, *flet, *fprogn, *fquote;
+	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote;
 
 	size_t count, capacity;
 	union Instruction *ins;
@@ -525,6 +525,29 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			else if (err != COMP_NORETURN) return err;
 			ctx->num_regs = prev_num_regs;
 			ctx->num_vars = prev_num_vars;
+		} else if (head == ctx->fset) {
+			LispObject *var = pop(&x), *value = pop(&x);
+			if (lisp_type(var) != LISP_SYMBOL) return COMP_INVALID_VARIABLE;
+			struct Symbol *sym = (struct Symbol *) var;
+			struct VarRef v = lookup_var(ctx, sym);
+			if (dst.discarded && v.type == VAR_LOCAL)
+				return compile_form(ctx, value, (struct Destination) { .reg = v.slot });
+			if ((err = compile_form(ctx, value, (struct Destination) { .reg = dst.reg })))
+				return err;
+			switch (v.type) {
+			case VAR_LOCAL:
+				if (v.slot != dst.reg)
+					emit(ctx, (union Instruction) { .op = MOV, .a = v.slot, .b = dst.reg });
+				break;
+			case VAR_GLOBAL:
+				emit(ctx, (union Instruction) { .op = SETGLOBAL, .a = dst.reg });
+				emit(ctx, (union Instruction) { .v = sym });
+				break;
+			case VAR_UPVALUE:
+				emit(ctx, (union Instruction) { .op = SETUPVALUE, .a = dst.reg, .b = v.slot });
+				break;
+			default: __builtin_unreachable();
+			}
 		} else if (head == ctx->fif) {
 			// Emit condition evaluation
 			if ((err = compile_form(ctx, pop(&x), (struct Destination) { .reg = dst.reg })))
@@ -581,6 +604,7 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 		.flambda = intern_c_string(lisp_ctx, "lambda"),
 		.fif = intern_c_string(lisp_ctx, "if"),
 		.flet = intern_c_string(lisp_ctx, "let"),
+		.fset = intern_c_string(lisp_ctx, "set"),
 		.fprogn = intern_c_string(lisp_ctx, "progn"),
 		.fquote = intern_c_string(lisp_ctx, "quote"),
 	};
