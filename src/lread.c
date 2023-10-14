@@ -82,6 +82,7 @@ val_end:
 	if (ctn->type == CTN_PREFIX) {
 		value = cons(ctn->prefix_sym, cons(value, NULL));
 		ctn = ctn->prev_container;
+		--cur;
 		goto val_end;
 	}
 

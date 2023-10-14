@@ -89,6 +89,10 @@ void test_eval(void **state) {
 
 	// Test that closures capture the environment
 	assert_lisp_equal(eval(ctx, "((let ((x 1)) (lambda () x)))"), lisp_integer(1));
+
+	// Test that macros work
+	eval(ctx, "(set mymacro (cons 'macro (lambda () '(+ 1 2))))");
+	assert_lisp_equal(eval(ctx, "(mymacro)"), lisp_integer(3));
 }
 
 int main(void) {

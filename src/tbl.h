@@ -77,12 +77,12 @@ struct TYPE {
 	size_t bucket_mask, ///< = n - 1
 		growth_left,
 		len;
-	/// Array of n + GROUP_WIDTH "control" bytes, preceded by n buckets of keys.
-	///
-	/// Each byte is one of:
-	/// * 0b1111_1111: EMPTY
-	/// * 0b1000_0000: DELETED (tombstone)
-	/// * 0b0xxx_xxxx: FULL (x is a hash fragment)
+	/** Array of n + GROUP_WIDTH "control" bytes, preceded by n buckets of keys.
+	 *
+	 * Each byte is one of:
+	 * - 0b1111_1111: EMPTY
+	 * - 0b1000_0000: DELETED (tombstone)
+	 * - 0b0xxx_xxxx: FULL (x is a hash fragment) */
 	union { KEY *buckets; unsigned char *ctrl; };
 };
 

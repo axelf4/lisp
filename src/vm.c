@@ -156,7 +156,7 @@ static LispObject *run(struct Chunk *chunk) {
 	union Instruction *xs = chunk->ins;
 	LispObject *stack_top[256], **stack = stack_top;
 	struct CallFrame frames[128] = {};
-	size_t num_frames = 0;
+	unsigned num_frames = 0;
 	struct ObjUpvalue *upvalues = NULL;
 
 	disassemble(chunk, "my chunk");
@@ -340,7 +340,7 @@ struct ByteCompCtx {
 		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
 
-	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote;
+	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
 
 	size_t count, capacity;
 	union Instruction *ins;
@@ -349,7 +349,7 @@ struct ByteCompCtx {
 static size_t resolve_upvalue(struct ByteCompCtx *ctx, struct FuncState *fun, size_t var) {
 	struct Upvalue upvalue = !fun->prev || var >= fun->prev->vars_start 
 		? ctx->vars[var].is_captured = true,
-		(struct Upvalue) { .is_local = true, .index = ctx->vars[var].slot  }
+		(struct Upvalue) { .is_local = true, .index = ctx->vars[var].slot }
 		: (struct Upvalue) { .is_local = false, .index = resolve_upvalue(ctx, fun->prev, var) };
 	// Check if this closure already has the upvalue
 	for (size_t i = 0; i < fun->num_upvalues; ++i) {
@@ -363,7 +363,7 @@ static size_t resolve_upvalue(struct ByteCompCtx *ctx, struct FuncState *fun, si
 
 static struct VarRef {
 	enum VarRefType { VAR_LOCAL, VAR_GLOBAL, VAR_UPVALUE } type;
-	size_t slot;
+	unsigned slot;
 } lookup_var(struct ByteCompCtx *ctx, struct Symbol *sym) {
 	for (size_t i = ctx->num_vars; i-- > 0;)
 		if (ctx->vars[i].symbol == sym)
@@ -409,6 +409,28 @@ struct Destination {
 	bool discarded : 1, ///< Whether anything but side-effects will be ignored.
 		is_return : 1; ///< Whether the form is in return position.
 };
+
+static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispObject *args, LispObject **out) {
+	if (!(lisp_type(sym->value) == LISP_CONS
+			&& ((struct Cons *) sym->value)->car == ctx->smacro)) return false;
+	LispObject *macro = ((struct Cons *) sym->value)->cdr;
+
+	struct Chunk *chunk;
+	char data[sizeof *chunk + (4 + 2 * UINT8_MAX) * sizeof *chunk->ins];
+	chunk = (void *) data;
+	size_t i = 0, argc = 0;
+	chunk->ins[i++] = (union Instruction) { .op = LOAD_OBJ, .a = 0 };
+	chunk->ins[i++] = (union Instruction) { .v = macro };
+	while (args) {
+		chunk->ins[i++] = (union Instruction) { .op = LOAD_OBJ, .a = 1 + argc++ };
+		chunk->ins[i++] = (union Instruction) { .v = pop(&args) };
+	}
+	chunk->ins[i++] = (union Instruction) { .op = CALL, .a = 0, .b = argc };
+	chunk->ins[i++] = (union Instruction) { .op = RET, .a = 0 };
+	chunk->count = i;
+	*out = run(chunk);
+	return true;
+}
 
 static enum CompileError emit_load_obj(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
 	int i;
@@ -568,7 +590,8 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			} else noreturn = false;
 			ctx->ins[jmp].b = ctx->count - (jmp + 1);
 			if (noreturn) return COMP_NORETURN;
-		} else { // Function call
+		} else if (maybe_eval_macro(ctx, head, x, &x)) return compile_form(ctx, x, dst);
+		else { // Function call
 			size_t prev_num_regs = ctx->num_regs, num_args = 0;
 			Register reg = dst.reg == ctx->num_regs - 1 ? dst.reg : ctx->num_regs++;
 			while (x) {
@@ -607,6 +630,7 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 		.fset = intern_c_string(lisp_ctx, "set"),
 		.fprogn = intern_c_string(lisp_ctx, "progn"),
 		.fquote = intern_c_string(lisp_ctx, "quote"),
+		.smacro = intern_c_string(lisp_ctx, "macro"),
 	};
 	Register reg = ctx.num_regs++;
 	enum CompileError err = compile_form(&ctx, form, (struct Destination) { reg, .is_return = true });
