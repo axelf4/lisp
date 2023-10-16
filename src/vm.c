@@ -76,8 +76,8 @@ void disassemble(struct Chunk *chunk, const char *name) {
 			puts(")");
 			break;
 		case MOV: printf("MOV %u <- %d\n", ins.a, ins.b); break;
-		case JMP: printf("JMP => %.4lu\n", i + (int32_t) ins.b); break;
-		case JNIL: printf("JMP if %u == NIL => %.4lu\n", ins.a, i + (int32_t) ins.b); break;
+		case JMP: printf("JMP => %.4lu\n", i + ins.b); break;
+		case JNIL: printf("JMP if %u == NIL => %.4lu\n", ins.a, i + ins.b); break;
 		case CLOS:
 			size_t len = chunk->ins[i++].i;
 			printf("CLOS %d <- (arity: %d) (num_upvals: %d) (len: %lu):\n", ins.a, ins.c, ins.d, len);
@@ -134,7 +134,8 @@ static struct ObjUpvalue *capture_upvalue(struct ObjUpvalue **upvalues, LispObje
 }
 
 struct CallFrame {
-	size_t pc, bp;
+	size_t bp;
+	union Instruction *pc;
 	struct Closure *closure;
 };
 
@@ -153,7 +154,6 @@ struct TraceRecording {
 };
 
 static LispObject *run(struct Chunk *chunk) {
-	union Instruction *xs = chunk->ins;
 	LispObject *stack_top[256], **stack = stack_top;
 	struct CallFrame frames[128] = {};
 	unsigned num_frames = 0;
@@ -196,24 +196,23 @@ static LispObject *run(struct Chunk *chunk) {
 	};
 
 	void **dispatch_table = normal_dispatch_table;
-	for (size_t pc = 0;;) {
-		if (is_recording) printf("Recording instruction at %lu\n", pc);
-		union Instruction ins = xs[pc++];
+	for (union Instruction *pc = chunk->ins;;) {
+		/* if (is_recording) printf("Recording instruction at %lu\n", pc); */
+		union Instruction ins = *pc++;
 		goto *dispatch_table[ins.op];
 #pragma GCC diagnostic pop
 
 	op_ret:
 		if (num_frames) {
 			pc = frames[--num_frames].pc;
-			xs = (num_frames ? frames[num_frames - 1].closure->chunk : chunk)->ins;
 			stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
 			continue;
 		} else return *stack;
 	op_load_nil: stack[ins.a] = NULL; continue;
-	op_load_obj: stack[ins.a] = xs[pc++].v; continue;
+	op_load_obj: stack[ins.a] = pc++->v; continue;
 	op_load_short: stack[ins.a] = lisp_integer((int16_t) ins.b); continue;
-	op_getglobal: stack[ins.a] = ((struct Symbol *) xs[pc++].v)->value; continue;
-	op_setglobal: ((struct Symbol *) xs[pc++].v)->value = stack[ins.a]; continue;
+	op_getglobal: stack[ins.a] = ((struct Symbol *) pc++->v)->value; continue;
+	op_setglobal: ((struct Symbol *) pc++->v)->value = stack[ins.a]; continue;
 	op_getupvalue:
 		stack[ins.a] = *frames[num_frames - 1].closure->upvalues[ins.b]->location;
 		continue;
@@ -240,6 +239,7 @@ static LispObject *run(struct Chunk *chunk) {
 			struct Closure *closure = *vals;
 			if (ins.b != closure->arity) die("Wrong number of arguments");
 
+			union Instruction *to = closure->chunk->ins + closure->offset;
 			// Increment hotcount
 			if (is_recording) {
 				if (closure == recording.start) {
@@ -247,8 +247,7 @@ static LispObject *run(struct Chunk *chunk) {
 					is_recording = false;
 				}
 			} else {
-				union Instruction *to = closure->chunk->ins + closure->offset;
-				uint64_t hash = (pc ^ ((uintptr_t) to / alignof(void *))) / 4;
+				uint64_t hash = ((uintptr_t) pc ^ (uintptr_t) to) / alignof *pc;
 				uint8_t *hotcount = hotcounts + hash % LENGTH(hotcounts);
 				printf("Incrementing hotcount to %u\n", 1 + *hotcount);
 #define JIT_THRESHOLD 3
@@ -262,7 +261,8 @@ static LispObject *run(struct Chunk *chunk) {
 			}
 
 			if (ins.op == TAIL_CALL) {
-				if (vals != stack) memcpy(stack + 1, vals + 1, closure->arity * sizeof *vals);
+				if (vals != stack)
+					memcpy(stack + 1, vals + 1, ins.b * sizeof *vals);
 				frames[num_frames - 1].closure = closure;
 			} else {
 				frames[num_frames++] = (struct CallFrame) {
@@ -270,26 +270,26 @@ static LispObject *run(struct Chunk *chunk) {
 				};
 				stack = vals;
 			}
-			xs = closure->chunk->ins;
-			pc = closure->offset;
+			pc = to;
 			continue;
 		default: die("Bad function");
 		}
 	op_mov: stack[ins.a] = stack[ins.b]; continue;
-	op_jmp: pc += (int32_t) ins.b; continue;
-	op_jnil: if (!stack[ins.a]) pc += (int32_t) ins.b; continue;
+	op_jmp: pc += ins.b; continue;
+	op_jnil: if (!stack[ins.a]) pc += ins.b; continue;
 	op_clos:
-		size_t len = xs[pc++].i, num_upvalues = ins.d;
+		size_t len = pc++->i, num_upvalues = ins.d;
 		struct Closure *closure
 			= gc_alloc(heap, sizeof *closure + num_upvalues * sizeof *closure->upvalues,
 				&closure_tib.gc_tib);
 		*closure = (struct Closure) {
-			.chunk = chunk, .offset = pc, .arity = ins.c, .num_upvalues = num_upvalues,
+			.chunk = chunk, .offset = pc - chunk->ins,
+			.arity = ins.c, .num_upvalues = num_upvalues,
 		};
 		pc += len;
 		// Read upvalues
 		for (unsigned i = 0; i < num_upvalues; ++i) {
-			union Instruction ins = xs[pc++];
+			union Instruction ins = *pc++;
 			uint8_t is_local = ins.a, index = ins.b;
 			struct CallFrame *frame = num_frames ? frames + num_frames - 1 : NULL;
 			closure->upvalues[i] = is_local
@@ -377,7 +377,7 @@ static void emit(struct ByteCompCtx *ctx, union Instruction ins) {
 	if (__builtin_expect(ctx->count >= ctx->capacity, false)) {
 		size_t new_capacity = ctx->capacity ? 2 * ctx->capacity : 32;
 		union Instruction *ins;
-		if (!(ins = realloc(ctx->ins, new_capacity * sizeof *ins))) exit(1);
+		if (!(ins = realloc(ctx->ins, new_capacity * sizeof *ins))) die("malloc failed");
 		ctx->ins = ins;
 		ctx->capacity = new_capacity;
 	}
