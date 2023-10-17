@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include <string.h>
 #include "lisp.h"
 #include "util.h"
@@ -10,6 +11,7 @@
 /** Operation code. */
 enum Op : uint8_t {
 	RET,
+		/// R(A) <- NULL
 		LOAD_NIL,
 		LOAD_OBJ,
 		LOAD_SHORT,
@@ -17,6 +19,7 @@ enum Op : uint8_t {
 		SETGLOBAL,
 		GETUPVALUE,
 		SETUPVALUE,
+		/// R(A) <- R(A)(R(A+1), ..., R(A+C))
 		CALL,
 		TAIL_CALL,
 		MOV,
@@ -72,7 +75,7 @@ void disassemble(struct Chunk *chunk, const char *name) {
 		case SETUPVALUE: printf("SETUPVALUE %d -> %u\n", ins.a, ins.b); break;
 		case CALL: case TAIL_CALL:
 			printf("%sCALL %d <- (%d", ins.op == TAIL_CALL ? "TAIL_" : "", ins.a, ins.a);
-			for (size_t i = 0; i < ins.b; ++i) printf(" %lu", ins.a + 1 + i);
+			for (unsigned i = 0; i < ins.c; ++i) printf(" %" PRIu8, ins.a + 1 + i);
 			puts(")");
 			break;
 		case MOV: printf("MOV %u <- %d\n", ins.a, ins.b); break;
@@ -196,118 +199,118 @@ static LispObject *run(struct Chunk *chunk) {
 	};
 
 	void **dispatch_table = normal_dispatch_table;
-	for (union Instruction *pc = chunk->ins;;) {
-		/* if (is_recording) printf("Recording instruction at %lu\n", pc); */
-		union Instruction ins = *pc++;
-		goto *dispatch_table[ins.op];
-#pragma GCC diagnostic pop
+	union Instruction *pc = chunk->ins, ins;
+	// Use token-threading to be able to swap dispatch table when recording
+#define CONTINUE do { ins = *pc++; goto *dispatch_table[ins.op]; } while (0)
+	CONTINUE;
 
-	op_ret:
-		if (num_frames) {
-			pc = frames[--num_frames].pc;
-			stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
-			continue;
-		} else return *stack;
-	op_load_nil: stack[ins.a] = NULL; continue;
-	op_load_obj: stack[ins.a] = pc++->v; continue;
-	op_load_short: stack[ins.a] = lisp_integer((int16_t) ins.b); continue;
-	op_getglobal: stack[ins.a] = ((struct Symbol *) pc++->v)->value; continue;
-	op_setglobal: ((struct Symbol *) pc++->v)->value = stack[ins.a]; continue;
-	op_getupvalue:
-		stack[ins.a] = *frames[num_frames - 1].closure->upvalues[ins.b]->location;
-		continue;
-	op_setupvalue:
-		*frames[num_frames - 1].closure->upvalues[ins.b]->location = stack[ins.a];
-		continue;
-	op_call: op_tail_call:
-		LispObject **vals = stack + ins.a;
-		switch (lisp_type(*vals)) {
-		case LISP_FUNCTION:
-			struct Subr *subr = ((struct Function *) *vals)->subr;
-			if (ins.b != subr->min_args) die("Too few arguments");
-			LispObject **args = vals + 1;
-			switch (subr->min_args) {
-			case 0: *vals = subr->a0(); break;
-			case 1: *vals = subr->a1(*args); break;
-			case 2: *vals = subr->a2(*args, args[1]); break;
-			case 3: *vals = subr->a3(*args, args[1], args[2]); break;
-			default: die("Bad min_args");
+op_ret:
+	if (num_frames) {
+		pc = frames[--num_frames].pc;
+		stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
+		CONTINUE;
+	} else return *stack;
+op_load_nil: stack[ins.a] = NULL; CONTINUE;
+op_load_obj: stack[ins.a] = pc++->v; CONTINUE;
+op_load_short: stack[ins.a] = lisp_integer((int16_t) ins.b); CONTINUE;
+op_getglobal: stack[ins.a] = ((struct Symbol *) pc++->v)->value; CONTINUE;
+op_setglobal: ((struct Symbol *) pc++->v)->value = stack[ins.a]; CONTINUE;
+op_getupvalue:
+	stack[ins.a] = *frames[num_frames - 1].closure->upvalues[ins.b]->location;
+	CONTINUE;
+op_setupvalue:
+	*frames[num_frames - 1].closure->upvalues[ins.b]->location = stack[ins.a];
+	CONTINUE;
+op_call: op_tail_call:
+	LispObject **vals = stack + ins.a;
+	switch (lisp_type(*vals)) {
+	case LISP_FUNCTION:
+		struct Subr *subr = ((struct Function *) *vals)->subr;
+		if (ins.c != subr->min_args) die("Too few arguments");
+		LispObject **args = vals + 1;
+		switch (subr->min_args) {
+		case 0: *vals = subr->a0(); break;
+		case 1: *vals = subr->a1(*args); break;
+		case 2: *vals = subr->a2(*args, args[1]); break;
+		case 3: *vals = subr->a3(*args, args[1], args[2]); break;
+		default: die("Bad min_args");
+		}
+		if (ins.op == TAIL_CALL) { *stack = *vals; goto op_ret; }
+		break;
+	case LISP_CLOSURE:
+		struct Closure *closure = *vals;
+		if (ins.c != closure->arity) die("Wrong number of arguments");
+
+		union Instruction *to = closure->chunk->ins + closure->offset;
+		// Increment hotcount
+		if (is_recording) {
+			if (closure == recording.start) {
+				printf("Found loop start!\n");
+				is_recording = false;
 			}
-			if (ins.op == TAIL_CALL) { *stack = *vals; goto op_ret; }
-			continue;
-		case LISP_CLOSURE:
-			struct Closure *closure = *vals;
-			if (ins.b != closure->arity) die("Wrong number of arguments");
-
-			union Instruction *to = closure->chunk->ins + closure->offset;
-			// Increment hotcount
-			if (is_recording) {
-				if (closure == recording.start) {
-					printf("Found loop start!\n");
-					is_recording = false;
-				}
-			} else {
-				uint64_t hash = ((uintptr_t) pc ^ (uintptr_t) to) / alignof *pc;
-				uint8_t *hotcount = hotcounts + hash % LENGTH(hotcounts);
-				printf("Incrementing hotcount to %u\n", 1 + *hotcount);
+		} else {
+			unsigned hash = ((uintptr_t) pc ^ (uintptr_t) to) / alignof *pc;
+			uint8_t *hotcount = hotcounts + hash % LENGTH(hotcounts);
+			printf("Incrementing hotcount to %u\n", 1 + *hotcount);
 #define JIT_THRESHOLD 3
-				if (++*hotcount >= JIT_THRESHOLD) {
-					*hotcount = 0;
-					// Start recording trace
-					dispatch_table = recording_dispatch_table;
-					is_recording = true;
-					recording.start = closure;
-				}
+			if (++*hotcount >= JIT_THRESHOLD) {
+				*hotcount = 0;
+				// Start recording trace
+				dispatch_table = recording_dispatch_table;
+				is_recording = true;
+				recording.start = closure;
 			}
+		}
 
-			if (ins.op == TAIL_CALL) {
-				if (vals != stack)
-					memcpy(stack + 1, vals + 1, ins.b * sizeof *vals);
-				frames[num_frames - 1].closure = closure;
-			} else {
-				frames[num_frames++] = (struct CallFrame) {
-					.pc = pc, .bp = vals - stack_top, .closure = closure,
-				};
-				stack = vals;
-			}
-			pc = to;
-			continue;
-		default: die("Bad function");
+		if (ins.op == TAIL_CALL) {
+			if (vals != stack)
+				memcpy(stack + 1, vals + 1, ins.c * sizeof *vals);
+			frames[num_frames - 1].closure = closure;
+		} else {
+			frames[num_frames++] = (struct CallFrame) {
+				.pc = pc, .bp = vals - stack_top, .closure = closure,
+			};
+			stack = vals;
 		}
-	op_mov: stack[ins.a] = stack[ins.b]; continue;
-	op_jmp: pc += ins.b; continue;
-	op_jnil: if (!stack[ins.a]) pc += ins.b; continue;
-	op_clos:
-		size_t len = pc++->i, num_upvalues = ins.d;
-		struct Closure *closure
-			= gc_alloc(heap, sizeof *closure + num_upvalues * sizeof *closure->upvalues,
-				&closure_tib.gc_tib);
-		*closure = (struct Closure) {
-			.chunk = chunk, .offset = pc - chunk->ins,
-			.arity = ins.c, .num_upvalues = num_upvalues,
-		};
-		pc += len;
-		// Read upvalues
-		for (unsigned i = 0; i < num_upvalues; ++i) {
-			union Instruction ins = *pc++;
-			uint8_t is_local = ins.a, index = ins.b;
-			struct CallFrame *frame = num_frames ? frames + num_frames - 1 : NULL;
-			closure->upvalues[i] = is_local
-				? capture_upvalue(&upvalues, stack_top + (frame ? frame->bp : 0) + index)
-				: frame->closure->upvalues[index];
-		}
-		stack[ins.a] = closure;
-		continue;
-	op_close_upvals:
-		while (upvalues && upvalues->location >= stack + ins.a) {
-			struct ObjUpvalue *x = upvalues;
-			x->closed = *x->location;
-			x->location = &x->closed;
-			upvalues = x->next;
-			x->next = NULL;
-		}
-		continue;
+		pc = to;
+		break;
+	default: die("Bad function");
 	}
+	CONTINUE;
+op_mov: stack[ins.a] = stack[ins.b]; CONTINUE;
+op_jmp: pc += ins.b; CONTINUE;
+op_jnil: if (!stack[ins.a]) pc += ins.b; CONTINUE;
+op_clos:
+	size_t len = pc++->i, num_upvalues = ins.d;
+	struct Closure *closure
+		= gc_alloc(heap, sizeof *closure + num_upvalues * sizeof *closure->upvalues,
+			&closure_tib.gc_tib);
+	*closure = (struct Closure) {
+		.chunk = chunk, .offset = pc - chunk->ins,
+		.arity = ins.c, .num_upvalues = num_upvalues,
+	};
+	pc += len;
+	// Read upvalues
+	for (unsigned i = 0; i < num_upvalues; ++i) {
+		union Instruction ins = *pc++;
+		uint8_t is_local = ins.a, index = ins.b;
+		struct CallFrame *frame = num_frames ? frames + num_frames - 1 : NULL;
+		closure->upvalues[i] = is_local
+			? capture_upvalue(&upvalues, stack_top + (frame ? frame->bp : 0) + index)
+			: frame->closure->upvalues[index];
+	}
+	stack[ins.a] = closure;
+	CONTINUE;
+op_close_upvals:
+	while (upvalues && upvalues->location >= stack + ins.a) {
+		struct ObjUpvalue *x = upvalues;
+		x->closed = *x->location;
+		x->location = &x->closed;
+		upvalues = x->next;
+		x->next = NULL;
+	}
+	CONTINUE;
+#pragma GCC diagnostic pop
 }
 
 #define MAX_LOCAL_VARS 192
@@ -424,7 +427,7 @@ static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispOb
 		chunk->ins[i++] = (union Instruction) { .op = LOAD_OBJ, .a = 1 + argc++ };
 		chunk->ins[i++] = (union Instruction) { .v = pop(&args) };
 	}
-	chunk->ins[i++] = (union Instruction) { .op = CALL, .a = 0, .b = argc };
+	chunk->ins[i++] = (union Instruction) { .op = CALL, .a = 0, .c = argc };
 	chunk->ins[i++] = (union Instruction) { .op = RET };
 	chunk->count = i;
 	*out = run(chunk);
@@ -605,10 +608,10 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			if (dst.is_return && ctx->fun) {
 				// Close upvalues before tail-call, since there is no opportunity later
 				emit_close_upvalues(ctx, ctx->fun->vars_start, 0);
-				emit(ctx, (union Instruction) { .op = TAIL_CALL, .a = reg, .b = num_args });
+				emit(ctx, (union Instruction) { .op = TAIL_CALL, .a = reg, .c = num_args });
 				return COMP_NORETURN;
 			} else {
-				emit(ctx, (union Instruction) { .op = CALL, .a = reg, .b = num_args, });
+				emit(ctx, (union Instruction) { .op = CALL, .a = reg, .c = num_args, });
 				if (reg != dst.reg && !dst.discarded)
 					emit(ctx, (union Instruction) { .op = MOV, .a = dst.reg, .b = reg });
 			}
