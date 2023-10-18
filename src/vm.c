@@ -73,6 +73,7 @@ static void chunk_trace(struct GcHeap *heap, void *x) {
 }
 static struct GcTypeInfo chunk_tib = { chunk_trace, chunk_size };
 
+/// Flag signifying that the upvalue captures a local instead of an upvalue.
 #define UPVALUE_LOCAL 0x80
 
 /** Lisp closure prototype. */
@@ -129,22 +130,22 @@ void disassemble(struct Chunk *chunk, const char *name) {
 	}
 }
 
-struct ObjUpvalue {
+struct Upvalue {
 	LispObject **location, *closed;
-	struct ObjUpvalue *next;
+	struct Upvalue *next;
 };
 
-static size_t obj_upvalue_size(void *) { return sizeof(struct ObjUpvalue); }
-static void obj_upvalue_trace(struct GcHeap *heap, void *x) {
-	struct ObjUpvalue *upvalue = x;
+static size_t upvalue_size(void *) { return sizeof(struct Upvalue); }
+static void upvalue_trace(struct GcHeap *heap, void *x) {
+	struct Upvalue *upvalue = x;
 	gc_mark(sizeof *upvalue, x);
 	if (upvalue->next) gc_trace(heap, (void **) &upvalue->next);
 }
-static struct GcTypeInfo obj_upvalue_tib = { obj_upvalue_trace, obj_upvalue_size };
+static struct GcTypeInfo upvalue_tib = { upvalue_trace, upvalue_size };
 
 struct Closure {
 	struct Prototype *prototype;
-	struct ObjUpvalue *upvalues[];
+	struct Upvalue *upvalues[];
 };
 
 static size_t closure_size(void *x) {
@@ -162,13 +163,13 @@ static struct LispTypeInfo closure_tib = {
 	.gc_tib = { closure_trace, closure_size }, .tag = LISP_CLOSURE,
 };
 
-static struct ObjUpvalue *capture_upvalue(struct ObjUpvalue **upvalues, LispObject **local) {
-	struct ObjUpvalue *prev = NULL, *x = *upvalues;
-	for (; x && x->location > local; x = x->next) ;
+static struct Upvalue *capture_upvalue(struct Upvalue **upvalues, LispObject **local) {
+	struct Upvalue *prev = NULL, *x = *upvalues;
+	while (x && x->location > local) x = x->next;
 	if (x && x->location == local) return x;
 
-	struct ObjUpvalue *new = gc_alloc(heap, sizeof *new, &obj_upvalue_tib);
-	*new = (struct ObjUpvalue) { .location = local, .next = *upvalues };
+	struct Upvalue *new = gc_alloc(heap, sizeof *new, &upvalue_tib);
+	*new = (struct Upvalue) { .location = local, .next = *upvalues };
 	return *(prev ? &prev->next : upvalues) = new;
 }
 
@@ -196,7 +197,7 @@ static LispObject *run(struct Chunk *chunk) {
 	LispObject *stack_top[512], **stack = stack_top, **consts = chunk_constants(chunk);
 	struct CallFrame frames[128] = {};
 	unsigned num_frames = 0;
-	struct ObjUpvalue *upvalues = NULL;
+	struct Upvalue *upvalues = NULL;
 
 	disassemble(chunk, "my chunk");
 
@@ -344,7 +345,7 @@ op_clos:
 	CONTINUE;
 op_close_upvals:
 	while (upvalues && upvalues->location >= stack + ins.a) {
-		struct ObjUpvalue *x = upvalues;
+		struct Upvalue *x = upvalues;
 		x->closed = *x->location;
 		x->location = &x->closed;
 		upvalues = x->next;
@@ -382,15 +383,10 @@ struct Local {
 	char is_captured;
 };
 
-struct Upvalue {
-	bool is_local : 1; ///< Whether this upvalue captures a local or an upvalue.
-	uint8_t index;
-};
-
 struct FuncState {
 	struct FuncState *prev;
 	uint8_t prev_num_regs, vars_start, num_upvalues;
-	struct Upvalue upvalues[MAX_UPVALUES];
+	uint8_t upvalues[MAX_UPVALUES];
 };
 
 struct ByteCompCtx {
@@ -418,16 +414,13 @@ enum CompileError {
 	COMP_TOO_MANY_CONSTS,
 };
 
-static size_t resolve_upvalue(struct ByteCompCtx *ctx, struct FuncState *fun, size_t var) {
-	struct Upvalue upvalue = !fun->prev || var >= fun->prev->vars_start 
-		? ctx->vars[var].is_captured = true,
-		(struct Upvalue) { .is_local = true, .index = ctx->vars[var].slot }
-		: (struct Upvalue) { .is_local = false, .index = resolve_upvalue(ctx, fun->prev, var) };
+static uint8_t resolve_upvalue(struct ByteCompCtx *ctx, struct FuncState *fun, unsigned var) {
+	uint8_t upvalue = !fun->prev || var >= fun->prev->vars_start
+		? ctx->vars[var].is_captured = true, ctx->vars[var].slot | UPVALUE_LOCAL
+		: resolve_upvalue(ctx, fun->prev, var);
 	// Check if this closure already has the upvalue
-	for (size_t i = 0; i < fun->num_upvalues; ++i) {
-		struct Upvalue x = fun->upvalues[i];
-		if (x.is_local == upvalue.is_local && x.index == upvalue.index) return i;
-	}
+	for (size_t i = 0; i < fun->num_upvalues; ++i)
+		if (fun->upvalues[i] == upvalue) return i;
 	// Otherwise, create a new nonlocal upvalue
 	fun->upvalues[fun->num_upvalues] = upvalue;
 	return fun->num_upvalues++;
@@ -628,11 +621,8 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 				.arity = num_args,
 				.num_upvalues = fun.num_upvalues,
 			};
-			// Write upvalues
-			for (unsigned i = 0; i < fun.num_upvalues; ++i) {
-				struct Upvalue x = fun.upvalues[i];
-				prototype->upvalues[i] = x.index | (x.is_local ? UPVALUE_LOCAL : 0);
-			}
+			memcpy(prototype->upvalues, fun.upvalues,
+				fun.num_upvalues * sizeof *fun.upvalues); // Write upvalues
 
 			ctx->fun = fun.prev;
 			ctx->num_regs = fun.prev_num_regs;
