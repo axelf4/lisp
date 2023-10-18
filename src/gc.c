@@ -81,7 +81,7 @@ struct GcHeap {
 	struct Vec free, recycled, rest;
 	struct Chunk *chunks;
 
-	bool mark_color, is_gc, defrag;
+	bool mark_color, inhibit_gc, defrag;
 	struct Vec trace_stack;
 };
 
@@ -131,7 +131,7 @@ static void gc_object_map_add(struct GcHeap *heap, char *x) {
 	struct Chunk *chunk = heap->chunks;
 	while (!((char *) chunk->blocks <= x && x < (char *) (chunk->blocks + BLOCKS_PER_CHUNK)))
 		chunk = chunk->next;
-	roaring_bitmap_add(&chunk->object_map, (x - (char *) chunk->blocks) / alignof(void *));
+	roaring_bitmap_add(&chunk->object_map, (x - (char *) chunk->blocks) / alignof(max_align_t));
 }
 
 enum {
@@ -184,7 +184,8 @@ success:
 #pragma GCC diagnostic pop
 	p += sizeof(struct GcObjectHeader);
 	gc_object_map_add(heap, p);
-	if (heap->free.length <= MIN_FREE && !heap->is_gc) garbage_collect(heap);
+	if (__builtin_expect(heap->free.length <= MIN_FREE, false) && !heap->inhibit_gc)
+		garbage_collect(heap);
 	return p;
 }
 
@@ -244,11 +245,11 @@ extern void *__libc_stack_end;
 		& ~(alignof(void *) - 1)); // Round up to alignment
 	for (uintptr_t *p = sp; p < (uintptr_t *) base; ++p) {
 		uintptr_t x = *p;
-		if (x % alignof(void *)) continue;
+		if (x % alignof(max_align_t)) continue;
 		for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
 			if (x >= (uintptr_t) chunk->blocks && x < (uintptr_t) (chunk->blocks + BLOCKS_PER_CHUNK)
 				&& roaring_bitmap_remove_checked(&chunk->object_map,
-					(x - (uintptr_t) chunk->blocks) / alignof(void *))) {
+					(x - (uintptr_t) chunk->blocks) / alignof(max_align_t))) {
 				vec_push(&heap->trace_stack, (void *) x);
 				break;
 			}
@@ -282,7 +283,7 @@ static struct BlockStats {
 }
 
 void garbage_collect(struct GcHeap *heap) {
-	heap->is_gc = true;
+	heap->inhibit_gc = true;
 	size_t prev_num_free = heap->free.length;
 
 	// Collect conservative roots
@@ -346,5 +347,5 @@ void garbage_collect(struct GcHeap *heap) {
 	heap->rest.length = j;
 
 	heap->defrag = heap->free.length <= MAX(MIN_FREE, prev_num_free);
-	heap->is_gc = false;
+	heap->inhibit_gc = false;
 }

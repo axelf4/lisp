@@ -73,6 +73,7 @@ static alignas(Group) unsigned char empty_ctrl[] = { [0 ... sizeof(Group) - 1] =
 #pragma GCC diagnostic pop
 #endif
 
+/** Hash table. */
 struct TYPE {
 	size_t bucket_mask, ///< = n - 1
 		growth_left,
@@ -80,9 +81,9 @@ struct TYPE {
 	/** Array of n + GROUP_WIDTH "control" bytes, preceded by n buckets of keys.
 	 *
 	 * Each byte is one of:
-	 * - 0b1111_1111: EMPTY
-	 * - 0b1000_0000: DELETED (tombstone)
-	 * - 0b0xxx_xxxx: FULL (x is a hash fragment) */
+	 * - 0b1111'1111: EMPTY
+	 * - 0b1000'0000: DELETED (tombstone)
+	 * - 0b0xxx'xxxx: FULL (x is a hash fragment) */
 	union { KEY *buckets; unsigned char *ctrl; };
 };
 
@@ -103,7 +104,7 @@ KEY *CAT(NAME, _tbl_find)(struct TYPE *table, KEY key) {
 			KEY *entry = BUCKETS(*table) + ((bucket + i / CHAR_BIT) & table->bucket_mask);
 			if (__builtin_expect(CAT(NAME, _equal)(*entry, key), true)) return entry;
 		}
-		// Check if there were any empty matches
+		// If there were any empty matches then probing is done
 		if (__builtin_expect(match_byte(EMPTY, group), true)) return NULL;
 	}
 }
@@ -148,18 +149,18 @@ static bool CAT(NAME, _tbl_reserve)(struct TYPE *table, size_t additional) {
 }
 
 /**
- * Insert @arg key if not already present, and output the entry into @arg entry.
+ * Inserts @arg key if it does not yet exist, and outputs the entry into @arg entry.
  *
- * @return Whether the key already existed.
+ * @return Whether @arg key was already present.
  */
 bool CAT(NAME, _tbl_entry)(struct TYPE *table, KEY key, KEY **entry) {
 	if ((*entry = CAT(NAME, _tbl_find)(table, key))) return true;
 
-	uint64_t h = CAT(NAME, _hash)(key);
 	if (!(__builtin_expect(table->growth_left, true) || CAT(NAME, _tbl_reserve)(table, 1)))
 		return (*entry = NULL);
 
 	// Key is not present: Search for EMPTY/DELETED instead
+	uint64_t h = CAT(NAME, _hash)(key);
 	size_t i = CAT(NAME, _tbl__find_insert_slot)(table, h);
 	table->growth_left -= table->ctrl[i] & 1; // Decrement unless replaced tombstone
 	++table->len;

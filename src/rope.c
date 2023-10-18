@@ -24,14 +24,13 @@ static void move_gap(struct GapBuffer *x, uint16_t i) {
 	if (i <= x->len_left) { // New gap is in left section: x|x...yy => x|...xyy
 		uint16_t len_moved = x->len_left - i;
 		memmove(x->data + MAX_BYTES - x->len_right - len_moved, x->data + i, len_moved);
-		x->len_left = i;
 		x->len_right += len_moved;
 	} else { // Otherwise, in right section: xx...y|y => xxy|...y
 		uint16_t len_moved = i - x->len_left;
 		memmove(x->data + x->len_left, x->data + MAX_BYTES - x->len_right, len_moved);
-		x->len_left = i;
 		x->len_right -= len_moved;
 	}
+	x->len_left = i;
 }
 
 static size_t gap_buffer_len(struct GapBuffer *x) { return x->len_left + x->len_right; }
