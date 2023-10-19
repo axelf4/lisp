@@ -3,48 +3,14 @@
 
   outputs = { self, nixpkgs }: let
     system = "x86_64-linux";
-    pkgs = import nixpkgs {
-      inherit system;
-      overlays = [ (final: prev: {
-        croaring = pkgs.stdenv.mkDerivation rec {
-          pname = "croaring";
-          version = "2.0.3";
-
-          src = final.fetchFromGitHub {
-            owner = "RoaringBitmap";
-            repo = "CRoaring";
-            rev = "v${version}";
-            hash = "sha256-WaFyJ/6zstJ05e3vfrwhaZKQsjRAEvVTs688Hw0fr94=";
-          };
-
-          # roaring.pc.in cannot handle absolute CMAKE_INSTALL_*DIRs, nor
-          # overridden CMAKE_INSTALL_FULL_*DIRs. With Nix, they are guaranteed
-          # to be absolute so the following patch suffices (see #144170).
-          patches = [ ./croaring-1.patch ];
-
-          nativeBuildInputs = [ final.cmake ];
-
-          doCheck = true;
-
-          preConfigure = ''
-            mkdir -p dependencies/.cache
-            ln -s ${final.fetchFromGitHub {
-              owner = "clibs";
-              repo = "cmocka";
-              rev = "f5e2cd7";
-              hash = "sha256-Oq0nFsZhl8IF7kQN/LgUq8VBy+P7gO98ep/siy5A7Js=";
-            }} dependencies/.cache/cmocka
-          '';
-        };
-      }) ];
-    };
+    pkgs = nixpkgs.legacyPackages."${system}";
   in {
     packages.x86_64-linux.default = pkgs.gcc13Stdenv.mkDerivation {
       name = "lisp";
       src = builtins.path { path = ./.; name = "lisp"; };
 
       nativeBuildInputs = [ pkgs.cmake ];
-      buildInputs = with pkgs; [ croaring xxHash ];
+      buildInputs = with pkgs; [ xxHash ];
       checkInputs = [ pkgs.cmocka ];
 
       doCheck = true;
