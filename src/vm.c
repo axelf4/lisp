@@ -174,7 +174,6 @@ static struct Upvalue *capture_upvalue(struct Upvalue **upvalues, LispObject **l
 }
 
 struct CallFrame {
-	size_t bp;
 	struct Instruction *pc;
 	struct Closure *closure;
 };
@@ -244,7 +243,7 @@ static LispObject *run(struct Chunk *chunk) {
 op_ret:
 	if (num_frames) {
 		pc = frames[--num_frames].pc;
-		stack = stack_top + (num_frames ? frames[num_frames - 1].bp : 0);
+		stack -= pc[-1].a; // Operand A of the CALL was the base pointer offset
 		consts = chunk_constants(
 			num_frames ? frames[num_frames - 1].closure->prototype->chunk : chunk);
 		CONTINUE;
@@ -312,7 +311,7 @@ op_call: op_tail_call:
 			frames[num_frames - 1].closure = closure;
 		} else {
 			frames[num_frames++] = (struct CallFrame) {
-				.pc = pc, .bp = vals - stack_top, .closure = closure,
+				.pc = pc, .closure = closure,
 			};
 			stack = vals;
 		}
@@ -335,11 +334,9 @@ op_clos:
 	// Read upvalues
 	for (unsigned i = 0; i < proto->num_upvalues; ++i) {
 		uint8_t index = proto->upvalues[i];
-		struct CallFrame *frame = num_frames ? frames + num_frames - 1 : NULL;
 		closure->upvalues[i] = (index & UPVALUE_LOCAL)
-			? capture_upvalue(&upvalues, stack_top + (frame ? frame->bp : 0)
-				+ (index & ~UPVALUE_LOCAL))
-			: frame->closure->upvalues[index];
+			? capture_upvalue(&upvalues, stack + (index & ~UPVALUE_LOCAL))
+			: frames[num_frames - 1].closure->upvalues[index];
 	}
 	stack[ins.a] = closure;
 	CONTINUE;
