@@ -4,8 +4,7 @@ project(lisp C)
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-enable_testing()
-
+include(CTest)
 find_package(cmocka 1.1.0 REQUIRED)
 find_package(xxHash REQUIRED)
 
@@ -18,9 +17,11 @@ target_link_libraries(lisplib xxHash::xxhash)
 add_executable(lisp src/main.c)
 target_link_libraries(lisp lisplib)
 
-add_executable(unittest test/test.c)
-target_include_directories(unittest PRIVATE cmocka "${CMAKE_SOURCE_DIR}/src")
-target_link_libraries(unittest cmocka lisplib)
-add_test(unittest unittest)
+if(BUILD_TESTING)
+  add_executable(unittest test/test.c)
+  target_include_directories(unittest PRIVATE cmocka "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(unittest cmocka lisplib)
+  add_test(unittest unittest)
+endif()
 
 install(TARGETS lisp)
