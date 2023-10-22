@@ -225,7 +225,7 @@ void gc_trace(struct GcHeap *heap, void **p) {
 		header->flags |= GC_FORWARDED;
 	} else object_map_add(heap, *p);
 
-	header->tib->trace(heap, *p);
+	if (!vec_push(&heap->trace_stack, p)) die("malloc failed");
 }
 
 static void pin_and_trace(struct GcHeap *heap, void *p) {
@@ -335,9 +335,17 @@ void garbage_collect(struct GcHeap *heap) {
 
 	// Alternate the liveness color to avoid zeroing object marks
 	heap->mark_color = !heap->mark_color;
-	while (heap->trace_stack.length) // Trace live objects
+	size_t num_roots = heap->trace_stack.length;
+	for (size_t i = 0; i < num_roots; ++i)
 		// Pin to not "evacuate" a false positive root
-		pin_and_trace(heap, heap->trace_stack.items[--heap->trace_stack.length]);
+		pin_and_trace(heap, heap->trace_stack.items[i]);
+	heap->trace_stack.length -= num_roots;
+	memcpy(heap->trace_stack.items, heap->trace_stack.items + num_roots,
+		MIN(num_roots, heap->trace_stack.length) * sizeof *heap->trace_stack.items);
+	while (heap->trace_stack.length) { // Trace live objects
+		void **p = heap->trace_stack.items[--heap->trace_stack.length];
+		((struct GcObjectHeader *) *p - 1)->tib->trace(heap, *p);
+	}
 
 	size_t j = 0;
 	for (size_t i = 0; i < heap->rest.length; ++i) {
