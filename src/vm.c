@@ -25,6 +25,7 @@ enum Op : uint8_t {
 	JNIL, ///< Conditional jump.
 	CLOS,
 	CLOSE_UPVALS, ///< Close stack variables up to R(A).
+	BC_NUM_OPS,
 };
 
 /** Byte-code instruction. */
@@ -174,19 +175,484 @@ static struct Upvalue *capture_upvalue(struct Upvalue **upvalues, LispObject **l
 	return *(prev ? (struct Upvalue **) &prev->ptr : upvalues) = new;
 }
 
+enum IrType : uint8_t {
+	TY_ANY = 1,
+	TY_NIL,
+	TY_SYMBOL,
+	TY_INT,
+	TY_FUNCTION,
+	TY_CLOSURE,
+	TY_UNBOXED_INT,
+};
+
+/*static bool is_boxed(enum IrType ty) {
+	return ty != TY_UNBOXED_INT;
+}*/
+
+enum SsaOp : uint8_t {
+	// Comparison operations are ordered such that flipping the zeroth
+	// bit inverts them.
+	IR_EQ, IR_NEQ,
+	IR_SLOAD, ///< Load stack slot.
+	IR_GLOAD, ///< Load global.
+	IR_ULOAD, ///< Load upvalue.
+	IR_CALL, ///< Call C function.
+	IR_CALLARG, ///< Argument for C function call.
+	IR_LOOP,
+	IR_PHI,
+	IR_NOP,
+	IR_NUM_OPS
+};
+
 union SsaInstruction {
 	struct {
-		uint8_t op;
+		enum SsaOp op;
+		enum IrType ty; ///< The type of the instruction result.
+		uint16_t a, ///< Operand 1.
+			b; ///< Operand 2.
+		union {
+			uint16_t prev;
+			uint8_t reg; ///< The allocated register.
+		};
+	};
+	LispObject *v; ///< Object constant.
+	int32_t i; ///< Integer constant.
+};
+
+typedef uint32_t IrRef;
+
+#define IR_REF_TYPE_SHIFT 16
+#define IR_REF_NONE 0
+
+struct SnapEntry {
+	struct { // Stack entry.
+		uint32_t slot : 8, ///< The stack slot to write.
+			ref : 24; ///< IR reference to the contents to write.
 	};
 };
 
+/*
+ * When taking an exit, the computations performed hitherto need to be
+ * transferred to the stack so that the interpreter can continue from
+ * where the compiled trace left off.
+ *
+ * A snapshot is therefore a list of slots and respective values to
+ * restore. (TODO Need to also reconstruct call frames and the PC.)
+ */
+struct Snapshot {
+	/// The number of instructions that have been executed before this snapshot is taken.
+	unsigned instruction_count,
+		offset, ///< Offset into SnapEntry array for first entry.
+		stack_entry_count;
+};
+
 #define MAX_TRACE_LEN 512
+#define MAX_SNAPSHOTS 64
+#define MAX_SNAPSHOT_ENTRIES 128
+#define IR_BIAS 256
 
 struct TraceRecording {
 	struct Closure *start;
-	union SsaInstruction trace[MAX_TRACE_LEN];
-	unsigned count;
+	union SsaInstruction trace[IR_BIAS + MAX_TRACE_LEN];
+	unsigned count, num_consts, frame_depth, base_offset, num_slots;
+
+	IrRef slots[256], ///< Array of IR references for each bytecode register.
+		*base; ///< Pointer into slots at the current frame offset.
+	uint16_t chain[IR_NUM_OPS];
+
+	bool need_snapshot;
+	struct SnapEntry snap_entries[MAX_SNAPSHOT_ENTRIES];
+	struct Snapshot snapshots[MAX_SNAPSHOTS];
+	unsigned num_snapshots, num_snap_entries;
 };
+
+#define IR_GET(state, ref) ((state)->trace[ref & 0xffff])
+
+/** Type of trace link. */
+enum TraceLink {
+	TRACE_LINK_NONE, ///< No link yet, the trace is incomplete.
+	/**
+	 * Abort the trace recording, e.g. due to NYI (not yet
+	 * implemented) or return from the initial function.
+	 */
+	TRACE_LINK_ABORT,
+	TRACE_LINK_LOOP, ///< Loop to itself.
+};
+
+static void record_init(struct TraceRecording *state, struct Closure *f) {
+	state->start = f;
+	state->count = state->num_consts = 0;
+	memset(state->chain, 0, sizeof state->chain);
+
+	state->num_slots = state->base_offset = 0;
+	memset(state->slots, 0, sizeof state->slots);
+	state->base = state->slots;
+
+	state->need_snapshot = false;
+	state->num_snapshots = state->num_snap_entries = 0;
+}
+
+static void take_snapshot(struct TraceRecording *state) {
+	if (!state->need_snapshot) return;
+	if (state->num_snapshots >= MAX_SNAPSHOTS
+		|| state->num_snap_entries + state->num_slots >= MAX_SNAPSHOT_ENTRIES)
+		die("Too many snapshots");
+	struct Snapshot *snap = state->snapshots + state->num_snapshots++;
+	*snap = (struct Snapshot) {
+		.instruction_count = state->count, .offset = state->num_snap_entries,
+	};
+	for (unsigned i = 0; i < state->num_slots; ++i) {
+		IrRef ref = state->slots[i];
+		if (ref) {
+			union SsaInstruction ins = IR_GET(state, ref);
+			// Skip unmodified SLOADs (TODO Cannot do this in nested frames)
+			if ((ref & 0xffff) >= IR_BIAS && ins.op == IR_SLOAD && ins.a == i) continue;
+			struct SnapEntry entry = { .slot = i, .ref = ref };
+			state->snap_entries[state->num_snap_entries++] = entry;
+			++snap->stack_entry_count;
+		}
+	}
+	state->need_snapshot = false;
+}
+
+static IrRef emit_ir(struct TraceRecording *state, union SsaInstruction x) {
+	x.prev = state->chain[x.op];
+	unsigned i;
+	state->trace[state->chain[x.op] = i = IR_BIAS + state->count++] = x;
+	return x.ty << IR_REF_TYPE_SHIFT | i;
+}
+
+static IrRef emit_folded(struct TraceRecording *state, union SsaInstruction x) {
+	switch (x.op) {
+	case IR_SLOAD: return state->slots[x.a];
+	case IR_EQ: case IR_NEQ: case IR_ULOAD: break;
+	case IR_GLOAD: break; // TODO Check that was not set since last load (same for upvalues)
+	default: goto no_cse;
+	}
+	// Common Subexpression Elimination (CSE)
+	uint16_t ref = state->chain[x.op];
+	while (ref) {
+		union SsaInstruction o = IR_GET(state, ref);
+		if (o.a == x.a && o.b == x.b) return o.ty << IR_REF_TYPE_SHIFT | ref;
+		ref = o.prev;
+	}
+no_cse: return emit_ir(state, x);
+}
+
+static IrRef emit_const(struct TraceRecording *state, enum IrType ty, union SsaInstruction x) {
+	// TODO Search if already emitted and return that instead
+	unsigned i;
+	state->trace[i = IR_BIAS - ++state->num_consts] = x;
+	return ty << IR_REF_TYPE_SHIFT | i;
+}
+
+static enum IrType ir_type_of_value(LispObject *x) {
+	switch (lisp_type(x)) {
+	case LISP_INTEGER: return TY_INT;
+	case LISP_FUNCTION: return TY_FUNCTION;
+	case LISP_CLOSURE: return TY_CLOSURE;
+	default: return TY_ANY;
+	}
+}
+
+/** Emit a stack load instruction if the stack slot content is not already loaded. */
+static IrRef sload(struct TraceRecording *state, LispObject **stack, unsigned slot) {
+	IrRef ref = state->base[slot];
+	if (ref) return ref; // Already loaded
+
+	take_snapshot(state);
+	// TODO Specialize to the case where supsequent code is predicated
+	// on the value being of some specific type. That way we can avoid
+	// an extraneous guard.
+	enum IrType ty = ir_type_of_value(stack[slot]);
+	unsigned min_num_slots = state->base_offset + slot + 1;
+	if (state->num_slots < min_num_slots) state->num_slots = min_num_slots;
+	return (state->base[slot] = emit_ir(state, (union SsaInstruction)
+			{ .op = IR_SLOAD, .ty = ty, .a = state->base_offset + slot }));
+}
+
+static void subst_loop_snapshot(struct TraceRecording *state, struct Snapshot *old, struct Snapshot *loop_snap, uint16_t *substs) {
+	// TODO Make a new snapshot where the old entries take precedence and use substs
+	(void) state, (void) old, (void) loop_snap, (void) substs;
+}
+
+/** Peels off a preamble from the loop.
+ *
+ * See: ARDÖ, Håkan; BOLZ, Carl Friedrich; FIJABKOWSKI, Maciej.
+ *      Loop-aware optimizations in PyPy's tracing JIT. In:
+ *      Proceedings of the 8th symposium on Dynamic languages. 2012.
+ *      p. 63-72.
+ */
+static void peel_loop(struct TraceRecording *state) {
+	unsigned preamble_len = state->count;
+	struct Snapshot *loop_snap = state->snapshots + state->num_snapshots - 1;
+	uint16_t *substs;
+	if (!(substs = calloc(preamble_len, sizeof *substs))) die("malloc failed");
+	// Separate peeled off preamble from loop body by LOOP instruction
+	emit_ir(state, (union SsaInstruction) { .op = IR_LOOP });
+
+	unsigned num_phis = 0;
+	uint16_t phis[16];
+	struct Snapshot *snap = state->snapshots;
+	for (unsigned i = 0; i < preamble_len; ++i) {
+		// TODO May need to increment current snapshot and copy-substitute it?
+		if (i >= snap->instruction_count)
+			subst_loop_snapshot(state, snap++, loop_snap, substs);
+
+		union SsaInstruction ins = state->trace[IR_BIAS + i];
+		if (ins.a >= IR_BIAS) ins.a = substs[ins.a - IR_BIAS];
+		if (ins.b >= IR_BIAS) ins.b = substs[ins.b - IR_BIAS];
+
+		uint16_t ref = substs[i] = emit_folded(state, ins);
+		if (ref != IR_BIAS + i) { // Loop-carried dependency
+			if (IR_BIAS <= ref && ref < IR_BIAS + preamble_len) {
+				printf("i: %u, ref: %" PRIu16 "\n", i, ref - IR_BIAS);
+				phis[num_phis++] = ref;
+			}
+			// Check ref for type-instability
+		}
+	}
+
+	// Emit PHI moves
+	for (unsigned i = 0; i < num_phis; ++i) {
+		uint16_t lref = phis[i], rref = substs[lref - IR_BIAS];
+		if (lref == rref) die("Invariant phi");
+		enum IrType ty = IR_GET(state, lref).ty;
+		printf("lref: %" PRIu16 ", rref: %" PRIu16 "\n", lref - IR_BIAS, rref - IR_BIAS);
+		emit_ir(state, (union SsaInstruction) { .op = IR_PHI, .ty = ty, .a = lref, .b = rref });
+	}
+	free(substs);
+}
+
+static bool has_side_effects(union SsaInstruction x) {
+	switch (x.op) {
+	case IR_EQ: case IR_NEQ: case IR_CALL: case IR_CALLARG: return true;
+	default: return false;
+	}
+}
+
+#define IR_MARK 0x80
+
+/** Dead-code elimination. */
+static void dce(struct TraceRecording *state) {
+	// Mark all instructions referenced in snapshots
+	for (struct Snapshot *snap = state->snapshots;
+			snap < state->snapshots + state->num_snapshots; ++snap)
+		for (struct SnapEntry *entry = state->snap_entries + snap->offset,
+					*end = entry + snap->stack_entry_count; entry < end; ++entry)
+			if ((entry->ref & 0xffff) >= IR_BIAS) IR_GET(state, entry->ref).ty |= IR_MARK;
+
+	// Propagate marks
+	uint16_t *pchain[IR_NUM_OPS];
+	for (unsigned i = 0; i < IR_NUM_OPS; ++i) pchain[i] = state->chain + i;
+	for (union SsaInstruction *x = state->trace + IR_BIAS + state->count;
+			x-- > state->trace + IR_BIAS;) {
+		if (x->ty & IR_MARK) x->ty &= ~IR_MARK;
+		else if (!has_side_effects(*x)){
+			*x = (union SsaInstruction) { .op = IR_NOP, .ty = TY_ANY };
+			*pchain[x->op] = x->prev;
+			continue;
+		}
+		pchain[x->op] = &x->prev;
+		if (x->a >= IR_BIAS) IR_GET(state, x->a).ty |= IR_MARK;
+		if (x->b >= IR_BIAS) IR_GET(state, x->b).ty |= IR_MARK;
+	}
+}
+
+/**
+ * Record instruction @a x prior to it being executed.
+ *
+ * @param stack The current base pointer.
+ */
+static enum TraceLink record_instruction(struct TraceRecording *state, LispObject **stack, struct Instruction x) {
+	LispObject **consts = chunk_constants(((struct Closure *) stack[0])->prototype->chunk);
+	IrRef result = IR_REF_NONE;
+	switch (x.op) {
+	case LOAD_SHORT:
+		result = emit_const(state,
+			TY_UNBOXED_INT, (union SsaInstruction) { .i = (int16_t) x.b });
+		break;
+	case GETGLOBAL:
+		struct Symbol *sym = consts[x.b];
+		IrRef sym_ref = emit_const(state,
+			TY_SYMBOL, (union SsaInstruction) { .v = (LispObject *) sym });
+		take_snapshot(state);
+		result = emit_ir(state, (union SsaInstruction)
+			{ .op = IR_GLOAD, .ty = ir_type_of_value(sym->value), .a = sym_ref });
+		break;
+	case GETUPVALUE:
+		// TODO If in nested function then upvalue might be in our stack already
+		// TODO Keep track of whether upvalue is immutable and can be inlined
+		struct Upvalue *upvalue = state->start->upvalues[x.c];
+		take_snapshot(state);
+		result = emit_folded(state, (union SsaInstruction)
+			{ .op = IR_ULOAD, .ty = ir_type_of_value(*upvalue->location), .a = x.c });
+		break;
+	case CALL:
+		LispObject *fun_value = stack[x.a];
+		switch (lisp_type(fun_value)) {
+		case LISP_FUNCTION:
+			IrRef ref = sload(state, stack, x.a);
+			// TODO If type of ref is TY_ANY then need to emit type check
+
+			// TODO There will not be a need to specialize C
+			// subroutines once the calling convention is changed so
+			// that all such functions take #args and argument array.
+			result = emit_ir(state, (union SsaInstruction)
+				{ .op = IR_CALL, .ty = TY_ANY, .a = ref, .b = x.c });
+			for (unsigned i = 0; i < x.c; ++i) {
+				IrRef arg_ref = sload(state, stack, x.a + 2 + i);
+				emit_ir(state, (union SsaInstruction)
+					{ .op = IR_CALLARG, .ty = arg_ref >> IR_REF_TYPE_SHIFT, .a = arg_ref });
+			}
+			break;
+		case LISP_CLOSURE:
+			puts("Cannot descend into Lisp closure yet.");
+			return TRACE_LINK_ABORT;
+		default: return TRACE_LINK_ABORT;
+		}
+		state->num_slots = state->base_offset + x.a + 1; // CALL always uses highest register
+		break;
+	case TAIL_CALL:
+		// Move args down to current frame
+		memmove(state->base, state->base + x.a, (2 + x.c) * sizeof *state->base);
+		state->need_snapshot = true;
+
+		fun_value = stack[x.a];
+		// Specialize to the function value in question
+		take_snapshot(state);
+		IrRef ref = sload(state, stack, x.a),
+			fn_ref = emit_const(state, TY_FUNCTION, (union SsaInstruction) { .v = fun_value });
+		emit_folded(state, (union SsaInstruction) { .op = IR_EQ, .ty = TY_CLOSURE, .a = ref, .b = fn_ref });
+
+		if (fun_value == state->start) {
+			state->num_slots = state->base_offset + 1 + x.c;
+			take_snapshot(state);
+			dce(state);
+			peel_loop(state);
+			return TRACE_LINK_LOOP;
+		}
+		puts("Tail calls not yet implemented, abortin trace...");
+		return TRACE_LINK_ABORT;
+	case MOV: result = sload(state, stack, x.c); break;
+	case JMP: break;
+	case JNIL:
+		ref = sload(state, stack, x.a);
+		enum IrType ty = ref >> IR_REF_TYPE_SHIFT;
+		if (ty != TY_ANY) break; // If the type cannot be NIL there is nothing to do
+		take_snapshot(state);
+		IrRef nil_ref = emit_const(state, TY_NIL, (union SsaInstruction) { .v = NULL });
+		emit_folded(state, (union SsaInstruction)
+			{ .op = IR_EQ ^ !!stack[x.a], .ty = ty, .a = ref, .b = nil_ref });
+		break;
+	case RET:
+		if (state->frame_depth > 0)
+			puts("TODO record RET if having inlined a function (when framedepth > 0)");
+		[[fallthrough]];
+	default:
+		printf("Recording instruction %" PRIu8 " is NYI, aborting trace...\n", x.op);
+		return TRACE_LINK_ABORT;
+	}
+
+	if (result) {
+		state->need_snapshot |= state->base[x.a] != result;
+		state->base[x.a] = result;
+		if (state->base_offset + x.a >= state->num_slots)
+			state->num_slots = state->base_offset + x.a + 1U;
+	}
+	return TRACE_LINK_NONE;
+}
+
+static const char *type_to_string(enum IrType ty) {
+	switch (ty) {
+	case TY_ANY: return "any";
+	case TY_NIL: return "nil";
+	case TY_SYMBOL: return "sym";
+	case TY_INT: return "int";
+	case TY_FUNCTION: return "fun";
+	case TY_CLOSURE: return "clo";
+	case TY_UNBOXED_INT: return "INT";
+	default: return "___";
+	}
+}
+
+static void print_ir_ref(struct TraceRecording *state, enum IrType ty, uint16_t ref) {
+	if (ref >= IR_BIAS) { printf("%.4u", ref - IR_BIAS); return; }
+	union SsaInstruction x = IR_GET(state, ref);
+	switch (ty) {
+	case TY_ANY: case TY_FUNCTION: case TY_CLOSURE: printf("%p", x.v); break;
+	case TY_SYMBOL:
+		struct Symbol *sym = x.v;
+		printf("[%.*s]", (int) sym->len, sym->name);
+		break;
+	case TY_UNBOXED_INT: printf("%+d", x.i); break;
+	default: printf("const(ty: %" PRIu8 ")", ty); break;
+	}
+}
+
+static void print_trace(struct TraceRecording *state, enum TraceLink link) {
+	puts("---- TRACE IR");
+	for (unsigned i = 0, snap_idx = 0; i < state->count; ++i) {
+		struct Snapshot *snap = state->snapshots + snap_idx;
+		if (snap_idx < state->num_snapshots && i >= snap->instruction_count) {
+			printf("....      SNAP  #%-3u [ ", snap_idx++);
+			unsigned j = 0;
+			for (struct SnapEntry *entry = state->snap_entries + snap->offset,
+						*end = entry + snap->stack_entry_count; entry < end; ++entry) {
+				for (; j < entry->slot; ++j) printf("---- ");
+				print_ir_ref(state, entry->ref >> IR_REF_TYPE_SHIFT, entry->ref);
+				putchar(' ');
+			}
+			puts("]");
+		}
+
+		union SsaInstruction x = state->trace[IR_BIAS + i];
+		printf("%.4u  %s ", i, type_to_string(x.ty));
+		switch (x.op) {
+		case IR_EQ: printf("EQ    ");
+			print_ir_ref(state, x.ty, x.a);
+			printf("  ");
+			print_ir_ref(state, x.ty, x.b);
+			puts("");
+			break;
+		case IR_NEQ:
+			printf("NEQ   ");
+			print_ir_ref(state, x.ty, x.a);
+			printf("  ");
+			print_ir_ref(state, x.ty, x.b);
+			puts("");
+			break;
+		case IR_SLOAD: printf("SLOAD #%" PRIu16 "\n", x.a); break;
+		case IR_GLOAD:
+			printf("GLOAD "); print_ir_ref(state, TY_SYMBOL, x.a); puts(""); break;
+		case IR_ULOAD: printf("ULOAD #%" PRIu16 "\n", x.a); break;
+		case IR_CALL: printf("CALL  ");
+			print_ir_ref(state, x.ty, x.a);
+			printf("  (");
+			for (unsigned j = 0; j < x.b; ++j) {
+				union SsaInstruction arg = state->trace[IR_BIAS + ++i];
+				if (j > 0) printf("  ");
+				print_ir_ref(state, arg.ty, arg.a);
+			}
+			puts(")");
+			break;
+		case IR_LOOP: puts("LOOP ------------"); break;
+		case IR_PHI:
+			printf("PHI   ");
+			print_ir_ref(state, x.ty, x.a);
+			printf("  ");
+			print_ir_ref(state, x.ty, x.b);
+			puts("");
+			break;
+		default: puts("OTHER");
+		}
+	}
+	switch (link) {
+	case TRACE_LINK_NONE: puts("---- INCOMPLETE -------"); break;
+	case TRACE_LINK_LOOP: puts("---- TRACE stop -> loop"); break;
+	default: __builtin_unreachable();
+	}
+}
 
 static LispObject *run(struct Chunk *chunk) {
 	LispObject *stack[512], **bp = stack, **consts = chunk_constants(chunk);
@@ -199,26 +665,13 @@ static LispObject *run(struct Chunk *chunk) {
 
 	disassemble(chunk, "my chunk");
 
-	uint8_t hotcounts[64] = {};
+	unsigned char hotcounts[64] = {};
 	bool is_recording = false;
 	struct TraceRecording recording = {};
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
-	static void *normal_dispatch_table[] = {
-		[RET] = &&op_ret,
-		[LOAD_NIL] = &&op_load_nil,
-		[LOAD_OBJ] = &&op_load_obj,
-		[LOAD_SHORT] = &&op_load_short,
-		[GETGLOBAL] = &&op_getglobal, [SETGLOBAL] = &&op_setglobal,
-		[GETUPVALUE] = &&op_getupvalue, [SETUPVALUE] = &&op_setupvalue,
-		[CALL] = &&op_call, [TAIL_CALL] = &&op_tail_call,
-		[MOV] = &&op_mov,
-		[JMP] = &&op_jmp,
-		[JNIL] = &&op_jnil,
-		[CLOS] = &&op_clos,
-		[CLOSE_UPVALS] = &&op_close_upvals,
-	}, *recording_dispatch_table[] = {
+	static void *main_dispatch_table[] = {
 		[RET] = &&op_ret,
 		[LOAD_NIL] = &&op_load_nil,
 		[LOAD_OBJ] = &&op_load_obj,
@@ -232,8 +685,10 @@ static LispObject *run(struct Chunk *chunk) {
 		[CLOS] = &&op_clos,
 		[CLOSE_UPVALS] = &&op_close_upvals,
 	};
-
-	void **dispatch_table = normal_dispatch_table;
+	void *recording_dispatch_table[BC_NUM_OPS], **dispatch_table = main_dispatch_table;
+	for (void **x = recording_dispatch_table;
+			x < recording_dispatch_table + LENGTH(recording_dispatch_table); ++x)
+		*x = &&do_record;
 	struct Instruction *pc = chunk_instructions(chunk), ins;
 	// Use token-threading to be able to swap dispatch table when recording
 #define CONTINUE do { ins = *pc++; goto *dispatch_table[ins.op]; } while (0)
@@ -279,22 +734,18 @@ op_call: op_tail_call:
 
 		struct Instruction *to = chunk_instructions(proto->chunk) + proto->offset;
 		// Increment hotcount
-		if (is_recording) {
-			if (closure == recording.start) {
-				printf("Found loop start!\n");
-				is_recording = false;
-			}
-		} else {
-			unsigned hash = ((uintptr_t) pc ^ (uintptr_t) to) / alignof *pc;
-			uint8_t *hotcount = hotcounts + hash % LENGTH(hotcounts);
-			printf("Incrementing hotcount to %u\n", 1 + *hotcount);
-#define JIT_THRESHOLD 3
-			if (++*hotcount >= JIT_THRESHOLD) {
-				*hotcount = 0;
+		unsigned hash = ((uintptr_t) pc ^ (uintptr_t) to) / alignof(struct Instruction);
+		unsigned char *hotcount = hotcounts + hash % LENGTH(hotcounts);
+		printf("Incrementing hotcount to %u\n", *hotcount + 1 + (ins.op == TAIL_CALL));
+#define JIT_THRESHOLD 4
+		if ((*hotcount += 1 + (ins.op == TAIL_CALL)) >= JIT_THRESHOLD) {
+			*hotcount = 0;
+			if (!is_recording) {
+				puts("Starting trace recording");
 				// Start recording trace
+				record_init(&recording, closure);
 				dispatch_table = recording_dispatch_table;
 				is_recording = true;
-				recording.start = closure;
 			}
 		}
 
@@ -335,6 +786,19 @@ op_close_upvals:
 		x->location = &x->ptr;
 	}
 	CONTINUE;
+do_record:
+	switch (record_instruction(&recording, bp, ins)) {
+	case TRACE_LINK_LOOP:
+		puts("Found loop start! Trace:\n");
+		print_trace(&recording, TRACE_LINK_LOOP);
+		[[fallthrough]];
+	case TRACE_LINK_ABORT:
+		is_recording = false;
+		dispatch_table = main_dispatch_table;
+		break;
+	default: break;
+	}
+	goto *main_dispatch_table[ins.op];
 #pragma GCC diagnostic pop
 }
 
