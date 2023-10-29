@@ -369,7 +369,6 @@ static bool constant_equal(struct ConstantEntry a, struct ConstantEntry b) {
 
 #define NAME constant
 #define KEY struct ConstantEntry
-#define TYPE ConstantTable
 #include "tbl.h"
 
 typedef uint8_t Register;
@@ -393,7 +392,7 @@ struct ByteCompCtx {
 		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
 	uint16_t num_constants;
-	struct ConstantTable constants;
+	struct Table constants;
 
 	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
 
@@ -495,6 +494,7 @@ static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispOb
 static enum CompileError constant_slot(struct ByteCompCtx *ctx, LispObject *x, uint16_t *slot) {
 	struct ConstantEntry *entry;
 	if (!(constant_tbl_entry(&ctx->constants, (struct ConstantEntry) { .obj = x }, &entry))) {
+		if (!entry) die("malloc failed");
 		if (ctx->constants.len > UINT16_MAX) return COMP_TOO_MANY_CONSTS;
 		entry->slot = ctx->constants.len - 1;
 	}
@@ -727,7 +727,7 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 		.smacro = intern_c_string(lisp_ctx, "macro"),
 		.num_regs = 1, // Reserve 0 for return register
 	};
-	ctx.constants = constant_tbl_new();
+	ctx.constants = tbl_new();
 	enum CompileError err = compile_form(&ctx, form, (struct Destination) { .reg = 0, .is_return = true });
 	if (!err) emit(&ctx, (struct Instruction) { .op = RET });
 	else if (err != COMP_NORETURN) die("Compilation error: %d", err);
@@ -737,13 +737,11 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 		&chunk_tib);
 	chunk->count = ctx.count;
 	chunk->num_consts = ctx.constants.len;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-	TBL_FOR_EACH(ctx.constants, entry) {
-		((LispObject **) chunk->data)[entry->slot] = entry->obj;
-#pragma GCC diagnostic pop
+	struct ConstantEntry *constant;
+	for (size_t i = 0; constant_tbl_iter_next(&ctx.constants, &i, &constant);) {
+		chunk_constants(chunk)[constant->slot] = constant->obj;
 		// Patch prototype chunk pointer
-		if (entry->is_prototype) ((struct Prototype *) entry->obj)->chunk = chunk;
+		if (constant->is_prototype) ((struct Prototype *) constant->obj)->chunk = chunk;
 	}
 	memcpy(chunk_instructions(chunk), ctx.ins, ctx.count * sizeof *ctx.ins);
 

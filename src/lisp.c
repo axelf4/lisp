@@ -14,7 +14,6 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 
 #define NAME symbol
 #define KEY struct Symbol *
-#define TYPE SymbolTable
 #include "tbl.h"
 
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
@@ -36,7 +35,7 @@ struct Subr *subr_head;
 	static LispObject *F ## cname args
 
 struct LispContext {
-	struct SymbolTable symbol_tbl;
+	struct Table symbol_tbl;
 };
 
 static size_t string_size(void *x) { return strlen(x) + 1; }
@@ -154,10 +153,9 @@ static void lisp_ctx_trace(struct GcHeap *, void *x) {
 	struct LispContext *ctx = x;
 	gc_mark(sizeof *ctx, x);
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-	TBL_FOR_EACH(ctx->symbol_tbl, x) gc_trace(heap, (void **) x);
-#pragma GCC diagnostic pop
+	struct Symbol **sym;
+	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
+		gc_trace(heap, (void **) sym);
 }
 
 struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
@@ -165,7 +163,7 @@ struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
 struct LispContext *lisp_init() {
 	struct LispContext *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
 	*ctx = (struct LispContext) {
-		.symbol_tbl = symbol_tbl_new(),
+		.symbol_tbl = tbl_new(),
 	};
 
 	for (struct Subr *subr = subr_head; subr; subr = subr->next) {

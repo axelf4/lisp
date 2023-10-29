@@ -22,17 +22,17 @@ static bool my_equal(int a, int b) { return a == b; }
 
 #define NAME my
 #define KEY int
-#define TYPE HashTable
 #include "tbl.h"
 
-void my_tbl_insert(struct HashTable *table, int key) {
+void my_tbl_insert(struct Table *table, int key) {
 	int *entry;
 	my_tbl_entry(table, key, &entry);
+	if (!entry) die("malloc failed");
 	*entry = key;
 }
 
 void test_hash_table(void **) {
-	struct HashTable table = my_tbl_new();
+	struct Table table = tbl_new();
 	my_tbl_insert(&table, 1);
 	int *entry = my_tbl_find(&table, 1);
 	assert_int_equal(entry ? *entry : 0, 1);
