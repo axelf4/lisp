@@ -9,5 +9,5 @@ void die(const char *format, ...) {
 	vfprintf(stderr, format, vargs);
 	va_end(vargs);
 	fputc('\n', stderr);
-	exit(1);
+	exit(EXIT_FAILURE);
 }

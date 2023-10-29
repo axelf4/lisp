@@ -7,13 +7,13 @@
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
-/// Number of elements in an array.
-#define LENGTH(x) (sizeof(x) / sizeof *(x))
+/// Number of elements in the array.
+#define LENGTH(x) (sizeof (x) / sizeof *(x))
 
 #define _CAT(a, b) a ## b
 #define CAT(a, b) _CAT(a, b)
 
-#define SWAP(x, y) do {	typeof(x) _tmp = (x); (x) = (y); (y) = _tmp; } while(0)
+#define SWAP(x, y) do { auto _tmp = (x); (x) = (y); (y) = _tmp; } while(0)
 
 /** Returns the smallest power of two greater than or equal to @arg x. */
 static inline unsigned int next_power_of_2(unsigned int x) {
@@ -31,10 +31,11 @@ static inline unsigned int next_power_of_2(unsigned int x) {
 #error Unknown byte-order
 #endif
 
-[[noreturn, gnu::cold]] void die(const char *format, ...);
+/** Terminates the program with the specified error message. */
+[[noreturn, gnu::cold, gnu::format (printf, 1, 2)]] void die(const char *format, ...);
 
 static inline uint64_t rotate_left(uint64_t x, unsigned n) {
-	const unsigned mask = CHAR_BIT * sizeof n - 1;
+	unsigned mask = CHAR_BIT * sizeof n - 1;
 	n &= mask;
 	return (x << n) | (x >> (-n & mask));
 }
