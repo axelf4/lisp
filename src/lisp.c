@@ -34,10 +34,6 @@ struct Subr *subr_head;
 	}																	\
 	static LispObject *F ## cname args
 
-struct LispContext {
-	struct Table symbol_tbl;
-};
-
 static size_t string_size(void *x) { return strlen(x) + 1; }
 
 static void string_trace(struct GcHeap *, void *x) { gc_mark(string_size(x), x); }
@@ -85,17 +81,16 @@ static struct LispTypeInfo cons_tib = {
 
 LispObject *cons(LispObject *car, LispObject *cdr) {
 	struct Cons *cell = gc_alloc(heap, sizeof *cell, &cons_tib.gc_tib);
-	cell->car = car;
-	cell->cdr = cdr;
+	*cell = (struct Cons) { car, cdr };
 	return cell;
 }
 
 LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]) {
-	char nil[3] = "nil";
-	if (len == 3 && memcmp(s, nil, LENGTH(nil)) == 0) return NULL;
+	if (len == 3 && memcmp(s, "nil", 3) == 0) return NULL;
 
 	struct Symbol key = { .len = len, .name = s }, **entry;
 	if (!symbol_tbl_entry(&ctx->symbol_tbl, &key, &entry)) {
+		if (!entry) die("malloc failed");
 		char *name = gc_alloc(heap, len + 1, &string_tib);
 		memcpy(name, s, len);
 		name[len] = '\0';
@@ -103,10 +98,6 @@ LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]
 		**entry = (struct Symbol) { .name = name, .len = len, };
 	}
 	return *entry;
-}
-
-LispObject *intern_c_string(struct LispContext *ctx, const char *s) {
-	return intern(ctx, strlen(s), s);
 }
 
 LispObject *lisp_integer(int i) {
@@ -136,7 +127,7 @@ void lisp_print(LispObject *object) {
 		break;
 	case LISP_SYMBOL:
 		struct Symbol *sym = object;
-		fwrite(sym->name, sizeof(char), sym->len, stdout);
+		fwrite(sym->name, sizeof *sym->name, sym->len, stdout);
 		break;
 	case LISP_FUNCTION:
 		printf("#<subr %s>", ((struct Function *) object)->subr->name);
@@ -162,15 +153,20 @@ struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
 
 struct LispContext *lisp_init() {
 	struct LispContext *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
-	*ctx = (struct LispContext) {
-		.symbol_tbl = tbl_new(),
-	};
+	ctx->symbol_tbl = tbl_new();
+
+	ctx->flambda = intern(ctx, sizeof "fn" - 1, "fn");
+	ctx->fif = intern(ctx, sizeof "if" - 1, "if");
+	ctx->flet = intern(ctx, sizeof "let" - 1, "let");
+	ctx->fset = intern(ctx, sizeof "set" - 1, "set");
+	ctx->fprogn = intern(ctx, sizeof "progn" - 1, "progn");
+	ctx->fquote = intern(ctx, sizeof "quote" - 1, "quote");
+	ctx->smacro = intern(ctx, sizeof "macro" - 1, "macro");
 
 	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
 		struct Function *f = gc_alloc(heap, sizeof *f, &function_tib.gc_tib);
 		*f = (struct Function) { subr };
 		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
-		if (!sym) exit(1);
 		sym->value = f;
 	}
 
@@ -179,6 +175,20 @@ struct LispContext *lisp_init() {
 
 void lisp_free(struct LispContext *ctx) {
 	symbol_tbl_free(&ctx->symbol_tbl);
+}
+
+DEFUN("print", print, (LispObject *x)) { lisp_print(x); puts(""); return NULL; }
+
+DEFUN("cons", cons, (LispObject *car, LispObject *cdr)) {
+	return cons(car, cdr);
+}
+
+DEFUN("car", car, (LispObject *x)) {
+	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->car : NULL;
+}
+
+DEFUN("cdr", cdr, (LispObject *x)) {
+	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->cdr : NULL;
 }
 
 DEFUN("+", add, (LispObject *a, LispObject *b)) {
@@ -192,19 +202,3 @@ DEFUN("<", lt, (LispObject *a, LispObject *b)) {
 		return NULL;
 	return *(int *) a < *(int *) b ? lisp_integer(1) : NULL;
 }
-
-DEFUN("print", print, (LispObject *x)) { lisp_print(x); puts(""); return NULL; }
-
-DEFUN("cons", Fcons, (LispObject *car, LispObject *cdr)) {
-	return cons(car, cdr);
-}
-
-DEFUN("car", car, (LispObject *x)) {
-	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->car : NULL;
-}
-
-DEFUN("cdr", cdr, (LispObject *x)) {
-	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->cdr : NULL;
-}
-
-DEFUN("nop", nop, ()) { return NULL; }

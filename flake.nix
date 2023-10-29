@@ -3,9 +3,9 @@
 
   outputs = { self, nixpkgs }: let
     system = "x86_64-linux";
-    pkgs = nixpkgs.legacyPackages."${system}";
+    pkgs = nixpkgs.legacyPackages.${system};
   in {
-    packages.x86_64-linux.default = pkgs.gcc13Stdenv.mkDerivation {
+    packages.${system}.default = pkgs.gcc13Stdenv.mkDerivation {
       name = "lisp";
       src = builtins.path { path = ./.; name = "lisp"; };
 
@@ -18,8 +18,8 @@
       cmakeFlags = [ "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE" ];
     };
 
-    devShells.x86_64-linux.default = pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } {
-      inputsFrom = [ self.packages.x86_64-linux.default ];
+    devShells.${system}.default = pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } {
+      inputsFrom = [ self.packages.${system}.default ];
       buildInputs = with pkgs; [ valgrind ];
     };
   };

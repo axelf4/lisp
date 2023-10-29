@@ -2,10 +2,9 @@
 #define LISP_H
 
 #include "gc.h"
+#include "tbl.h"
 
 extern struct GcHeap *heap;
-
-struct LispContext;
 
 enum LispObjectType {
 	LISP_NIL,
@@ -31,9 +30,15 @@ static inline enum LispObjectType lisp_type(LispObject *p) {
 }
 
 struct Symbol {
-	size_t len;
-	const char *name;
+	size_t len; ///< Name length (excluding NULL terminator).
+	const char *name; ///< NULL-terminated name string.
 	LispObject *value;
+};
+
+struct LispContext {
+	struct Table symbol_tbl;
+	// Common interned symbols
+	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
 };
 
 struct Subr {
@@ -59,9 +64,6 @@ LispObject *cons(LispObject *car, LispObject *cdr);
 LispObject *lisp_integer(int i);
 
 LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]);
-
-/** Interns a NULL-terminated string. */
-LispObject *intern_c_string(struct LispContext *ctx, const char *s);
 
 enum LispReadError {
 	LISP_READ_OK,

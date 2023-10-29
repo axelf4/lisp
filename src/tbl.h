@@ -4,14 +4,8 @@
  * See: https://abseil.io/about/design/swisstables
  */
 
-#if !(defined(NAME) && defined(KEY))
-#error
-#else
-
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
-#pragma GCC diagnostic ignored "-Wanalyzer-out-of-bounds"
-#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
 #ifndef TBL_H
 #define TBL_H
 
@@ -27,14 +21,14 @@
 #define IS_FULL(ctrl) (!(ctrl & 0x80))
 
 /// Primary hash function, used for probing.
-static size_t h1(uint64_t hash) { return hash; }
+static inline size_t h1(uint64_t hash) { return hash; }
 /// Secondary hash function, saved in the control byte.
-static char h2(uint64_t hash) { return hash >> (CHAR_BIT * (sizeof hash - 1) + 1); }
+static inline char h2(uint64_t hash) { return hash >> (CHAR_BIT * (sizeof hash - 1) + 1); }
 
-static size_t bucket_mask_to_capacity(size_t mask) {
+static inline size_t bucket_mask_to_capacity(size_t mask) {
 	return mask < 8 ? mask : ((mask + 1) / 8) * 7;
 }
-static size_t capacity_to_buckets(size_t capacity) {
+static inline size_t capacity_to_buckets(size_t capacity) {
 	return capacity < 8 ? (capacity < 4 ? 4 : 8) : next_power_of_2(capacity * 8 / 7);
 }
 
@@ -44,13 +38,13 @@ typedef size_t Group;
 #define REPEAT(x) (x * (~0ULL / 0xff))
 
 #define FOR_SET_BITS(var, x) for (typeof(x) _i = x, var;			\
-		_i && (var = __builtin_ctzll(_i), true); _i &= (_i - 1))
+		_i && (var = __builtin_ctzll(_i), true); _i &= _i - 1)
 
-static size_t match_byte(unsigned char x, size_t group) {
+static inline size_t match_byte(unsigned char x, size_t group) {
 	size_t cmp = group ^ REPEAT(x);
 	return (cmp - REPEAT(0x01)) & ~cmp & REPEAT(0x80);
 }
-static size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80); }
+static inline size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80); }
 
 #define PROBE(table, hash, bucket, group)								\
 	for (size_t bucket = h1(hash) & (table)->bucket_mask, _probe_distance = 0, group; \
@@ -64,11 +58,6 @@ static size_t match_empty_or_deleted(size_t group) { return group & REPEAT(0x80)
 #define SET_CTRL(table, i, x) \
 	((table).ctrl[(((i) - sizeof(Group)) & (table).bucket_mask) + sizeof(Group)] \
 		= (table).ctrl[i] = (x))
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
-static alignas(Group) unsigned char empty_ctrl[] = { [0 ... sizeof(Group) - 1] = EMPTY };
-#pragma GCC diagnostic pop
 
 /** Hash table. */
 struct Table {
@@ -84,9 +73,12 @@ struct Table {
 	unsigned char *ctrl;
 };
 
-static inline struct Table tbl_new() { return (struct Table) { .ctrl = empty_ctrl }; }
+static inline struct Table tbl_new() {
+	static const Group empty_ctrl = REPEAT(EMPTY);
+	return (struct Table) { .ctrl = (unsigned char *) &empty_ctrl };
+}
 
-static size_t find_insert_slot(struct Table *table, uint64_t h) {
+static inline size_t find_insert_slot(struct Table *table, uint64_t h) {
 	PROBE(table, h, bucket, group) {
 		size_t x = match_empty_or_deleted(group);
 		if (!__builtin_expect(x, true)) continue;
@@ -101,6 +93,8 @@ static size_t find_insert_slot(struct Table *table, uint64_t h) {
 	}
 }
 #endif
+
+#if defined(NAME) && defined(KEY)
 
 void CAT(NAME, _tbl_free)(struct Table *table) {
 	if (table->bucket_mask) free(table->ctrl - CTRL_OFFSET(table->bucket_mask + 1));
@@ -128,8 +122,8 @@ KEY *CAT(NAME, _tbl_find)(struct Table *table, KEY key) {
  * @return Whether @arg entry holds the current entry and iteration is not yet done.
  */
 static bool CAT(NAME, _tbl_iter_next)(struct Table *table, size_t *i, KEY **entry) {
-	for (; *i <= table->bucket_mask; ++*i) if (IS_FULL(table->ctrl[*i])) {
-			*entry = (KEY *) table->ctrl - (*i)++ - 1;
+	while (*i <= table->bucket_mask) if (IS_FULL(table->ctrl[(*i)++])) {
+			*entry = (KEY *) table->ctrl - *i;
 			return true;
 	}
 	return false;
@@ -145,9 +139,8 @@ static bool CAT(NAME, _tbl_reserve)(struct Table *table, size_t additional) {
 	size_t ctrl_offset = CTRL_OFFSET(n);
 	if (!(ctrl = malloc(ctrl_offset + n + sizeof(Group)))) return false;
 	memset(ctrl += ctrl_offset, EMPTY, n + sizeof(Group));
-	struct Table new_table = {
-		n - 1, bucket_mask_to_capacity(n - 1) - table->len, table->len, .ctrl = ctrl,
-	};
+	struct Table new_table
+		= { n - 1, bucket_mask_to_capacity(n - 1) - table->len, table->len, ctrl };
 	KEY *x;
 	for (size_t i = 0; CAT(NAME, _tbl_iter_next)(table, &i, &x);) {
 		uint64_t h = CAT(NAME, _hash)(*x);
@@ -170,7 +163,6 @@ bool CAT(NAME, _tbl_entry)(struct Table *table, KEY key, KEY **entry) {
 
 	if (!(__builtin_expect(table->growth_left, true) || CAT(NAME, _tbl_reserve)(table, 1)))
 		return (*entry = NULL);
-
 	// Key is not present: Search for EMPTY/DELETED instead
 	uint64_t h = CAT(NAME, _hash)(key);
 	size_t i = find_insert_slot(table, h);

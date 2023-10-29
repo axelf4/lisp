@@ -68,8 +68,7 @@ val_beg:
 		skip_whitespace(s);
 		union StackElement *prev_ctn = ctn;
 		*(ctn = cur++) = (union StackElement)
-			{ .prev_container = prev_ctn, .type = CTN_PREFIX,
-			  .prefix_sym = intern_c_string(ctx, "quote") };
+			{ .prev_container = prev_ctn, .type = CTN_PREFIX, .prefix_sym = ctx->fquote };
 		goto val_beg;
 	}
 	if (is_digit(**s) || ((**s == '+' || **s == '-') && is_digit(1[*s])))

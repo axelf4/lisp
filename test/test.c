@@ -8,11 +8,7 @@
 #include "rope.h"
 #include "util.h"
 
-void test1(void **) {
-	assert_non_null(cons(NULL, NULL));
-}
-
-void test_next_power_of_2(void **) {
+static void test_next_power_of_2(void **) {
 	assert_int_equal(next_power_of_2(3), 4);
 	assert_int_equal(next_power_of_2(8), 8);
 }
@@ -36,25 +32,19 @@ static bool my_equal(int a, int b) { return a == b; }
 #define KEY int
 #include "tbl.h"
 
-void my_tbl_insert(struct Table *table, int key) {
-	int *entry;
-	my_tbl_entry(table, key, &entry);
-	if (!entry) die("malloc failed");
-	*entry = key;
-}
-
-void test_hash_table(void **) {
+static void test_hash_table(void **) {
 	struct Table table = tbl_new();
-	my_tbl_insert(&table, 1);
-	int *entry = my_tbl_find(&table, 1);
-	assert_int_equal(entry ? *entry : 0, 1);
+	int *entry;
+	my_tbl_entry(&table, 1, &entry);
+	assert_int_equal(*entry, 1);
+	assert_ptr_equal(my_tbl_find(&table, 1), entry);
 	assert_null(my_tbl_find(&table, 2));
 	my_tbl_free(&table);
 }
 
-void test_rope(void **) {
+static void test_rope(void **) {
 	struct Rope rope;
-	if (!rope_init(&rope)) die("malloc failed");
+	if (!rope_init(&rope)) fail();
 	rope_replace(&rope, 0, 0, "abcdefghijklmnopqrstuvwxyz");
 	assert_int_equal(rope_size(&rope), 26);
 	rope_replace(&rope, 1, 17, "");
@@ -65,7 +55,7 @@ void test_rope(void **) {
 static int setup_lisp(void **state) { *state = lisp_init(); return 0; }
 static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
 
-void test_reader(void **state) {
+static void test_reader(void **state) {
 	LispObject *obj;
 	assert_int_equal(lisp_read_whole(*state, "(0 .", &obj), LISP_READ_EOF);
 	assert_int_equal(lisp_read_whole(*state, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
@@ -92,18 +82,18 @@ static void assert_lisp_equal(LispObject *a, LispObject *b) {
 	}
 }
 
-void test_eval(void **state) {
+static void test_eval(void **state) {
 	struct LispContext *ctx = *state;
 	assert_lisp_equal(eval(ctx, "\
-(let ((mult (lambda (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x)))))) \
+(let ((mult (fn (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x)))))) \
   (mult 4 3 0))"),
 		lisp_integer(12));
 
 	// Test that closures capture the environment
-	assert_lisp_equal(eval(ctx, "((let ((x 1)) (lambda () x)))"), lisp_integer(1));
+	assert_lisp_equal(eval(ctx, "((let ((x 1)) (fn () x)))"), lisp_integer(1));
 
 	// Test that macros work
-	eval(ctx, "(set mymacro (cons 'macro (lambda () '(+ 1 2))))");
+	eval(ctx, "(set mymacro (cons 'macro (fn () '(+ 1 2))))");
 	assert_lisp_equal(eval(ctx, "(mymacro)"), lisp_integer(3));
 }
 
@@ -111,7 +101,6 @@ int main(void) {
 	if (!(heap = gc_new())) return 1;
 
 	const struct CMUnitTest tests[] = {
-		cmocka_unit_test(test1),
 		cmocka_unit_test(test_next_power_of_2),
 		cmocka_unit_test(test_exception),
 		cmocka_unit_test(test_hash_table),
