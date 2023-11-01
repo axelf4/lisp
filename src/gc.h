@@ -44,10 +44,10 @@ struct GcBlock {
 [[gnu::malloc, nodiscard]] struct GcHeap *gc_new();
 
 /** Allocates @arg size bytes. */
-[[gnu::alloc_size (2), gnu::assume_aligned (alignof(max_align_t)), gnu::hot, nodiscard]]
+[[gnu::alloc_size (2), gnu::assume_aligned (alignof(max_align_t)), gnu::hot, gnu::malloc, nodiscard]]
 void *gc_alloc(struct GcHeap *heap, size_t size, struct GcTypeInfo *tib);
 
-[[gnu::hot]] void gc_trace(struct GcHeap *heap, void **p);
+void gc_trace(struct GcHeap *heap, void **p);
 
 /** Marks the lines containing the given pointee. */
 static inline void gc_mark(size_t len, const char p[static len]) {

@@ -50,18 +50,18 @@ struct Vec {
 	void **items;
 };
 
-static bool vec_push(struct Vec *vec, void *x) {
-	if (__builtin_expect(vec->length >= vec->capacity, false)) {
-		size_t new_capacity = vec->capacity ? 2 * vec->capacity : 4;
-		void **items;
-		if (!(items = realloc(vec->items, new_capacity * sizeof *items)))
-			return false;
-		vec->items = items;
-		vec->capacity = new_capacity;
-	}
-	vec->items[vec->length++] = x;
+static bool vec_reserve(struct Vec *vec, size_t additional) {
+	size_t n = vec->length + additional;
+	if (__builtin_expect(n <= vec->capacity, true)) return true;
+	size_t new_capacity = MAX(vec->capacity ? 2 * vec->capacity : 4, n);
+	void **items;
+	if (!(items = realloc(vec->items, new_capacity * sizeof *items))) return false;
+	vec->items = items;
+	vec->capacity = new_capacity;
 	return true;
 }
+
+static void vec_push(struct Vec *vec, void *x) { vec->items[vec->length++] = x; }
 
 static void *vec_pop(struct Vec *vec) {
 	return vec->length ? vec->items[--vec->length] : NULL;
@@ -81,7 +81,7 @@ struct GcHeap {
 	struct GcBlock *head, ///< The current block being allocated into.
 		*overflow; ///< Block kept for writing medium objects.
 	struct BumpPointer ptr, overflow_ptr;
-	struct Vec free, recycled, rest;
+	struct Vec free, recycled;
 	struct Chunk *chunks;
 
 	bool mark_color, inhibit_gc, defrag;
@@ -90,10 +90,12 @@ struct GcHeap {
 
 static struct GcBlock *acquire_block(struct GcHeap *heap) {
 	struct GcBlock *block;
-	if ((block = vec_pop(&heap->free))) return block;
+	if ((block = vec_pop(&heap->free))) { block->flag = 0; return block; }
 
 	void *p;
-	if ((p = mmap(NULL, sizeof(struct Chunk) + alignof(struct Chunk) - 1,
+	if (!(vec_reserve(&heap->free, BLOCKS_PER_CHUNK)
+			&& vec_reserve(&heap->recycled, BLOCKS_PER_CHUNK))
+		|| (p = mmap(NULL, sizeof(struct Chunk) + alignof(struct Chunk) - 1,
 				PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
 		== MAP_FAILED) return NULL;
 	// Align to block boundary
@@ -106,13 +108,16 @@ static struct GcBlock *acquire_block(struct GcHeap *heap) {
 		memset(block->line_marks, 0, sizeof block->line_marks);
 #endif
 	}
-	for (struct GcBlock *block = blocks + 1; block < blocks + BLOCKS_PER_CHUNK; ++block)
-		if (!vec_push(&heap->free, block)) return NULL;
+	for (struct GcBlock *block = blocks + 1; block < blocks + BLOCKS_PER_CHUNK; ++block) {
+		block->flag = 0xff;
+		vec_push(&heap->free, block);
+	}
 #ifndef __linux__
 	memset(chunk->object_map, 0, sizeof chunk->object_map);
 #endif
 	chunk->next = heap->chunks;
 	heap->chunks = chunk;
+	blocks->flag = 0;
 	return blocks;
 }
 
@@ -185,8 +190,7 @@ void *gc_alloc(struct GcHeap *heap, size_t size, struct GcTypeInfo *tib) {
 		if (*block && (p = bump_alloc(ptr, alignof(max_align_t), size))) goto success;
 	}
 	// Acquire a free block
-	if (!((new_block = acquire_block(heap)) && vec_push(&heap->rest, *block)))
-		return NULL;
+	if (!(new_block = acquire_block(heap))) return NULL;
 	*ptr = empty_block_ptr(*block = new_block);
 	p = bump_alloc(ptr, alignof(max_align_t), size);
 success:
@@ -225,7 +229,8 @@ void gc_trace(struct GcHeap *heap, void **p) {
 		header->flags |= GC_FORWARDED;
 	} else object_map_add(heap, *p);
 
-	if (!vec_push(&heap->trace_stack, p)) die("malloc failed");
+	if (!vec_reserve(&heap->trace_stack, 1)) die("malloc failed");
+	vec_push(&heap->trace_stack, p);
 }
 
 static void pin_and_trace(struct GcHeap *heap, void *p) {
@@ -236,10 +241,12 @@ static void pin_and_trace(struct GcHeap *heap, void *p) {
 	header->tib->trace(heap, p);
 }
 
-volatile void *gc_nop_sink;
-void gc_nop1(void *x) { gc_nop_sink = x; }
-
 /** Call @arg fn with callee-saved registers pushed to the stack. */
+#ifdef __clang__
+[[clang::disable_tail_calls]]
+#elifndef __GNUC__
+volatile void *gc_nop_sink;
+#endif
 static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 	ucontext_t ctx;
 	if (getcontext(&ctx) < 0) {
@@ -248,7 +255,11 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 	}
 	fn(arg);
 	// Inhibit tail-call which would pop register contents prematurely
-	gc_nop1(&ctx);
+#ifdef __GNUC__
+	asm volatile ("" : : "X" (&ctx) : "memory");
+#else
+	gc_nop_sink = &ctx;
+#endif
 }
 
 extern void *__libc_stack_end;
@@ -259,8 +270,22 @@ extern void *__libc_stack_end;
 		& ~(alignof(void *) - 1)); // Round up to alignment
 	for (uintptr_t *p = sp; p < (uintptr_t *) base; ++p) {
 		uintptr_t x = *p;
-		if (object_map_remove(heap, x)) vec_push(&heap->trace_stack, (void *) x);
+		if (object_map_remove(heap, x)) {
+			if (!vec_reserve(&heap->trace_stack, 1)) die("malloc failed");
+			vec_push(&heap->trace_stack, (void *) x);
+		}
 	}
+}
+
+static struct BlockStats {
+	unsigned num_marks, num_holes;
+} block_stats(struct GcBlock *block) {
+	struct BlockStats result = {};
+	for (unsigned i = 0, prev_was_marked = false; i < GC_LINE_COUNT;
+			prev_was_marked = block->line_marks[i], ++i)
+		if (block->line_marks[i]) ++result.num_marks;
+		else if (prev_was_marked) ++result.num_holes;
+	return result;
 }
 
 static enum BlockStatus {
@@ -277,30 +302,19 @@ static enum BlockStatus {
 		: UNAVAILABLE;
 }
 
-static struct BlockStats {
-	unsigned num_marks, num_holes;
-} block_stats(struct GcBlock *block) {
-	struct BlockStats result = {};
-	for (unsigned i = 0; i < GC_LINE_COUNT; ++i) {
-		while (i < GC_LINE_COUNT && block->line_marks[i]) ++i, ++result.num_marks;
-		if (i < GC_LINE_COUNT) ++result.num_holes;
-		while (i < GC_LINE_COUNT && !block->line_marks[i]) ++i;
-	}
-	return result;
-}
-
 void garbage_collect(struct GcHeap *heap) {
 	heap->inhibit_gc = true;
 	size_t prev_num_free = heap->free.length;
 
 	with_callee_saves_pushed(collect_roots, heap); // Collect conservative roots
 
-#define MAX_HOLES ((GC_LINE_COUNT + 1) / 2)
+#define MAX_HOLES ((GC_LINE_COUNT + 2) / 3)
 	unsigned mark_histogram[MAX_HOLES] = {};
 	for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next) {
 		memset(chunk->object_map, 0, sizeof chunk->object_map); // Clear object map
 		// Unmark blocks
 		for (struct GcBlock *block = chunk->blocks; block < chunk->blocks + BLOCKS_PER_CHUNK; ++block) {
+			if (block->flag == 0xff) continue;
 			if (heap->defrag) {
 				struct BlockStats stats = block_stats(block);
 				mark_histogram[stats.num_holes] += stats.num_marks;
@@ -316,24 +330,22 @@ void garbage_collect(struct GcHeap *heap) {
 		do available_space -= GC_LINE_SIZE * mark_histogram[--bin];
 		while (available_space > 0 && bin);
 
-		for (size_t i = 0; i < heap->rest.length; ++i) {
-			struct GcBlock *block = heap->rest.items[i];
-			bool is_defrag_candidate = block->flag > bin;
-			if (is_defrag_candidate) block->flag = 0;
-		}
+		for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
+			for (struct GcBlock *block = chunk->blocks; block < chunk->blocks + BLOCKS_PER_CHUNK; ++block) {
+				bool is_defrag_candidate = block->flag != 0xff && block->flag > bin;
+				if (is_defrag_candidate) block->flag = 0;
+			}
 		for (size_t i = 0; i < heap->recycled.length;) {
 			struct GcBlock *block = heap->recycled.items[i];
-			bool is_defrag_candidate = block->flag > bin;
-			if (is_defrag_candidate) {
-				block->flag = 0;
+			bool is_defrag_candidate = !block->flag;
+			if (is_defrag_candidate)
 				// Remove from recycled list to not evacuate into itself
-				vec_push(&heap->rest, block);
 				heap->recycled.items[i] = vec_pop(&heap->recycled);
-			} else ++i;
+			else ++i;
 		}
 	}
 
-	// Alternate the liveness color to avoid zeroing object marks
+	// Alternate the liveness color to skip zeroing object marks
 	heap->mark_color = !heap->mark_color;
 	size_t num_roots = heap->trace_stack.length;
 	for (size_t i = 0; i < num_roots; ++i)
@@ -347,16 +359,16 @@ void garbage_collect(struct GcHeap *heap) {
 		((struct GcObjectHeader *) *p - 1)->tib->trace(heap, *p);
 	}
 
-	size_t j = 0;
-	for (size_t i = 0; i < heap->rest.length; ++i) {
-		struct GcBlock *block = heap->rest.items[i];
-		switch (sweep_block(block)) {
-		case UNAVAILABLE: heap->rest.items[j++] = block; break;
-		case RECYCLABLE: vec_push(&heap->recycled, block); break;
-		case FREE: vec_push(&heap->free, block); break;
+	heap->recycled.length = 0;
+	for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
+		for (struct GcBlock *block = chunk->blocks; block < chunk->blocks + BLOCKS_PER_CHUNK; ++block) {
+			if (block->flag == 0xff) continue;
+			switch (sweep_block(block)) {
+			case UNAVAILABLE: break;
+			case RECYCLABLE: vec_push(&heap->recycled, block); break;
+			case FREE: block->flag = 0xff; vec_push(&heap->free, block); break;
+			}
 		}
-	}
-	heap->rest.length = j;
 
 	heap->defrag = heap->free.length <= MAX(MIN_FREE, prev_num_free);
 	heap->inhibit_gc = false;
