@@ -55,4 +55,17 @@ static inline uint64_t moremur(uint64_t x) {
 	return x;
 }
 
+/** Throws an exception with @arg errcode. */
+[[noreturn, gnu::cold]] void throw(unsigned errcode);
+
+/**
+ * Protected call.
+ *
+ * Applies @arg f to @arg x, preventing stack unwinding past this
+ * function in case an exception is thrown.
+ *
+ * @return The error code, or zero in the absence of errors.
+ */
+unsigned pcall(void *x, void (*f)(void *));
+
 #endif

@@ -8,7 +8,8 @@ include(CTest)
 find_package(cmocka 1.1.0 REQUIRED)
 find_package(xxHash REQUIRED)
 
-add_compile_options(-Wall -Wextra -pedantic -Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
+add_compile_options(-Wall -Wextra -Wpedantic -Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
+add_compile_options(-funwind-tables -masm=intel)
 
 add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c)
 target_include_directories(lisplib PRIVATE xxHash::xxhash)

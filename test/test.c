@@ -17,6 +17,18 @@ void test_next_power_of_2(void **) {
 	assert_int_equal(next_power_of_2(8), 8);
 }
 
+static void do_nothing(void *) {}
+
+static void do_throw_error(void *) {
+	throw(42);
+	fail();
+}
+
+static void test_exception(void **state) {
+	assert_int_equal(pcall(state, do_nothing), 0);
+	assert_int_equal(pcall(state, do_throw_error), 42);
+}
+
 static uint64_t my_hash(int key) { return key; }
 static bool my_equal(int a, int b) { return a == b; }
 
@@ -101,6 +113,7 @@ int main(void) {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test1),
 		cmocka_unit_test(test_next_power_of_2),
+		cmocka_unit_test(test_exception),
 		cmocka_unit_test(test_hash_table),
 		cmocka_unit_test(test_rope),
 	};
