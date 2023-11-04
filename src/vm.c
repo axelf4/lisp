@@ -130,16 +130,17 @@ static void disassemble(struct Chunk *chunk, const char *name) {
 }
 
 struct Upvalue {
-	LispObject **location, *closed;
-	struct Upvalue *next;
+	LispObject **location;
+	// Either the closed over LispObject or the next element in the
+	// list of unclosed upvalues sorted by stack locations.
+	void *ptr;
 };
 
 static size_t upvalue_size(void *) { return sizeof(struct Upvalue); }
 static void upvalue_trace(struct GcHeap *heap, void *x) {
 	struct Upvalue *upvalue = x;
 	gc_mark(sizeof *upvalue, x);
-	if (upvalue->closed) gc_trace(heap, &upvalue->closed);
-	else if (upvalue->next) gc_trace(heap, (void **) &upvalue->next);
+	gc_trace(heap, &upvalue->ptr);
 }
 static struct GcTypeInfo upvalue_tib = { upvalue_trace, upvalue_size };
 
@@ -165,12 +166,12 @@ static struct LispTypeInfo closure_tib = {
 
 static struct Upvalue *capture_upvalue(struct Upvalue **upvalues, LispObject **local) {
 	struct Upvalue *prev = NULL, *x = *upvalues;
-	while (x && x->location > local) { prev = x; x = x->next; }
+	while (x && x->location > local) { prev = x; x = x->ptr; }
 	if (x && x->location == local) return x;
 
 	struct Upvalue *new = gc_alloc(heap, sizeof *new, &upvalue_tib);
-	*new = (struct Upvalue) { .location = local, .next = x };
-	return *(prev ? &prev->next : upvalues) = new;
+	*new = (struct Upvalue) { .location = local, .ptr = x };
+	return *(prev ? (struct Upvalue **) &prev->ptr : upvalues) = new;
 }
 
 union SsaInstruction {
@@ -329,10 +330,9 @@ op_clos:
 op_close_upvals:
 	while (upvalues && upvalues->location >= bp + ins.a) {
 		struct Upvalue *x = upvalues;
-		x->closed = *x->location;
-		x->location = &x->closed;
-		upvalues = x->next;
-		x->next = NULL;
+		upvalues = x->ptr;
+		x->ptr = *x->location;
+		x->location = &x->ptr;
 	}
 	CONTINUE;
 #pragma GCC diagnostic pop
