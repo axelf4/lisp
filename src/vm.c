@@ -384,9 +384,7 @@ struct ByteCompCtx {
 };
 
 enum CompileError {
-	COMP_OK,
-	COMP_NORETURN,
-	COMP_INVALID_FORM,
+	COMP_INVALID_FORM = 2,
 	COMP_EXPECTED_LIST,
 	COMP_INVALID_VARIABLE,
 	COMP_EXPECTED_CONSEQUENT,
@@ -472,15 +470,14 @@ static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispOb
 	return true;
 }
 
-static enum CompileError constant_slot(struct ByteCompCtx *ctx, LispObject *x, uint16_t *slot) {
+static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject *x) {
 	struct ConstantEntry *entry;
 	if (!(constant_tbl_entry(&ctx->constants, (struct ConstantEntry) { .obj = x }, &entry))) {
 		if (!entry) die("malloc failed");
-		if (ctx->constants.len > UINT16_MAX) return COMP_TOO_MANY_CONSTS;
+		if (ctx->constants.len > UINT16_MAX) throw(COMP_TOO_MANY_CONSTS);
 		entry->slot = ctx->constants.len - 1;
 	}
-	*slot = entry->slot;
-	return COMP_OK;
+	return entry->slot;
 }
 
 // Provides a limited form of register coalescing.
@@ -490,45 +487,42 @@ struct Destination {
 		is_return : 1; ///< Whether the form is in return position.
 };
 
-static enum CompileError emit_load_obj(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
-	if (dst.discarded) return COMP_OK;
-	int i;
+static void emit_load_obj(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
+	if (dst.discarded) return;
 	struct Instruction ins;
+	int i;
 	if (!x) ins = (struct Instruction) { .op = LOAD_NIL, .a = dst.reg };
 	else if (lisp_type(x) == LISP_INTEGER
 		&& INT16_MIN <= (i = *(int *) x) && i <= INT16_MAX)
 		ins = (struct Instruction) { .op = LOAD_SHORT, .a = dst.reg, .b = i };
 	else {
-		uint16_t slot;
-		enum CompileError err;
-		if ((err = constant_slot(ctx, x, &slot))) return err;
+		uint16_t slot = constant_slot(ctx, x);
 		ins = (struct Instruction) { .op = LOAD_OBJ, .a = dst.reg, .b = slot };
 	}
 	emit(ctx, ins);
-	return COMP_OK;
 }
 
-static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst);
+enum CompileResult { COMP_OK, COMP_NORETURN };
 
-static enum CompileError compile_progn(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
-	if (!x) return emit_load_obj(ctx, NULL, dst);
-	while (x) {
-		if (lisp_type(x) != LISP_CONS) return COMP_EXPECTED_LIST;
+static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst);
+
+static enum CompileResult compile_progn(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
+	enum CompileResult res;
+	do {
+		if (x && !consp(x)) throw(COMP_EXPECTED_LIST);
 		LispObject *form = pop(&x);
 		struct Destination d = dst;
 		d.is_return &= !x;
-		enum CompileError err;
-		if ((err = compile_form(ctx, form, d))) return err;
-	}
-	return COMP_OK;
+		res = compile_form(ctx, form, d);
+	} while (x);
+	return res;
 }
 
 /** Byte-compiles the form @a x. */
-static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
+static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
 	struct LispContext *lisp_ctx = ctx->lisp_ctx;
-	enum CompileError err;
 	switch (lisp_type(x)) {
-	case LISP_NIL: return emit_load_obj(ctx, NULL, dst);
+	case LISP_NIL: emit_load_obj(ctx, NULL, dst); break;
 	case LISP_SYMBOL:
 		if (dst.discarded) break;
 		struct VarRef var = lookup_var(ctx, x);
@@ -541,21 +535,20 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			emit(ctx, (struct Instruction) { .op = GETUPVALUE, .a = dst.reg, .c = var.slot });
 			break;
 		case VAR_GLOBAL:
-			uint16_t slot;
-			if ((err = constant_slot(ctx, x, &slot))) return err;
+			uint16_t slot = constant_slot(ctx, x);
 			emit(ctx, (struct Instruction) { .op = GETGLOBAL, .a = dst.reg, .b = slot });
 			break;
 		default: __builtin_unreachable();
 		}
 		break;
-	case LISP_INTEGER: return emit_load_obj(ctx, x, dst);
-	case LISP_FUNCTION: return COMP_INVALID_FORM;
+	case LISP_INTEGER: emit_load_obj(ctx, x, dst); break;
+	case LISP_FUNCTION: throw(COMP_INVALID_FORM); break;
 	case LISP_CONS:
 		LispObject *head = pop(&x);
-		if (!listp(x)) return COMP_INVALID_FORM;
+		if (!listp(x)) throw(COMP_INVALID_FORM);
 
 		if (head == lisp_ctx->fprogn) return compile_progn(ctx, x, dst);
-		else if (head == lisp_ctx->fquote) return emit_load_obj(ctx, pop(&x), dst);
+		else if (head == lisp_ctx->fquote) emit_load_obj(ctx, pop(&x), dst);
 		else if (head == lisp_ctx->flambda) {
 			if (dst.discarded) break;
 			LispObject *args = pop(&x);
@@ -569,7 +562,7 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			uint8_t num_args = 0;
 			while (args) {
 				LispObject *sym = pop(&args);
-				if (lisp_type(sym) != LISP_SYMBOL) return COMP_INVALID_VARIABLE;
+				if (lisp_type(sym) != LISP_SYMBOL) throw(COMP_INVALID_VARIABLE);
 				++num_args;
 				ctx->vars[ctx->num_vars++]
 					= (struct Local) { .symbol = sym, .slot = ctx->num_regs++ };
@@ -578,17 +571,16 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			size_t closure_pos = ctx->count;
 			emit(ctx, (struct Instruction) { .op = CLOS, .a = dst.reg });
 			Register reg = ctx->num_regs++; // Return register
-			err = compile_progn(ctx, x, (struct Destination) { .reg = reg, .is_return = true });
-			if (!err) {
+			if (!compile_progn(ctx, x, (struct Destination) { .reg = reg, .is_return = true })) {
 				emit_close_upvalues(ctx, fun.vars_start, 0);
 				emit(ctx, (struct Instruction) { .op = RET, .a = reg });
-			} else if (err != COMP_NORETURN) return err;
+			}
 
 			struct Prototype *prototype = gc_alloc(heap,
 				sizeof *prototype + fun.num_upvalues * sizeof *prototype->upvalues,
 				&prototype_tib);
 			uint16_t prototype_idx = ctx->constants.len;
-			if (ctx->constants.len >= UINT16_MAX) return COMP_TOO_MANY_CONSTS;
+			if (ctx->constants.len >= UINT16_MAX) throw(COMP_TOO_MANY_CONSTS);
 			struct ConstantEntry *entry;
 			constant_tbl_entry(&ctx->constants, (struct ConstantEntry) {
 					.obj = (LispObject *) prototype,
@@ -618,19 +610,18 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 				ctx->vars[ctx->num_vars++] = (struct Local) { .symbol = sym, .slot = reg };
 				compile_form(ctx, init, (struct Destination) { .reg = reg });
 			}
-			if ((err = compile_progn(ctx, x, dst))) return err;
+			if (compile_progn(ctx, x, dst)) return COMP_NORETURN;
 			emit_close_upvalues(ctx, prev_num_vars, prev_num_regs);
 			ctx->num_regs = prev_num_regs;
 			ctx->num_vars = prev_num_vars;
 		} else if (head == lisp_ctx->fset) {
 			LispObject *var = pop(&x), *value = pop(&x);
-			if (lisp_type(var) != LISP_SYMBOL) return COMP_INVALID_VARIABLE;
+			if (lisp_type(var) != LISP_SYMBOL) throw(COMP_INVALID_VARIABLE);
 			struct Symbol *sym = (struct Symbol *) var;
 			struct VarRef v = lookup_var(ctx, sym);
 			if (dst.discarded && v.type == VAR_LOCAL)
 				return compile_form(ctx, value, (struct Destination) { .reg = v.slot });
-			if ((err = compile_form(ctx, value, (struct Destination) { .reg = dst.reg })))
-				return err;
+			compile_form(ctx, value, (struct Destination) { .reg = dst.reg });
 			switch (v.type) {
 			case VAR_LOCAL:
 				if (v.slot != dst.reg)
@@ -640,29 +631,23 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 				emit(ctx, (struct Instruction) { .op = SETUPVALUE, .a = dst.reg, .c = v.slot });
 				break;
 			case VAR_GLOBAL:
-				uint16_t slot;
-				if ((err = constant_slot(ctx, var, &slot))) return err;
+				uint16_t slot = constant_slot(ctx, var);
 				emit(ctx, (struct Instruction) { .op = SETGLOBAL, .a = dst.reg, .b = slot });
 				break;
 			default: __builtin_unreachable();
 			}
 		} else if (head == lisp_ctx->fif) {
-			// Emit condition evaluation
-			if ((err = compile_form(ctx, pop(&x), (struct Destination) { .reg = dst.reg })))
-				return err;
+			// Emit condition
+			compile_form(ctx, pop(&x), (struct Destination) { .reg = dst.reg });
 			size_t jmp = ctx->count;
 			emit(ctx, (struct Instruction) { .op = JNIL, .a = dst.reg });
-			if (!x) return COMP_EXPECTED_CONSEQUENT;
-			err = compile_form(ctx, pop(&x), dst); // Emit consequent
-			if (!(err == COMP_OK || err == COMP_NORETURN)) return err;
-			bool noreturn = err == COMP_NORETURN;
+			if (!x) throw(COMP_EXPECTED_CONSEQUENT);
+			bool noreturn = compile_form(ctx, pop(&x), dst); // Emit consequent
 			if (x) { // Emit alternative
 				emit(ctx, (struct Instruction) { .op = JMP });
 				ctx->ins[jmp].b = ctx->count - (jmp + 1);
 				jmp = ctx->count - 1;
-				err = compile_progn(ctx, x, dst);
-				if (!(err == COMP_OK || err == COMP_NORETURN)) return err;
-				noreturn &= err == COMP_NORETURN;
+				noreturn &= compile_progn(ctx, x, dst);
 			} else noreturn = false;
 			ctx->ins[jmp].b = ctx->count - (jmp + 1);
 			if (noreturn) return COMP_NORETURN;
@@ -672,13 +657,11 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			Register reg = dst.reg == ctx->num_regs - 1 ? dst.reg : ctx->num_regs++;
 			++ctx->num_regs; // Reserve register for PC
 			while (x) {
-				if (lisp_type(x) != LISP_CONS) return COMP_EXPECTED_LIST;
+				if (!consp(x)) throw(COMP_EXPECTED_LIST);
 				++num_args;
-				if ((err = compile_form(ctx, pop(&x),
-							(struct Destination) { .reg = ctx->num_regs++ }))) return err;
+				compile_form(ctx, pop(&x), (struct Destination) { .reg = ctx->num_regs++ });
 			}
-			if ((err = compile_form(ctx, head, (struct Destination) { .reg = reg })))
-				return err;
+			compile_form(ctx, head, (struct Destination) { .reg = reg });
 			ctx->num_regs = prev_num_regs;
 
 			if (dst.is_return) {
@@ -704,10 +687,8 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 		.num_regs = 3, // Reserve return, closure and PC registers
 	};
 	ctx.constants = tbl_new();
-	enum CompileError err
-		= compile_form(&ctx, form, (struct Destination) { .reg = 2, .is_return = true });
-	if (!err) emit(&ctx, (struct Instruction) { .op = RET, .a = 2 });
-	else if (err != COMP_NORETURN) die("Compilation error: %d", err);
+	if (!compile_form(&ctx, form, (struct Destination) { .reg = 2, .is_return = true }))
+		emit(&ctx, (struct Instruction) { .op = RET, .a = 2 });
 
 	struct Chunk *chunk = gc_alloc(heap, sizeof *chunk
 		+ ctx.constants.len * sizeof(LispObject *) + ctx.count * sizeof *ctx.ins,

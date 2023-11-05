@@ -77,7 +77,7 @@ static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 			errcode = exception_class & 0xffffffff;
 		else { // Foreign exception
 			_Unwind_DeleteException(exception_object);
-			errcode = 1;
+			errcode = -1;
 		}
 
 		extern void pcall_landing_pad();
