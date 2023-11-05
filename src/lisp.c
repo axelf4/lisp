@@ -193,12 +193,12 @@ DEFUN("cdr", cdr, (LispObject *x)) {
 
 DEFUN("+", add, (LispObject *a, LispObject *b)) {
 	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
-		return NULL;
+		throw(2);
 	return lisp_integer(*(int *) a + *(int *) b);
 }
 
 DEFUN("<", lt, (LispObject *a, LispObject *b)) {
 	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
-		return NULL;
+		throw(2);
 	return *(int *) a < *(int *) b ? lisp_integer(1) : NULL;
 }
