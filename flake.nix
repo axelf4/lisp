@@ -14,6 +14,8 @@
       checkInputs = [ pkgs.cmocka ];
 
       doCheck = true;
+
+      cmakeFlags = [ "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE" ];
     };
 
     devShells.x86_64-linux.default = pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } {
