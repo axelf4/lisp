@@ -546,7 +546,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 		if (head == lisp_ctx->fprogn) return compile_progn(ctx, x, dst);
 		else if (head == lisp_ctx->fquote) emit_load_obj(ctx, pop(&x), dst);
-		else if (head == lisp_ctx->flambda) {
+		else if (head == lisp_ctx->ffn) {
 			if (dst.discarded) break;
 			LispObject args = pop(&x);
 			struct FuncState fun = {
