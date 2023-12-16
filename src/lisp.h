@@ -40,7 +40,7 @@ struct Symbol {
 struct LispContext {
 	struct Table symbol_tbl;
 	// Common interned symbols
-	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
+	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
 };
 
 struct Subr {

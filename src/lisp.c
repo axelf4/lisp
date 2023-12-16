@@ -155,7 +155,7 @@ struct LispContext *lisp_init() {
 	struct LispContext *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
 	ctx->symbol_tbl = tbl_new();
 
-	ctx->flambda = intern(ctx, sizeof "fn" - 1, "fn");
+	ctx->ffn = intern(ctx, sizeof "fn" - 1, "fn");
 	ctx->fif = intern(ctx, sizeof "if" - 1, "if");
 	ctx->flet = intern(ctx, sizeof "let" - 1, "let");
 	ctx->fset = intern(ctx, sizeof "set" - 1, "set");
