@@ -69,8 +69,10 @@ static void *vec_pop(struct Vec *vec) {
 
 #define BLOCKS_PER_CHUNK (128 - 1)
 
+/** The largest internal unit of memory allocation. */
 struct Chunk {
-	struct GcBlock blocks[BLOCKS_PER_CHUNK];
+	alignas((BLOCKS_PER_CHUNK + 1) * alignof(struct GcBlock))
+		struct GcBlock blocks[BLOCKS_PER_CHUNK];
 	/// Bitset of the start positions of live objects.
 	uint_fast8_t object_map[BLOCKS_PER_CHUNK * sizeof(struct GcBlock)
 		/ (alignof(max_align_t) * CHAR_BIT * sizeof(uint_fast8_t))];
@@ -89,18 +91,16 @@ struct GcHeap {
 };
 
 static struct GcBlock *acquire_block(struct GcHeap *heap) {
-	struct GcBlock *block;
-	if ((block = vec_pop(&heap->free))) { block->flag = 0; return block; }
-
 	void *p;
 	if (!(vec_reserve(&heap->free, BLOCKS_PER_CHUNK)
 			&& vec_reserve(&heap->recycled, BLOCKS_PER_CHUNK))
 		|| (p = mmap(NULL, sizeof(struct Chunk) + alignof(struct Chunk) - 1,
 				PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
 		== MAP_FAILED) return NULL;
-	// Align to block boundary
+	// Align to multiple of chunk size
 	struct Chunk *chunk = (struct Chunk *)
 		(((uintptr_t) p + alignof(struct Chunk) - 1) & ~(alignof(struct Chunk) - 1));
+	munmap(p, (char *) chunk - (char *) p);
 	struct GcBlock *blocks = chunk->blocks;
 	for (struct GcBlock *block = blocks; block < blocks + BLOCKS_PER_CHUNK; ++block) {
 		ASAN_POISON_MEMORY_REGION(block->data, sizeof blocks->data);
@@ -136,10 +136,8 @@ struct GcHeap *gc_new() {
 }
 
 /** Remember @arg x as a live allocated object location. */
-static void object_map_add(struct GcHeap *heap, char *x) {
-	struct Chunk *chunk = heap->chunks;
-	while (!((char *) chunk->blocks <= x && x < (char *) (chunk->blocks + BLOCKS_PER_CHUNK)))
-		chunk = chunk->next;
+static void object_map_add(char *x) {
+	struct Chunk *chunk = (struct Chunk *) ((uintptr_t) x & ~(alignof(struct Chunk) - 1));
 	unsigned i = (x - (char *) chunk->blocks) / alignof(max_align_t),
 		n = CHAR_BIT * sizeof *chunk->object_map;
 	chunk->object_map[i / n] |= 1 << i % n;
@@ -148,15 +146,16 @@ static void object_map_add(struct GcHeap *heap, char *x) {
 /** Removes @arg x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
 	if (x % alignof(max_align_t)) return false;
-	for (struct Chunk *chunk = heap->chunks; chunk; chunk = chunk->next)
-		if (x >= (uintptr_t) chunk->blocks
-			&& x < (uintptr_t) (chunk->blocks + BLOCKS_PER_CHUNK)) {
-			unsigned i = (x - (uintptr_t) chunk->blocks) / alignof(max_align_t),
-				n = CHAR_BIT * sizeof *chunk->object_map;
-			uint_fast8_t *v = chunk->object_map + i / n, mask = 1 << i % n;
-			if (*v & mask) { *v &= ~mask; return true; }
-			break;
-		}
+	uintptr_t p = (uintptr_t) x & ~(alignof(struct Chunk) - 1);
+	struct Chunk *chunk;
+	for (chunk = heap->chunks; chunk; chunk = chunk->next)
+		if ((uintptr_t) chunk == p) goto found;
+	return false;
+found:
+	unsigned i = (x - (uintptr_t) chunk->blocks) / alignof(max_align_t),
+		n = CHAR_BIT * sizeof *chunk->object_map;
+	uint_fast8_t *v = chunk->object_map + i / n, mask = 1 << i % n;
+	if (*v & mask) { *v &= ~mask; return true; }
 	return false;
 }
 
@@ -190,7 +189,8 @@ void *gc_alloc(struct GcHeap *heap, size_t size, struct GcTypeInfo *tib) {
 		if (*block && (p = bump_alloc(ptr, alignof(max_align_t), size))) goto success;
 	}
 	// Acquire a free block
-	if (!(new_block = acquire_block(heap))) return NULL;
+	if ((new_block = vec_pop(&heap->free))) new_block->flag = 0;
+	else if (!(new_block = acquire_block(heap))) return NULL;
 	*ptr = empty_block_ptr(*block = new_block);
 	p = bump_alloc(ptr, alignof(max_align_t), size);
 success:
@@ -203,7 +203,7 @@ success:
 		= (struct GcObjectHeader) { .mark = heap->mark_color, .tib = tib, };
 #pragma GCC diagnostic pop
 	p += sizeof(struct GcObjectHeader);
-	object_map_add(heap, p);
+	object_map_add(p);
 	if (heap->free.length <= MIN_FREE && !heap->inhibit_gc) garbage_collect(heap);
 	return p;
 }
@@ -227,7 +227,7 @@ void gc_trace(struct GcHeap *heap, void **p) {
 		memcpy(q, *p, size);
 		header->fwd = *p = q;
 		header->flags |= GC_FORWARDED;
-	} else object_map_add(heap, *p);
+	} else object_map_add(*p);
 
 	if (!vec_reserve(&heap->trace_stack, 1)) die("malloc failed");
 	vec_push(&heap->trace_stack, p);
@@ -237,7 +237,7 @@ static void pin_and_trace(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) p - 1;
 	header->mark = heap->mark_color;
 	header->flags = GC_PINNED;
-	object_map_add(heap, p);
+	object_map_add(p);
 	header->tib->trace(heap, p);
 }
 
