@@ -52,7 +52,7 @@ static void test_rope(void **) {
 	rope_free(&rope);
 }
 
-static int setup_lisp(void **state) { *state = lisp_init(); return 0; }
+static int setup_lisp(void **state) { *state = lisp_new(); return 0; }
 static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
 
 static void test_reader(void **state) {

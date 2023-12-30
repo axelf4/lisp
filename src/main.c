@@ -4,7 +4,7 @@
 
 int main(void) {
 	if (!(heap = gc_new())) return 1;
-	struct LispContext *ctx = lisp_init();
+	struct LispContext *ctx = lisp_new();
 
 	char line[256];
 	while (fgets(line, sizeof line, stdin)) {

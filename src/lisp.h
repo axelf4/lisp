@@ -12,7 +12,7 @@ enum LispObjectType {
 	LISP_NIL,
 	LISP_CONS,
 	LISP_SYMBOL,
-	LISP_FUNCTION,
+	LISP_CFUNCTION,
 	LISP_CLOSURE,
 	LISP_INTEGER,
 };
@@ -40,22 +40,14 @@ struct Symbol {
 struct LispContext {
 	struct Table symbol_tbl;
 	// Common interned symbols
-	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
+	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote, *smacro, *t;
 };
 
-struct Subr {
-	union {
-		LispObject *(*a0)();
-		LispObject *(*a1)(LispObject *);
-		LispObject *(*a2)(LispObject *, LispObject *);
-		LispObject *(*a3)(LispObject *, LispObject *, LispObject *);
-	};
+struct LispCFunction {
+	LispObject *(*f)(struct LispContext *, LispObject *const *args);
+	unsigned char nargs;
 	const char *name;
-	unsigned char min_args;
-	struct Subr *next;
 };
-
-struct Function { struct Subr *subr; };
 
 /** Cons cell. */
 struct Cons {
@@ -82,7 +74,7 @@ enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispO
 
 void lisp_print(LispObject *object);
 
-struct LispContext *lisp_init();
+struct LispContext *lisp_new();
 
 void lisp_free(struct LispContext *);
 

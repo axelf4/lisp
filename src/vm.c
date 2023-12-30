@@ -180,7 +180,7 @@ enum IrType : uint8_t {
 	TY_NIL,
 	TY_SYMBOL,
 	TY_INT,
-	TY_FUNCTION,
+	TY_CFUNCTION,
 	TY_CLOSURE,
 	TY_UNBOXED_INT,
 };
@@ -349,7 +349,7 @@ static IrRef emit_const(struct TraceRecording *state, enum IrType ty, union SsaI
 static enum IrType ir_type_of_value(LispObject *x) {
 	switch (lisp_type(x)) {
 	case LISP_INTEGER: return TY_INT;
-	case LISP_FUNCTION: return TY_FUNCTION;
+	case LISP_CFUNCTION: return TY_CFUNCTION;
 	case LISP_CLOSURE: return TY_CLOSURE;
 	default: return TY_ANY;
 	}
@@ -491,7 +491,7 @@ static enum TraceLink record_instruction(struct TraceRecording *state, LispObjec
 	case CALL:
 		LispObject *fun_value = stack[x.a];
 		switch (lisp_type(fun_value)) {
-		case LISP_FUNCTION:
+		case LISP_CFUNCTION:
 			IrRef ref = sload(state, stack, x.a);
 			// TODO If type of ref is TY_ANY then need to emit type check
 
@@ -522,7 +522,7 @@ static enum TraceLink record_instruction(struct TraceRecording *state, LispObjec
 		// Specialize to the function value in question
 		take_snapshot(state);
 		IrRef ref = sload(state, stack, x.a),
-			fn_ref = emit_const(state, TY_FUNCTION, (union SsaInstruction) { .v = fun_value });
+			fn_ref = emit_const(state, TY_CFUNCTION, (union SsaInstruction) { .v = fun_value });
 		emit_folded(state, (union SsaInstruction) { .op = IR_EQ, .ty = TY_CLOSURE, .a = ref, .b = fn_ref });
 
 		if (fun_value == state->start) {
@@ -569,7 +569,7 @@ static const char *type_to_string(enum IrType ty) {
 	case TY_NIL: return "nil";
 	case TY_SYMBOL: return "sym";
 	case TY_INT: return "int";
-	case TY_FUNCTION: return "fun";
+	case TY_CFUNCTION: return "fun";
 	case TY_CLOSURE: return "clo";
 	case TY_UNBOXED_INT: return "INT";
 	default: return "___";
@@ -580,7 +580,7 @@ static void print_ir_ref(struct TraceRecording *state, enum IrType ty, uint16_t 
 	if (ref >= IR_BIAS) { printf("%.4u", ref - IR_BIAS); return; }
 	union SsaInstruction x = IR_GET(state, ref);
 	switch (ty) {
-	case TY_ANY: case TY_FUNCTION: case TY_CLOSURE: printf("%p", x.v); break;
+	case TY_ANY: case TY_CFUNCTION: case TY_CLOSURE: printf("%p", x.v); break;
 	case TY_SYMBOL:
 		struct Symbol *sym = x.v;
 		printf("[%.*s]", (int) sym->len, sym->name);
@@ -613,18 +613,18 @@ static void print_trace(struct TraceRecording *state, enum TraceLink link) {
 			print_ir_ref(state, x.ty, x.a);
 			printf("  ");
 			print_ir_ref(state, x.ty, x.b);
-			puts("");
+			putchar('\n');
 			break;
 		case IR_NEQ:
 			printf("NEQ   ");
 			print_ir_ref(state, x.ty, x.a);
 			printf("  ");
 			print_ir_ref(state, x.ty, x.b);
-			puts("");
+			putchar('\n');
 			break;
 		case IR_SLOAD: printf("SLOAD #%" PRIu16 "\n", x.a); break;
 		case IR_GLOAD:
-			printf("GLOAD "); print_ir_ref(state, TY_SYMBOL, x.a); puts(""); break;
+			printf("GLOAD "); print_ir_ref(state, TY_SYMBOL, x.a); putchar('\n'); break;
 		case IR_ULOAD: printf("ULOAD #%" PRIu16 "\n", x.a); break;
 		case IR_CALL: printf("CALL  ");
 			print_ir_ref(state, x.ty, x.a);
@@ -642,7 +642,7 @@ static void print_trace(struct TraceRecording *state, enum TraceLink link) {
 			print_ir_ref(state, x.ty, x.a);
 			printf("  ");
 			print_ir_ref(state, x.ty, x.b);
-			puts("");
+			putchar('\n');
 			break;
 		default: puts("OTHER");
 		}
@@ -654,7 +654,7 @@ static void print_trace(struct TraceRecording *state, enum TraceLink link) {
 	}
 }
 
-static LispObject *run(struct Chunk *chunk) {
+static LispObject *run(struct LispContext *ctx, struct Chunk *chunk) {
 	LispObject *stack[512], **bp = stack, **consts = chunk_constants(chunk);
 	// Store dummy closure in first call frame to handle returns uniformly
 	*stack = (LispObject *) &(struct Closure) {
@@ -714,17 +714,10 @@ op_setupvalue:
 op_call: op_tail_call:
 	LispObject **vals = bp + ins.a;
 	switch (lisp_type(*vals)) {
-	case LISP_FUNCTION:
-		struct Subr *subr = ((struct Function *) *vals)->subr;
-		if (ins.c != subr->min_args) die("Too few arguments");
-		LispObject **args = vals + 2;
-		switch (subr->min_args) {
-		case 0: *vals = subr->a0(); break;
-		case 1: *vals = subr->a1(*args); break;
-		case 2: *vals = subr->a2(*args, args[1]); break;
-		case 3: *vals = subr->a3(*args, args[1], args[2]); break;
-		default: __builtin_unreachable();
-		}
+	case LISP_CFUNCTION:
+		struct LispCFunction *cfun = (struct LispCFunction *) *vals;
+		if (ins.c != cfun->nargs) die("Wrong number of arguments");
+		*vals = cfun->f(ctx, vals + 2);
 		if (ins.op == TAIL_CALL) { *bp = *vals; goto op_ret; }
 		break;
 	case LISP_CLOSURE:
@@ -932,7 +925,7 @@ static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispOb
 	}
 	*ins++ = (struct Instruction) { .op = TAIL_CALL, .a = 2, .c = argc };
 
-	*out = run(chunk);
+	*out = run(ctx->lisp_ctx, chunk);
 	return true;
 }
 
@@ -1009,7 +1002,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject *x, s
 		}
 		break;
 	case LISP_INTEGER: emit_load_obj(ctx, x, dst); break;
-	case LISP_FUNCTION: throw(COMP_INVALID_FORM); break;
+	case LISP_CFUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
 	case LISP_CONS:
 		LispObject *head = pop(&x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);
@@ -1177,5 +1170,5 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 
 LispObject *lisp_eval(struct LispContext *ctx, LispObject *form) {
 	struct Chunk *chunk = compile(ctx, form);
-	return run(chunk);
+	return run(ctx, chunk);
 }
