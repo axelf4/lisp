@@ -462,11 +462,11 @@ static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispOb
 	LispObject **consts = chunk_constants(chunk);
 	struct Instruction *ins = chunk_instructions(chunk);
 	unsigned i = 0;
+	consts[i] = macro;
 	*ins++ = (struct Instruction) { .op = LOAD_OBJ, .a = 2 + i, .b = i };
-	consts[i++] = macro;
 	while (args) {
-		*ins++ = (struct Instruction) { .op = LOAD_OBJ, .a = 2 + i, .b = i };
-		consts[i++] = pop(&args);
+		consts[++i] = pop(&args);
+		*ins++ = (struct Instruction) { .op = LOAD_OBJ, .a = 3 + i, .b = i };
 	}
 	*ins++ = (struct Instruction) { .op = TAIL_CALL, .a = 2, .c = argc };
 
