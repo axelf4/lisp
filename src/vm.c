@@ -93,8 +93,8 @@ static size_t prototype_size(void *x) {
 static void prototype_trace(struct GcHeap *, void *x) { gc_mark(prototype_size(x), x); }
 static struct GcTypeInfo prototype_tib = { prototype_trace, prototype_size };
 
-static void disassemble(struct Chunk *chunk, const char *name) {
-	printf("Disassembling chunk '%s':\n", name);
+static void disassemble(struct Chunk *chunk) {
+	puts("Disassembling chunk:");
 	LispObject **consts = chunk_constants(chunk);
 	struct Instruction *xs = chunk_instructions(chunk);
 	for (size_t i = 0; i < chunk->count;) {
@@ -663,7 +663,7 @@ static LispObject *run(struct LispContext *ctx, struct Chunk *chunk) {
 	stack[1] = NULL; // No return address for first call frame
 	struct Upvalue *upvalues = NULL;
 
-	disassemble(chunk, "my chunk");
+	disassemble(chunk);
 
 	unsigned char hotcounts[64] = {};
 	bool is_recording = false;
@@ -691,7 +691,7 @@ static LispObject *run(struct LispContext *ctx, struct Chunk *chunk) {
 		*x = &&do_record;
 	struct Instruction *pc = chunk_instructions(chunk), ins;
 	// Use token-threading to be able to swap dispatch table when recording
-#define CONTINUE do { ins = *pc++; goto *dispatch_table[ins.op]; } while (0)
+#define CONTINUE goto *dispatch_table[(ins = *pc++).op]
 	CONTINUE;
 
 op_ret:
@@ -1164,7 +1164,7 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 	memcpy(chunk_instructions(chunk), ctx.ins, ctx.count * sizeof *ctx.ins);
 
 	constant_tbl_free(&ctx.constants);
-	free(ctx.ins); // TODO Reuse for next top-level form
+	free(ctx.ins);
 	return chunk;
 }
 
