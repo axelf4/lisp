@@ -19,7 +19,7 @@ struct GapBuffer {
 	char data[MAX_BYTES];
 };
 
-/** Recenter the gap such that @arg i bytes are to the left of it. */
+/** Recenter the gap such that @a i bytes are to the left of it. */
 static void move_gap(struct GapBuffer *x, uint16_t i) {
 	if (i <= x->len_left) { // New gap is in left section: x|x...yy => x|...xyy
 		uint16_t len_moved = x->len_left - i;
@@ -40,13 +40,13 @@ static size_t gap_buffer_len(struct GapBuffer *x) { return x->len_left + x->len_
 
 /** Rope tree node.
  *
- * The following invariants are maintained:
- *
+ * @invariant
  * 1. Internal nodes have between MIN_CHILDREN and MAX_CHILDREN
  *    children, except the root which may have as few as two.
  * 2. All leaves appear at the same level.
  * 3. Leaf nodes contain at most MAX_BYTES and generally at least
- *    MIN_BYTES bytes. */
+ *    MIN_BYTES bytes.
+ */
 typedef struct RopeNode {
 	unsigned char depth; ///< Height of subtree, i.e. zero signifies leaf node.
 } Node;
@@ -138,9 +138,9 @@ static size_t make_parents(size_t count, struct NodeSlice xs[static count], size
 	return out_len;
 }
 
-/** Inserts the children in @arg new at index @arg i of @arg node.
+/** Inserts the children in @a new at index @a i of @a node.
  *
- * @return Number of extra siblings outputted into @arg new to insert after @arg node. */
+ * @return Number of extra siblings outputted into @a new to insert after @a node. */
 static size_t insert_children_overflowing(struct Internal *node, unsigned i, struct NodeSlice new) {
 	if (node->num_children + new.len <= MAX_CHILDREN) {
 		insert_children(node, i, new.len, new.xs);
@@ -163,9 +163,10 @@ static size_t insert_children_overflowing(struct Internal *node, unsigned i, str
 	return make_parents(LENGTH(slices), slices, lchildren_len + new.len + rchildren_len, out);
 }
 
-/** Balances @arg a with its right sibling @arg b.
+/** Balances @a a with its right sibling @a b.
  *
- * @return Whether @arg b became empty. */
+ * @return Whether @a b became empty.
+ */
 static bool balance(Node *a, Node *b) {
 	if (a->depth != b->depth) __builtin_unreachable();
 	if (!(is_underfilled(b) || is_underfilled(a))) ;
@@ -319,7 +320,7 @@ static struct NodeSlice segment_chunks(size_t size, size_t count, struct Str seg
 	return (struct NodeSlice) { capacity, nodes };
 }
 
-/** Returns the number of children removed before @arg child_end. */
+/** Returns the number of children removed before @a child_end. */
 static unsigned replace_child_range_with_leaves(struct Internal *node, unsigned child_start, unsigned child_end,
 	struct NodeSlice extra_leaves, size_t *extra_leaves_offset) {
 	for (unsigned i = child_start; i < child_end; ++i) {
@@ -389,14 +390,13 @@ static void replace_nodes_in_end_subtree(Node *node, size_t end,
 			extras->len -= *extra_leaves_offset);
 }
 
-/**
- * Patches deletion seam between @arg i:th child of @arg x and @arg j:th child of @arg y.
+/** Patches deletion seam between @a i:th child of @a x and @a j:th child of @a y.
  *
- * The pointers @arg x and @arg y may alias.
+ * The pointers @a x and @a y may alias.
  *
- * @post No child of @arg x or @arg y is underfilled or a different height.
- * @return Whether @arg x needs to be replaced with its sole
- *         unbalanced child, and @arg y now has @arg j children.
+ * @post No child of @a x or @a y is underfilled or a different height.
+ * @return Whether @a x needs to be replaced with its sole unbalanced
+ *         child, and @a y now has @a j children.
  */
 static bool fix_seam(struct Internal *x, unsigned i, struct Internal *y, unsigned j) {
 	Node *left = x->children[i], *right = y->children[j];
@@ -506,7 +506,8 @@ static struct NodeSlice node_replace(Node **node, size_t beg, size_t end, struct
 		 *    remaining extra leaves for insertion before found leaf.
 		 * 4. Patching the seam created by a deletion, by balancing
 		 *    nodes on the same levels of the rightmost and
-		 *    penultimate rightmost subtrees bottom-up. */
+		 *    penultimate rightmost subtrees bottom-up.
+		 */
 		unsigned start_idx = child_idx;
 		end -= node_byte_size(*child);
 		size_t extra_leaves_offset = 0;

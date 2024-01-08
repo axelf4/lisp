@@ -135,7 +135,7 @@ struct GcHeap *gc_new() {
 	return heap;
 }
 
-/** Remember @arg x as a live allocated object location. */
+/** Remember @a x as a live allocated object location. */
 static void object_map_add(char *x) {
 	struct Chunk *chunk = (struct Chunk *) ((uintptr_t) x & ~(alignof(struct Chunk) - 1));
 	unsigned i = (x - (char *) chunk->blocks) / alignof(max_align_t),
@@ -143,7 +143,7 @@ static void object_map_add(char *x) {
 	chunk->object_map[i / n] |= 1 << i % n;
 }
 
-/** Removes @arg x from the object map, returning whether it was present. */
+/** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
 	if (x % alignof(max_align_t)) return false;
 	uintptr_t p = (uintptr_t) x & ~(alignof(struct Chunk) - 1);
@@ -241,7 +241,7 @@ static void pin_and_trace(struct GcHeap *heap, void *p) {
 	header->tib->trace(heap, p);
 }
 
-/** Call @arg fn with callee-saved registers pushed to the stack. */
+/** Call @a fn with callee-saved registers pushed to the stack. */
 #ifdef __clang__
 [[clang::disable_tail_calls]]
 #elifndef __GNUC__
