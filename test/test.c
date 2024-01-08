@@ -45,9 +45,9 @@ static void test_hash_table(void **) {
 static void test_rope(void **) {
 	struct Rope rope;
 	if (!rope_init(&rope)) fail();
-	rope_replace(&rope, 0, 0, "abcdefghijklmnopqrstuvwxyz");
+	rope_replace(&rope, 0, 0, 26, "abcdefghijklmnopqrstuvwxyz");
 	assert_int_equal(rope_size(&rope), 26);
-	rope_replace(&rope, 1, 17, "");
+	rope_replace(&rope, 1, 17, 0, "");
 	assert_int_equal(rope_size(&rope), 10);
 	rope_free(&rope);
 }
