@@ -20,7 +20,7 @@
 
     devShells.${system}.default = pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } {
       inputsFrom = [ self.packages.${system}.default ];
-      buildInputs = with pkgs; [ valgrind ];
+      buildInputs = with pkgs; [ doxygen valgrind ];
     };
   };
 }

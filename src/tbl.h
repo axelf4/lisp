@@ -1,7 +1,7 @@
-/**
+/** @file
  * Swiss tables SWAR implementation.
  *
- * See: https://abseil.io/about/design/swisstables
+ * @see https://abseil.io/about/design/swisstables
  */
 
 #pragma GCC diagnostic push
@@ -34,10 +34,10 @@ static inline size_t capacity_to_buckets(size_t capacity) {
 
 typedef size_t Group;
 
-/** Return the integer with all bytes equal to @arg x. */
+/** Return the integer with all bytes equal to @a x. */
 #define REPEAT(x) (x * (~0ULL / 0xff))
 
-#define FOR_SET_BITS(var, x) for (typeof(x) _i = x, var;			\
+#define FOR_SET_BITS(var, x) for (typeof(x) _i = x, var;		\
 		_i && (var = __builtin_ctzll(_i), true); _i &= _i - 1)
 
 static inline size_t match_byte(unsigned char x, size_t group) {
@@ -69,7 +69,8 @@ struct Table {
 	 * Each byte is one of:
 	 * - 0b1111'1111: EMPTY
 	 * - 0b1000'0000: DELETED (tombstone)
-	 * - 0b0xxx'xxxx: FULL (x is a hash fragment) */
+	 * - 0b0xxx'xxxx: FULL (x is a hash fragment)
+	 */
 	unsigned char *ctrl;
 };
 
@@ -115,11 +116,11 @@ KEY *CAT(NAME, _tbl_find)(struct Table *table, KEY key) {
 }
 
 /**
- * Iterates over @arg table entries.
+ * Iterates over @a table entries.
  *
  * @param i Auxilliary index that should be zero-initialized when starting iteration.
  * @param[out] entry Pointer to write the table entries to.
- * @return Whether @arg entry holds the current entry and iteration is not yet done.
+ * @return Whether @a entry holds the current entry and iteration is not yet done.
  */
 static bool CAT(NAME, _tbl_iter_next)(struct Table *table, size_t *i, KEY **entry) {
 	while (*i <= table->bucket_mask) if (IS_FULL(table->ctrl[(*i)++])) {
@@ -154,9 +155,9 @@ static bool CAT(NAME, _tbl_reserve)(struct Table *table, size_t additional) {
 }
 
 /**
- * Inserts @arg key if it does not yet exist, and outputs the entry into @arg entry.
+ * Inserts @a key if it does not yet exist, and outputs the entry into @a entry.
  *
- * @return Whether @arg key was already present.
+ * @return Whether @a key was already present.
  */
 bool CAT(NAME, _tbl_entry)(struct Table *table, KEY key, KEY **entry) {
 	if ((*entry = CAT(NAME, _tbl_find)(table, key))) return true;

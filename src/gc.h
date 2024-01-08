@@ -1,7 +1,7 @@
-/**
+/** @file
  * Conservative single-threaded immix garbage collector.
  *
- * See: BLACKBURN, Stephen M.; MCKINLEY, Kathryn S. Immix: a
+ * @see BLACKBURN, Stephen M.; MCKINLEY, Kathryn S. Immix: a
  *      mark-region garbage collector with space efficiency, fast
  *      collection, and mutator performance. ACM SIGPLAN Notices,
  *      2008, 43.6: 22-32.
@@ -43,7 +43,7 @@ struct GcBlock {
 
 [[gnu::malloc, nodiscard]] struct GcHeap *gc_new();
 
-/** Allocates @arg size bytes. */
+/** Allocates @a size bytes. */
 [[gnu::alloc_size (2), gnu::assume_aligned (alignof(max_align_t)), gnu::hot, gnu::malloc, nodiscard]]
 void *gc_alloc(struct GcHeap *heap, size_t size, struct GcTypeInfo *tib);
 

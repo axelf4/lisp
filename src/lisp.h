@@ -1,3 +1,5 @@
+/** Lisp interpreter. @file */
+
 #ifndef LISP_H
 #define LISP_H
 
@@ -55,6 +57,7 @@ struct Subr {
 
 struct Function { struct Subr *subr; };
 
+/** Cons cell. */
 struct Cons {
 	LispObject *car, *cdr;
 };

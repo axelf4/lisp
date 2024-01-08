@@ -42,8 +42,8 @@ struct Chunk {
 	size_t count;
 	uint16_t num_consts;
 	/**
-	 * Array of num_consts LispObject pointer constants, followed by
-	 * count bytecode instructions.
+	 * Array of #num_consts constants, followed by #count bytecode
+	 * instructions.
 	 */
 	alignas(LispObject **) char data[];
 };
@@ -431,7 +431,7 @@ static void emit(struct ByteCompCtx *ctx, struct Instruction ins) {
 	ctx->ins[ctx->count++] = ins;
 }
 
-/** Emit instructions to move variables greater than or equal to @arg var_limit to the heap. */
+/** Emit instructions to move variables greater than or equal to @a var_limit to the heap. */
 static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, uint16_t regs_start) {
 	for (size_t i = vars_start; i < ctx->num_vars; ++i)
 		if (ctx->vars[i].is_captured) {
@@ -525,7 +525,7 @@ static enum CompileError compile_progn(struct ByteCompCtx *ctx, LispObject *x, s
 	return COMP_OK;
 }
 
-/** Byte-compile the form @arg x. */
+/** Byte-compiles the form @a x. */
 static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, struct Destination dst) {
 	struct LispContext *lisp_ctx = ctx->lisp_ctx;
 	enum CompileError err;

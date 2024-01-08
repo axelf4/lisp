@@ -1,4 +1,4 @@
-/** Miscellaneous utilities. */
+/** Miscellaneous utilities. @file */
 
 #ifndef UTIL_H
 #define UTIL_H
@@ -9,7 +9,7 @@
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
-/// Number of elements in the array.
+/** Number of elements in the array. */
 #define LENGTH(x) (sizeof (x) / sizeof *(x))
 
 #define _CAT(a, b) a ## b
@@ -17,12 +17,12 @@
 
 #define SWAP(x, y) do { auto _tmp = (x); (x) = (y); (y) = _tmp; } while(0)
 
-/** Returns the smallest power of two greater than or equal to @arg x. */
+/** Returns the smallest power of two greater than or equal to @a x. */
 static inline unsigned int next_power_of_2(unsigned int x) {
 	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - __builtin_clz(x)) : x;
 }
 
-/** Converts @arg x to little endian from the target's endianness. */
+/** Converts @a x to little endian from the target's endianness. */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define HTOL(x) x
 #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -57,13 +57,13 @@ static inline uint64_t moremur(uint64_t x) {
 	return x;
 }
 
-/** Throws an exception with @arg errcode. */
+/** Throws an exception with @a errcode. */
 [[noreturn, gnu::cold]] void throw(unsigned errcode);
 
 /**
  * Protected call.
  *
- * Applies @arg f to @arg x, preventing stack unwinding past this
+ * Applies @a f to @a x, preventing stack unwinding past this
  * function in case an exception is thrown.
  *
  * @return The error code, or zero in the absence of errors.
