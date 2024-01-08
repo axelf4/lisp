@@ -22,7 +22,7 @@ bool rope_init(struct Rope *rope);
 void rope_free(struct Rope *rope);
 
 /** Replaces the bytes from @a beg (inclusive) to @a end (exclusive) with @a s. */
-void rope_replace(struct Rope *rope, size_t beg, size_t end, const char *s);
+void rope_replace(struct Rope *rope, size_t beg, size_t end, size_t len, const char s[static len]);
 
 /** Returns the byte size of @a rope. */
 size_t rope_size(struct Rope *rope);
