@@ -1,6 +1,8 @@
 #include "lisp.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <xxh3.h>
 #include "util.h"
 
@@ -151,7 +153,18 @@ static void lisp_ctx_trace(struct GcHeap *, void *x) {
 
 struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
 
-struct LispContext *lisp_init() {
+bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispContext *ctx) {
+	if (sig == SIGSEGV) {
+		// Check if fault was within the stack guard pages
+		if (ctx->guard <= (uintptr_t) info->si_addr && (uintptr_t) info->si_addr < ctx->guard_end)
+			// OK as run is compiled with -fnon-call-exceptions and
+			// SIGSEGV is a synchronous signal.
+			throw(SIGSEGV); // Throw stack overflow exception
+	}
+	return false;
+}
+
+struct LispContext *lisp_new() {
 	struct LispContext *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
 	ctx->symbol_tbl = tbl_new();
 
@@ -169,6 +182,24 @@ struct LispContext *lisp_init() {
 		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
 		sym->value = f;
 	}
+
+	long page_size = sysconf(_SC_PAGESIZE);
+	// TODO Divide guard pages into yellow and red zones (in HotSpot
+	// terminology) where the yellow zone is temporarily disabled for
+	// exception handlers not to immediately trigger another overflow.
+	unsigned guard_size = (0xff * sizeof(LispObject *) + page_size - 1) & (page_size - 1);
+#define STACK_LEN 0x1000
+	LispObject **stack;
+	size_t size = STACK_LEN * sizeof *stack;
+	if ((stack = mmap(NULL, size + guard_size,
+				PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
+		== MAP_FAILED) return NULL;
+	if (mprotect(stack, size, PROT_READ | PROT_WRITE) == -1) {
+		munmap(stack, size + guard_size);
+		return NULL;
+	}
+	ctx->bp = stack;
+	ctx->guard_end = (ctx->guard = (uintptr_t) stack + size) + guard_size;
 
 	return ctx;
 }

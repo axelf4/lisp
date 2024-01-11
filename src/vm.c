@@ -92,8 +92,8 @@ static size_t prototype_size(void *x) {
 static void prototype_trace(struct GcHeap *, void *x) { gc_mark(prototype_size(x), x); }
 static struct GcTypeInfo prototype_tib = { prototype_trace, prototype_size };
 
-static void disassemble(struct Chunk *chunk, const char *name) {
-	printf("Disassembling chunk '%s':\n", name);
+static void disassemble(struct Chunk *chunk) {
+	puts("Disassembling chunk:");
 	LispObject **consts = chunk_constants(chunk);
 	struct Instruction *xs = chunk_instructions(chunk);
 	for (size_t i = 0; i < chunk->count;) {
@@ -188,16 +188,17 @@ struct TraceRecording {
 	unsigned count;
 };
 
-static LispObject *run(struct Chunk *chunk) {
-	LispObject *stack[512], **bp = stack, **consts = chunk_constants(chunk);
+[[gnu::optimize ("-fnon-call-exceptions")]]
+static LispObject *run(struct LispContext *ctx, struct Chunk *chunk) {
+	LispObject **bp = ctx->bp, **consts = chunk_constants(chunk);
 	// Store dummy closure in first call frame to handle returns uniformly
-	*stack = (LispObject *) &(struct Closure) {
+	*bp = (LispObject *) &(struct Closure) {
 		.prototype = &(struct Prototype) { .chunk = chunk }
 	};
-	stack[1] = NULL; // No return address for first call frame
+	bp[1] = NULL; // No return address for first call frame
 	struct Upvalue *upvalues = NULL;
 
-	disassemble(chunk, "my chunk");
+	disassemble(chunk);
 
 	uint8_t hotcounts[64] = {};
 	bool is_recording = false;
@@ -234,9 +235,9 @@ static LispObject *run(struct Chunk *chunk) {
 	};
 
 	void **dispatch_table = normal_dispatch_table;
-	struct Instruction *pc = chunk_instructions(chunk), ins;
+	struct Instruction *pc = chunk_instructions(chunk), ins; // Program counter
 	// Use token-threading to be able to swap dispatch table when recording
-#define CONTINUE do { ins = *pc++; goto *dispatch_table[ins.op]; } while (0)
+#define CONTINUE goto *dispatch_table[(ins = *pc++).op]
 	CONTINUE;
 
 op_ret:
@@ -262,6 +263,7 @@ op_call: op_tail_call:
 	case LISP_FUNCTION:
 		struct Subr *subr = ((struct Function *) *vals)->subr;
 		if (ins.c != subr->min_args) die("Too few arguments");
+		ctx->bp = bp; // Synchronize bp
 		LispObject **args = vals + 2;
 		switch (subr->min_args) {
 		case 0: *vals = subr->a0(); break;
@@ -377,7 +379,6 @@ struct ByteCompCtx {
 	uint8_t num_regs,
 		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
-	uint16_t num_constants;
 	struct Table constants;
 
 	size_t count, capacity;
@@ -441,9 +442,9 @@ static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, ui
 }
 
 static size_t length(LispObject *x) {
-	size_t result = 0;
-	while (lisp_type(x) == LISP_CONS) { ++result; pop(&x); }
-	return result;
+	size_t i = 0;
+	while (lisp_type(x) == LISP_CONS) { ++i; pop(&x); }
+	return i;
 }
 
 static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispObject *args, LispObject **out) {
@@ -470,7 +471,7 @@ static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispOb
 	}
 	*ins++ = (struct Instruction) { .op = TAIL_CALL, .a = 2, .c = argc };
 
-	*out = run(chunk);
+	*out = run(ctx->lisp_ctx, chunk);
 	return true;
 }
 
@@ -725,11 +726,11 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 	memcpy(chunk_instructions(chunk), ctx.ins, ctx.count * sizeof *ctx.ins);
 
 	constant_tbl_free(&ctx.constants);
-	free(ctx.ins); // TODO Reuse for next top-level form
+	free(ctx.ins);
 	return chunk;
 }
 
 LispObject *lisp_eval(struct LispContext *ctx, LispObject *form) {
 	struct Chunk *chunk = compile(ctx, form);
-	return run(chunk);
+	return run(ctx, chunk);
 }

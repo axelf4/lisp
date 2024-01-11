@@ -1,8 +1,33 @@
-/** Lisp interpreter. @file */
+/** @file
+ * Lisp interpreter.
+ *
+ * The interpreter maintains a stack of frames, each of the form:
+ *
+ *     v-- BP
+ *     +----+----+----     ----
+ *     | A  | B  | x₀  ...  xₙ ...
+ *     +----+----+----     ----
+ *
+ * where
+ * - If A is a correctly aligned pointer, then A is the closure that
+ *   was called with arguments in slots x₀,...,xₙ, and B is the return
+ *   address, or NULL for the first frame.
+ * - (Exception handlers, etc. will eventually also use stack frames
+ *   disambiguated via pointer tagging of A.)
+ *
+ * Stack overflows are detected by setting up (memory protected) guard
+ * pages after the allocated stack. The base pointer (BP), which
+ * points to the topmost frame, is kept in a register while in the VM,
+ * and only synchronized with @ref LispContext.bp due to:
+ * - Pushing or popping an exception handler.
+ * - Entering a native function, which may recursively call @ref
+ *   ::lisp_eval.
+ */
 
 #ifndef LISP_H
 #define LISP_H
 
+#include <signal.h>
 #include "gc.h"
 #include "tbl.h"
 
@@ -41,6 +66,8 @@ struct LispContext {
 	struct Table symbol_tbl;
 	// Common interned symbols
 	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
+	LispObject **bp; ///< Base pointer.
+	uintptr_t guard, guard_end;
 };
 
 struct Subr {
@@ -82,10 +109,21 @@ enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispO
 
 void lisp_print(LispObject *object);
 
-struct LispContext *lisp_init();
+struct LispContext *lisp_new();
 
 void lisp_free(struct LispContext *);
 
+/**
+ * Lisp VM signal handler to consult before user application signal handling.
+ *
+ * This routine recognizes SIGSEGV signals.
+ *
+ * @return Whether the signal was handled.
+ */
+[[gnu::cold]] bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext,
+	struct LispContext *ctx);
+
+/** Evaluates @a form. */
 LispObject *lisp_eval(struct LispContext *ctx, LispObject *form);
 
 static inline bool consp(LispObject *x) { return lisp_type(x) == LISP_CONS; }

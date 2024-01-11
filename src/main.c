@@ -1,10 +1,27 @@
 #include <stdio.h>
+#include <signal.h>
 #include "gc.h"
 #include "lisp.h"
 
+static struct LispContext *ctx;
+
+static void signal_handler(int sig, siginfo_t *info, void *ucontext) {
+	if (lisp_signal_handler(sig, info, ucontext, ctx)) return;
+
+	signal(sig, SIG_DFL);
+	// Returning is technically not defined by POSIX, but in practice
+	// allows the signal to be re-delivered.
+}
+
 int main(void) {
 	if (!(heap = gc_new())) return 1;
-	struct LispContext *ctx = lisp_init();
+	ctx = lisp_new();
+
+	struct sigaction action;
+	action.sa_sigaction = signal_handler;
+	sigemptyset(&action.sa_mask);
+	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK | SA_RESTART;
+	if (sigaction(SIGSEGV, &action, NULL) == -1) die("sigaction failed");
 
 	char line[256];
 	while (fgets(line, sizeof line, stdin)) {

@@ -43,8 +43,7 @@ The language consists of the following special forms:
 
   Returns `ARG` unevaluated.
   The reader shorthand `'` exists, e.g. `'a` is the same as `(quote a)`.
-
-The reader perpetuates the mistake of `quote` returning reader constants.
+  The mistake of `quote` returning reader constants is perpetuated.
 
 Furthermore, currently the following set of built-in functions are defined:
 `print`, `cons`, `car`, `cdr`, `+` and `<`.
@@ -86,11 +85,16 @@ that I would like to see if they can be done differently:
   documentation strings, `interactive` specifications and advices.
 * Designing the interpreter from the start not to rely on global state,
   makes it easy to spin up unsafe parallel interpreter threads.
-  It is terrible compared to the state-of-the-art in parallelism
+  It is terrible compared to the state-of-the-art parallelism
   offered by purely functional languages,
-  but it is also a very Lispy solution.
-* To avoid duplication, this project will not implement a tree-walking interpreter,
+  but also a very Lispy solution.
+* To avoid duplication, this project does not implement a tree-walking interpreter
   in addition to the bytecode interpreter.
 
   This means the bytecode compiler has to be written in C instead of Lisp.
   On the other hand, it will actually be fast.
+* The built-in package manager `package.el` manages to be
+  simultaneously over-engineered and inadequate.
+
+  My preferred solution would be to just provide a thin wrapper around Nix or similar,
+  to avoid reinventing the wheel poorly.

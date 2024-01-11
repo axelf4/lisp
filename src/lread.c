@@ -1,5 +1,4 @@
 #include <stddef.h>
-#include <stdio.h>
 #include "lisp.h"
 
 static bool is_whitespace(char c) {
