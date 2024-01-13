@@ -19,8 +19,8 @@ void die(const char *format, ...) {
 #if EXCEPTION_BACKEND == USE_SJLJ
 #include <setjmp.h>
 
-static __thread jmp_buf *current_env;
-static __thread unsigned errcode;
+static thread_local jmp_buf *current_env;
+static thread_local unsigned errcode;
 
 void throw(unsigned code) {
 	errcode = code;
@@ -50,7 +50,7 @@ unsigned pcall(void *x, void (*f)(void *)) {
 /// Our exception class.
 #define CLASS 0x4c69737000000000ULL // Lisp\0\0\0\0
 
-static __thread struct {
+static thread_local struct {
 	struct _Unwind_Exception exception;
 	// Language-specific information used to process the exception:
 } uex;
