@@ -1,40 +1,57 @@
+/** Lisp reader. */
+
 #include <stddef.h>
 #include "lisp.h"
 
-static bool is_whitespace(char c) {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-}
+/** Character type lookup table. */
+static enum CharType : unsigned char {
+	CHAR_SPACE = 1,
+	CHAR_SPECIAL = 1 << 1,
+	CHAR_COMMENT = 1 << 2,
+	CHAR_DIGIT = 1 << 3,
+} char_table[256] = {
+	0x02, 0, 0, 0, 0, 0, 0, 0,
+	0, /* \t */ 0x1, /* \n */ 0x1, 0, 0, /* \r */ 0x1, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	/* \s */ 0x1, 0, 0, 0, 0, 0, 0, /* ' */ 0x2,
+	/* ( */ 0x2,  /* ) */ 0x2, 0, 0, /* , */ 0x2, 0, /* . */ 0x2, 0,
+	/* 0 */ 0x8, 0x8, 0x8, 0x8, 0x8, 0x8, 0x8, 0x8,
+	0x8, 0x8, 0, /* ; */ 0x4, 0, 0, 0, 0,
+	/* @ */ 0x2, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0
+};
 
-static bool is_digit(char c) { return '0' <= c && c <= '9'; }
+static bool is_digit(char c) { return char_table[(unsigned char) c] & CHAR_DIGIT; }
+static bool is_ident(char c) { return !(char_table[(unsigned char) c]
+		& (CHAR_SPACE | CHAR_COMMENT | CHAR_SPECIAL)); }
 
-/** Skip whitespace and comments. */
+/** Skips whitespace and comments. */
 static void skip_whitespace(const char **s) {
 	for (;;) {
-		if (**s == ';') while (*++*s != '\n') ;
-		if (!is_whitespace(**s)) break;
-		while (is_whitespace(*++*s)) ;
+		if (**s == ';') while (*(*s)++ != '\n') ;
+		if (!(char_table[(unsigned char) **s] & CHAR_SPACE)) break;
+		++*s;
+		while (char_table[(unsigned char) **s] & CHAR_SPACE) ++*s;
 	}
 }
 
-static int read_integer(const char **s) {
+static LispObject *read_integer(const char **s) {
 	int sign = 1;
 	switch (**s) {
 	case '-': sign = -1; [[fallthrough]];
 	case '+': ++*s;
 	}
+	if (!is_digit(**s)) return NULL;
 	int result = 0;
-	while (is_digit(**s)) result = 10 * result + (*(*s)++ - '0');
-	return sign * result;
-}
-
-static struct LispObject *read_symbol(struct LispContext *ctx, const char **s) {
-	for (const char *start = *s;; ++*s)
-		switch (**s) {
-		default:
-			if (is_whitespace(**s))
-			case '\0': case '(': case ')': case '.': case '\'':
-				return intern(ctx, *s - start, start);
-		}
+	do result = 10 * result + (**s - '0'); while (is_digit(*++*s));
+	return is_ident(**s) ? NULL : lisp_integer(sign * result);
 }
 
 union StackElement {
@@ -61,6 +78,7 @@ enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject
 
 	struct LispObject *value;
 val_beg:
+	const char *start = *s;
 	if (**s == '(') { ++*s; goto list_beg; }
 	if (**s == '\'') {
 		++*s;
@@ -70,10 +88,12 @@ val_beg:
 			{ .prev_container = prev_ctn, .type = CTN_PREFIX, .prefix_sym = ctx->fquote };
 		goto val_beg;
 	}
-	if (is_digit(**s) || ((**s == '+' || **s == '-') && is_digit(1[*s])))
-		value = lisp_integer(read_integer(s));
-	else if (__builtin_expect(!**s, false)) return LISP_READ_EOF;
-	else value = read_symbol(ctx, s);
+	if ((value = read_integer(s))) ;
+	else { // Read a symbol
+		while (is_ident(**s)) ++*s;
+		if (__builtin_expect(*s == start, false)) return LISP_READ_EOF;
+		value = intern(ctx, *s - start, start);
+	}
 val_end:
 	if (!ctn) { *result = value; return LISP_READ_OK; } // Not in a container context
 

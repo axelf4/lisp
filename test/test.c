@@ -55,18 +55,6 @@ static void test_rope(void **) {
 static int setup_lisp(void **state) { *state = lisp_new(); return 0; }
 static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
 
-static void test_reader(void **state) {
-	LispObject *obj;
-	assert_int_equal(lisp_read_whole(*state, "(0 .", &obj), LISP_READ_EOF);
-	assert_int_equal(lisp_read_whole(*state, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
-}
-
-static LispObject *eval(struct LispContext *ctx, const char *s) {
-	LispObject *form;
-	assert_int_equal(lisp_read_whole(ctx, s, &form), LISP_READ_OK);
-	return lisp_eval(ctx, form);
-}
-
 static void assert_lisp_equal(LispObject *a, LispObject *b) {
 	enum LispObjectType type = lisp_type(b);
 	assert_int_equal(lisp_type(a), type);
@@ -77,9 +65,30 @@ static void assert_lisp_equal(LispObject *a, LispObject *b) {
 		assert_lisp_equal(x->car, y->car);
 		assert_lisp_equal(x->cdr, y->cdr);
 		break;
+	case LISP_SYMBOL: assert_ptr_equal(a, b); break;
 	case LISP_INTEGER: assert_int_equal(*(int *) a, *(int *) b); break;
 	default: die("TODO");
 	}
+}
+
+static void assert_read_whole_equal(void *state, const char *s, LispObject *expected) {
+	LispObject *x;
+	assert_int_equal(lisp_read_whole(state, s, &x), LISP_READ_OK);
+	assert_lisp_equal(x, expected);
+}
+
+static void test_reader(void **state) {
+	LispObject *obj;
+	assert_int_equal(lisp_read_whole(*state, "(0 .", &obj), LISP_READ_EOF);
+	assert_int_equal(lisp_read_whole(*state, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
+	// Test lexing a symbol with a numeric prefix
+	assert_read_whole_equal(*state, "1x", intern(*state, sizeof "1x" - 1, "1x"));
+}
+
+static LispObject *eval(struct LispContext *ctx, const char *s) {
+	LispObject *form;
+	assert_int_equal(lisp_read_whole(ctx, s, &form), LISP_READ_OK);
+	return lisp_eval(ctx, form);
 }
 
 static void test_eval(void **state) {
