@@ -54,79 +54,70 @@ static LispObject *read_integer(const char **s) {
 	return is_ident(**s) ? NULL : lisp_integer(sign * result);
 }
 
-union StackElement {
-	LispObject *object;
-	// Container entry
-	struct {
-		union StackElement *prev_container;
-		enum ContainerType {
-			CTN_LIST,
-			CTN_DOTTED,
-			CTN_PREFIX,
-		} type;
-		union {
-			unsigned len;
-			struct Symbol *prefix_sym;
-		};
+#define TYPE_BITS 2
+
+struct StackElement {
+	/** For containers: The type ORed with the parent length shifted by TYPE_BITS. */
+	enum ContainerType : size_t {
+		CTN_LIST,
+		CTN_DOTTED,
+		CTN_PREFIX,
+	} tag;
+	union {
+		LispObject *object;
+		struct Symbol *prefix_sym;
 	};
 };
 
 enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject **result) {
-	union StackElement stack[256], *cur = stack, *ctn = NULL;
+	struct StackElement stack[256], *x = stack;
+	size_t len = 0;
 
 	skip_whitespace(s);
 
 	struct LispObject *value;
 val_beg:
 	const char *start = *s;
-	if (**s == '(') { ++*s; goto list_beg; }
-	if (**s == '\'') {
+	if (**s == '(') {
 		++*s;
 		skip_whitespace(s);
-		union StackElement *prev_ctn = ctn;
-		*(ctn = cur++) = (union StackElement)
-			{ .prev_container = prev_ctn, .type = CTN_PREFIX, .prefix_sym = ctx->fquote };
+		if (**s == ')') { ++*s; value = NULL; goto val_end; }
+		*x++ = (struct StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
+		len = 0;
 		goto val_beg;
-	}
-	if ((value = read_integer(s))) ;
-	else { // Read a symbol
+	} else if (**s == '\'') {
+		++*s;
+		skip_whitespace(s);
+		*x++ = (struct StackElement)
+			{ .tag = len << TYPE_BITS | CTN_PREFIX, .prefix_sym = ctx->fquote };
+		len = 0;
+		goto val_beg;
+	} else if ((value = read_integer(s))) ; else {
 		while (is_ident(**s)) ++*s;
 		if (__builtin_expect(*s == start, false)) return LISP_READ_EOF;
-		value = intern(ctx, *s - start, start);
+		value = intern(ctx, *s - start, start); // Read a symbol
 	}
 val_end:
-	if (!ctn) { *result = value; return LISP_READ_OK; } // Not in a container context
-
-	if (ctn->type == CTN_PREFIX) {
+	if (x == stack) { *result = value; return LISP_READ_OK; } // No remaining nesting
+	struct StackElement *ctn = x - ++len;
+	enum ContainerType ctn_ty = ctn->tag & ((1 << TYPE_BITS) - 1);
+	if (ctn_ty == CTN_PREFIX) {
 		value = cons(ctn->prefix_sym, cons(value, NULL));
-		ctn = ctn->prev_container;
-		--cur;
+		len = (--x)->tag >> TYPE_BITS;
 		goto val_end;
 	}
-
-	(cur++)->object = value;
-	++ctn->len;
+	x++->object = value;
 
 	skip_whitespace(s);
-	if (**s == ')') { ++*s; goto list_end; }
-	if (ctn->type == CTN_DOTTED) return LISP_READ_EXPECTED_RPAREN;
-	if (**s == '.') { ++*s; skip_whitespace(s); ctn->type = CTN_DOTTED; }
+	if (**s == ')') {
+		++*s;
+		value = ctn_ty == CTN_DOTTED ? --len, --x, value : NULL;
+		do value = cons((--x)->object, value); while (--len);
+		len = (--x)->tag >> TYPE_BITS; // Pop container from stack
+		goto val_end;
+	} else if (ctn_ty == CTN_DOTTED) return LISP_READ_EXPECTED_RPAREN;
+	else if (**s == '.') { ++*s; skip_whitespace(s); ctn->tag |= CTN_DOTTED; }
 	goto val_beg;
-
-list_beg:
-	skip_whitespace(s);
-	if (**s == ')') { ++*s; value = NULL; goto val_end; }
-
-	union StackElement *prev_ctn = ctn;
-	*(ctn = cur++) = (union StackElement) { .prev_container = prev_ctn };
-	goto val_beg;
-
-list_end:
-	value = ctn->type == CTN_DOTTED ? --ctn->len, (--cur)->object : NULL;
-	do value = cons((--cur)->object, value); while (--ctn->len);
-	ctn = ctn->prev_container;
-	--cur; // Pop container stack element
-	goto val_end;
 }
 
 enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject **result) {
