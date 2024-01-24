@@ -67,7 +67,7 @@ struct LispContext {
 	// Common interned symbols
 	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
 	LispObject **bp; ///< Base pointer.
-	uintptr_t guard, guard_end;
+	uintptr_t guard_end;
 };
 
 struct Subr {
