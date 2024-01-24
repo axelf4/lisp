@@ -1,7 +1,7 @@
 /** @file
  * Lisp interpreter.
  *
- * The interpreter maintains a stack of frames, each of the form:
+ * The virtual machine maintains a stack of frames, each of the form:
  *
  *     v-- BP
  *     +----+----+----     ----

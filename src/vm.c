@@ -41,10 +41,7 @@ struct Instruction {
 struct Chunk {
 	size_t count;
 	uint16_t num_consts;
-	/**
-	 * Array of #num_consts constants, followed by #count bytecode
-	 * instructions.
-	 */
+	/// Array of #num_consts constants, followed by #count bytecode instructions.
 	alignas(LispObject **) char data[];
 };
 static_assert(alignof(LispObject **) >= alignof(struct Instruction));
@@ -97,34 +94,35 @@ static void disassemble(struct Chunk *chunk) {
 	LispObject **consts = chunk_constants(chunk);
 	struct Instruction *xs = chunk_instructions(chunk);
 	for (size_t i = 0; i < chunk->count;) {
-		printf("%.4lu ", i);
+		printf("%.4zu ", i);
 		struct Instruction ins = xs[i++];
 		switch (ins.op) {
 		case RET: printf("RET %" PRIu8 "\n", ins.a); break;
 		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", ins.a); break;
 		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %p\n", ins.a, consts[ins.b]); break;
-		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %d\n", ins.a, (int16_t) ins.b); break;
+		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", ins.a, (int16_t) ins.b); break;
 		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", ins.a,
 			((struct Symbol *) consts[ins.b])->name); break;
 		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", ins.a,
 			((struct Symbol *) consts[ins.b])->name); break;
-		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %u\n", ins.a, ins.c); break;
-		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %u\n", ins.a, ins.c); break;
+		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", ins.a, ins.c); break;
+		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", ins.a, ins.c); break;
 		case CALL: case TAIL_CALL:
-			printf("%sCALL %" PRIu8 " <- (%d", ins.op == TAIL_CALL ? "TAIL_" : "", ins.a, ins.a);
+			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
+				ins.op == TAIL_CALL ? "TAIL_" : "", ins.a, ins.a);
 			for (unsigned i = 0; i < ins.c; ++i) printf(" %" PRIu8, ins.a + 2 + i);
 			puts(")");
 			break;
 		case MOV: printf("MOV %" PRIu8 " <- %" PRIu8 "\n", ins.a, ins.c); break;
-		case JMP: printf("JMP => %.4lu\n", i + ins.b); break;
-		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4lu\n", ins.a, i + ins.b); break;
+		case JMP: printf("JMP => %.4zu\n", i + ins.b); break;
+		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4zu\n", ins.a, i + ins.b); break;
 		case CLOS:
 			struct Prototype *proto = consts[ins.b];
-			printf("CLOS %" PRIu8 " <- (arity: %d) (num_upvals: %d) (len: %lu):\n",
+			printf("CLOS %" PRIu8 " <- (arity: %" PRIu8 ") (num_upvals: %" PRIu8 ") (len: %zu):\n",
 				ins.a, proto->arity, proto->num_upvalues, proto->len);
 			break;
 		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", ins.a); break;
-		default: printf("Unknown opcode: %" PRIu8 "\n", ins.op); break;
+		default: __builtin_unreachable();
 		}
 	}
 }
@@ -428,7 +426,6 @@ static void emit(struct ByteCompCtx *ctx, struct Instruction ins) {
 		ctx->ins = ins;
 		ctx->capacity = new_capacity;
 	}
-
 	ctx->ins[ctx->count++] = ins;
 }
 
@@ -569,7 +566,7 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			ctx->fun = &fun;
 			ctx->num_regs = 2; // Reserve closure and PC registers
 
-			size_t num_args = 0;
+			uint8_t num_args = 0;
 			while (args) {
 				LispObject *sym = pop(&args);
 				if (lisp_type(sym) != LISP_SYMBOL) return COMP_INVALID_VARIABLE;
@@ -611,7 +608,7 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			ctx->num_regs = fun.prev_num_regs;
 			ctx->num_vars = fun.vars_start;
 		} else if (head == lisp_ctx->flet) {
-			size_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
+			uint8_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
 			LispObject *vars = pop(&x);
 			while (vars) {
 				LispObject *def = pop(&vars), *sym, *init;
@@ -671,7 +668,7 @@ static enum CompileError compile_form(struct ByteCompCtx *ctx, LispObject *x, st
 			if (noreturn) return COMP_NORETURN;
 		} else if (maybe_eval_macro(ctx, head, x, &x)) return compile_form(ctx, x, dst);
 		else { // Function call
-			size_t prev_num_regs = ctx->num_regs, num_args = 0;
+			uint8_t prev_num_regs = ctx->num_regs, num_args = 0;
 			Register reg = dst.reg == ctx->num_regs - 1 ? dst.reg : ctx->num_regs++;
 			++ctx->num_regs; // Reserve register for PC
 			while (x) {

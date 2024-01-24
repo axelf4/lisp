@@ -45,10 +45,7 @@ static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size
 		: (struct BumpPointer) {};
 }
 
-struct Vec {
-	size_t length, capacity;
-	void **items;
-};
+struct Vec { size_t length, capacity; void **items; };
 
 static bool vec_reserve(struct Vec *vec, size_t additional) {
 	size_t n = vec->length + additional;

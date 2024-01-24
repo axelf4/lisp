@@ -18,7 +18,7 @@
 
 #define EMPTY 0b1111'1111
 #define DELETED 0b1000'0000
-#define IS_FULL(ctrl) (!(ctrl & 0x80))
+#define IS_FULL(ctrl) (!((ctrl) & 0x80))
 
 /// Primary hash function, used for probing.
 static inline size_t h1(uint64_t hash) { return hash; }
@@ -35,9 +35,9 @@ static inline size_t capacity_to_buckets(size_t capacity) {
 typedef size_t Group;
 
 /** Return the integer with all bytes equal to @a x. */
-#define REPEAT(x) (x * (~0ULL / 0xff))
+#define REPEAT(x) ((x) * (~0ULL / 0xff))
 
-#define FOR_SET_BITS(var, x) for (typeof(x) _i = x, var;		\
+#define FOR_SET_BITS(var, x) for (typeof(x) _i = (x), var;		\
 		_i && (var = __builtin_ctzll(_i), true); _i &= _i - 1)
 
 static inline size_t match_byte(unsigned char x, size_t group) {
@@ -96,7 +96,6 @@ static inline size_t find_insert_slot(struct Table *table, uint64_t h) {
 #endif
 
 #if defined(NAME) && defined(KEY)
-
 void CAT(NAME, _tbl_free)(struct Table *table) {
 	if (table->bucket_mask) free(table->ctrl - CTRL_OFFSET(table->bucket_mask + 1));
 }

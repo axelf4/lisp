@@ -12,32 +12,28 @@ void die(const char *format, ...) {
 	exit(EXIT_FAILURE);
 }
 
-#define USE_SJLJ 0
-#define USE_UNWINDING 1
-#define EXCEPTION_BACKEND USE_UNWINDING
-
-#if EXCEPTION_BACKEND == USE_SJLJ
+#if USE_SJLJ
 #include <setjmp.h>
 
-static thread_local jmp_buf *current_env;
-static thread_local unsigned errcode;
+static thread_local union { jmp_buf *env; unsigned errcode; } exn_handler;
 
 void throw(unsigned code) {
-	errcode = code;
-	if (current_env) longjmp(*current_env, 1);
+	jmp_buf *env = exn_handler.env;
+	exn_handler.errcode = code;
+	if (env) longjmp(*env, 1);
 	fputs("Uncaught exception\n", stderr);
 	abort();
 }
 
 unsigned pcall(void *x, void (*f)(void *)) {
-	jmp_buf env, *prev_env = current_env;
-	current_env = &env;
+	jmp_buf env, *prev_env = exn_handler.env;
+	exn_handler.env = &env;
 	unsigned result = 0;
-	if (setjmp(env)) result = errcode; else f(x);
-	current_env = prev_env;
+	if (setjmp(env)) result = exn_handler.errcode; else f(x);
+	exn_handler.env = prev_env;
 	return result;
 }
-#elif EXCEPTION_BACKEND == USE_UNWINDING
+#else
 /*
  * Stack unwinding for exceptions.
  *
@@ -104,6 +100,4 @@ static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 		".cfi_adjust_cfa_offset -8\n\t"
 		"ret");
 }
-#else
-#error Unknown exception backend
 #endif

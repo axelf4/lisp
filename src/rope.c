@@ -586,7 +586,8 @@ size_t rope_size(struct Rope *rope) { return node_byte_size(rope->root); }
 void rope_replace(struct Rope *rope, size_t beg, size_t end, size_t len, const char s[static len]) {
 	assert(end <= rope_size(rope));
 	size_t extras_offset = 0;
-	struct NodeSlice extras = node_replace(&rope->root, beg, end, (struct Str) { len, s }, &extras_offset);
+	struct NodeSlice extras = node_replace(&rope->root, beg, end,
+		(struct Str) { len, s }, &extras_offset);
 	if (extras.len && !(rope->root = node_from_nodes(rope->root, extras)))
 		die("malloc failed");
 	free(extras.xs);
