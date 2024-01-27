@@ -34,11 +34,11 @@ static bool is_ident(char c) { return !(char_table[(unsigned char) c]
 
 /** Skips whitespace and comments. */
 static void skip_whitespace(const char **s) {
-	for (;;) {
-		if (**s == ';') while (*(*s)++ != '\n') ;
-		if (!(char_table[(unsigned char) **s] & CHAR_SPACE)) break;
-		++*s;
-		while (char_table[(unsigned char) **s] & CHAR_SPACE) ++*s;
+	for (const char *x = *s;;) {
+		if (*x == ';') { ++x; while (*x++ != '\n') ; continue; }
+		if (!(char_table[(unsigned char) *x] & CHAR_SPACE)) { *s = x; break; }
+		++x;
+		while (char_table[(unsigned char) *x] & CHAR_SPACE) ++x;
 	}
 }
 
@@ -73,21 +73,20 @@ enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject
 	struct StackElement stack[256], *x = stack;
 	size_t len = 0;
 
-	skip_whitespace(s);
-
-	struct LispObject *value;
 val_beg:
+	skip_whitespace(s);
+val_beg_no_ws:
+	struct LispObject *value;
 	const char *start = *s;
 	if (**s == '(') {
 		++*s;
 		skip_whitespace(s);
-		if (**s == ')') { ++*s; value = NULL; goto val_end; }
+		if (__builtin_expect(**s == ')', false)) { ++*s; value = NULL; goto val_end; }
 		*x++ = (struct StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
 		len = 0;
-		goto val_beg;
+		goto val_beg_no_ws;
 	} else if (**s == '\'') {
 		++*s;
-		skip_whitespace(s);
 		*x++ = (struct StackElement)
 			{ .tag = len << TYPE_BITS | CTN_PREFIX, .prefix_sym = ctx->fquote };
 		len = 0;
@@ -115,9 +114,10 @@ val_end:
 		do value = cons((--x)->object, value); while (--len);
 		len = (--x)->tag >> TYPE_BITS; // Pop container from stack
 		goto val_end;
-	} else if (ctn_ty == CTN_DOTTED) return LISP_READ_EXPECTED_RPAREN;
-	else if (**s == '.') { ++*s; skip_whitespace(s); ctn->tag |= CTN_DOTTED; }
-	goto val_beg;
+	} else if (__builtin_expect(ctn_ty == CTN_DOTTED, false))
+		return LISP_READ_EXPECTED_RPAREN;
+	else if (**s == '.') { ++*s; ctn->tag |= CTN_DOTTED; goto val_beg; }
+	goto val_beg_no_ws;
 }
 
 enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject **result) {
