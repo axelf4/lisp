@@ -4,8 +4,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
-#include "lisp.h"
-#include "util.h"
+#include "jit.h"
 
 #define PROTO_VARIADIC 0x80
 /// Flag signifying that the upvalue captures a local instead of an upvalue.
@@ -56,20 +55,6 @@ static void disassemble(struct Chunk *chunk) {
 	disassemble_range(chunk->count, chunk_instructions(chunk), 0);
 }
 
-union SsaInstruction {
-	struct {
-		uint8_t op;
-	};
-};
-
-#define MAX_TRACE_LEN 512
-
-struct TraceRecording {
-	struct Closure *start;
-	union SsaInstruction trace[MAX_TRACE_LEN];
-	unsigned count;
-};
-
 static struct Upvalue *capture_upvalue(struct GcHeap *heap, struct Upvalue **p, LispObject *local) {
 	while (*p && (*p)->location > local) p = &(*p)->next;
 	if (*p && (*p)->location == local) return *p;
@@ -86,13 +71,12 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 	uintptr_t *bp = ctx->bp;
 	bp[1] = (uintptr_t) NULL;
 	struct Upvalue *upvalues = NULL;
-	uint8_t hotcounts[64] = {};
-	bool is_recording = false;
-	struct TraceRecording recording = {};
+	unsigned char hotcounts[64] = {};
+	struct JitState *recording = NULL;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
-	static void *normal_dispatch_table[] = {
+	void *main_dispatch_table[] = {
 		[RET] = &&op_ret,
 		[LOAD_NIL] = &&op_load_nil,
 		[LOAD_OBJ] = &&op_load_obj,
@@ -100,27 +84,14 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		[GETGLOBAL] = &&op_getglobal, [SETGLOBAL] = &&op_setglobal,
 		[GETUPVALUE] = &&op_getupvalue, [SETUPVALUE] = &&op_setupvalue,
 		[CALL] = &&op_call, [TAIL_CALL] = &&op_tail_call,
+		[TAIL_JIT_CALL] = &&op_tail_jit_call,
 		[MOV] = &&op_mov,
-		[JMP] = &&op_jmp,
-		[JNIL] = &&op_jnil,
-		[CLOS] = &&op_clos,
-		[CLOSE_UPVALS] = &&op_close_upvals,
-	}, *recording_dispatch_table[] = {
-		[RET] = &&op_ret,
-		[LOAD_NIL] = &&op_load_nil,
-		[LOAD_OBJ] = &&op_load_obj,
-		[LOAD_SHORT] = &&op_load_short,
-		[GETGLOBAL] = &&op_getglobal, [SETGLOBAL] = &&op_setglobal,
-		[GETUPVALUE] = &&op_getupvalue, [SETUPVALUE] = &&op_setupvalue,
-		[CALL] = &&op_call, [TAIL_CALL] = &&op_tail_call,
-		[MOV] = &&op_mov,
-		[JMP] = &&op_jmp,
-		[JNIL] = &&op_jnil,
-		[CLOS] = &&op_clos,
-		[CLOSE_UPVALS] = &&op_close_upvals,
-	};
-
-	void **dispatch_table = normal_dispatch_table;
+		[JMP] = &&op_jmp, [JNIL] = &&op_jnil,
+		[CLOS] = &&op_clos, [CLOSE_UPVALS] = &&op_close_upvals,
+	}, **dispatch_table = main_dispatch_table;
+	void *recording_dispatch_table[BC_NUM_OPS];
+	for (unsigned i = 0; i < LENGTH(recording_dispatch_table); ++i)
+		recording_dispatch_table[i] = &&do_record;
 	struct Instruction ins;
 	// Use token-threading to be able to swap dispatch table when recording
 #define CONTINUE goto *dispatch_table[(ins = *pc++).op]
@@ -172,22 +143,14 @@ op_call: op_tail_call:
 
 		struct Instruction *to = proto->body;
 		// Increment hotcount
-		if (is_recording) {
-			if (closure == recording.start) {
-				printf("Found loop start!\n");
-				is_recording = false;
-			}
-		} else {
-			unsigned hash = ((uintptr_t) pc ^ (uintptr_t) to) / alignof *pc;
-			uint8_t *hotcount = hotcounts + hash % LENGTH(hotcounts);
-			printf("Incrementing hotcount to %u\n", 1 + *hotcount);
-#define JIT_THRESHOLD 3
-			if (++*hotcount >= JIT_THRESHOLD) {
-				*hotcount = 0;
-				// Start recording trace
+		unsigned char hash = ((uintptr_t) pc ^ (uintptr_t) to) / sizeof *to,
+			*hotcount = hotcounts + hash % LENGTH(hotcounts);
+#define JIT_THRESHOLD 4
+		if ((*hotcount += 1 + (ins.op == TAIL_CALL)) >= JIT_THRESHOLD) {
+			*hotcount = 0;
+			if (!recording) { // Start recording trace
+				if (!(recording = record_new(closure))) die("malloc failed");
 				dispatch_table = recording_dispatch_table;
-				is_recording = true;
-				recording.start = closure;
 			}
 		}
 
@@ -226,6 +189,27 @@ op_close_upvals:
 		x->location = &x->value;
 	}
 	CONTINUE;
+op_tail_jit_call:
+	vals = bp + ins.a;
+	*bp = *vals;
+	memmove(bp + 2, vals + 2, /* TODO */ 3 * sizeof *vals);
+	ctx->bp = bp; // Synchronize bp
+	register struct LispCtx *ctx2 __asm__ ("r15") = ctx;
+	register struct Instruction *pc2 __asm__ ("r14");
+	__asm__ volatile ("call %[f]"
+		: "=r" (pc2)
+		: "r" (ctx2), [f] "rm" (ctx->trace_fn)
+		: "memory");
+	pc = pc2;
+	CONTINUE;
+do_record:
+	if (!record_instruction(recording, bp, pc)) {
+		free(recording);
+		recording = NULL;
+		dispatch_table = main_dispatch_table;
+		ins = pc[-1];
+	}
+	goto *main_dispatch_table[ins.op];
 #pragma GCC diagnostic pop
 }
 

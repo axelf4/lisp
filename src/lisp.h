@@ -90,6 +90,9 @@ struct LispCtx {
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
 
+	void (*trace_fn)();
+	struct LispTrace *current_trace;
+
 #ifndef LISP_GENERATED_FILE
 #define X(var, _) LispObject var;
 	FOR_SYMBOL_CONSTS(X)
@@ -186,6 +189,7 @@ enum Op : uint8_t {
 	/// R(A) <- R(A)(R(A+1), ..., R(A+C))
 	CALL,
 	TAIL_CALL,
+	TAIL_JIT_CALL,
 	MOV, ///< R(A) <- R(C)
 	JMP,
 	JNIL, ///< Conditional jump.
