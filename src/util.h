@@ -13,6 +13,8 @@
 /** Number of elements in the array. */
 #define LENGTH(...) (sizeof (__VA_ARGS__) / sizeof *(__VA_ARGS__))
 
+#define _STR(x) #x
+#define STR(x) _STR(x)
 #define _CAT(a, b) a ## b
 #define CAT(a, b) _CAT(a, b)
 
