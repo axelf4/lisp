@@ -23,7 +23,7 @@ add_custom_command(
   DEPENDS baker
   COMMAND baker ${PROJECT_BINARY_DIR}/lisp-generated.h)
 
-add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c
+add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/jit.c src/rope.c src/util.c
   $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp-generated.h>)
 target_include_directories(lisplib PRIVATE xxHash::xxhash)
 target_link_libraries(lisplib xxHash::xxhash)
