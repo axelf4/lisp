@@ -200,6 +200,9 @@ struct LispContext *lisp_new() {
 		return NULL;
 	}
 	ctx->guard_end = (uintptr_t) stack + size + guard_size;
+#ifndef __linux__
+	*stack = stack[1] = NULL; // No return address for first call frame
+#endif
 
 	return ctx;
 }
@@ -214,9 +217,7 @@ DEFUN("cons", cons, (LispObject *car, LispObject *cdr)) {
 	return cons(car, cdr);
 }
 
-DEFUN("car", car, (LispObject *x)) {
-	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->car : NULL;
-}
+DEFUN("car", car, (LispObject *x)) { return car(x); }
 
 DEFUN("cdr", cdr, (LispObject *x)) {
 	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->cdr : NULL;

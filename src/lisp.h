@@ -130,8 +130,12 @@ static inline bool consp(LispObject *x) { return lisp_type(x) == LISP_CONS; }
 
 static inline bool listp(LispObject *x) { return !x || consp(x); }
 
+static inline LispObject *car(LispObject *x) {
+	return consp(x) ? ((struct Cons *) x)->car : NULL;
+}
+
 static inline LispObject *pop(LispObject **x) {
-	if (lisp_type(*x) != LISP_CONS) return NULL;
+	if (!consp(*x)) return NULL;
 	struct Cons *cell = *x, *result = cell->car;
 	*x = cell->cdr;
 	return result;

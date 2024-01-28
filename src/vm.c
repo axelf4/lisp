@@ -69,6 +69,7 @@ static void chunk_trace(struct GcHeap *heap, void *x) {
 }
 static struct GcTypeInfo chunk_tib = { chunk_trace, chunk_size };
 
+#define PROTO_VARIADIC 0x80
 /// Flag signifying that the upvalue captures a local instead of an upvalue.
 #define UPVALUE_LOCAL 0x80
 
@@ -187,17 +188,9 @@ struct TraceRecording {
 };
 
 [[gnu::optimize ("-fnon-call-exceptions")]]
-static LispObject *run(struct LispContext *ctx, struct Chunk *chunk) {
-	LispObject **bp = ctx->bp, **consts = chunk_constants(chunk);
-	// Store dummy closure in first call frame to handle returns uniformly
-	*bp = (LispObject *) &(struct Closure) {
-		.prototype = &(struct Prototype) { .chunk = chunk }
-	};
-	bp[1] = NULL; // No return address for first call frame
+static LispObject *run(struct LispContext *ctx, LispObject **consts, struct Instruction *pc) {
+	LispObject **bp = ctx->bp;
 	struct Upvalue *upvalues = NULL;
-
-	disassemble(chunk);
-
 	uint8_t hotcounts[64] = {};
 	bool is_recording = false;
 	struct TraceRecording recording = {};
@@ -233,13 +226,13 @@ static LispObject *run(struct LispContext *ctx, struct Chunk *chunk) {
 	};
 
 	void **dispatch_table = normal_dispatch_table;
-	struct Instruction *pc = chunk_instructions(chunk), ins; // Program counter
+	struct Instruction ins;
 	// Use token-threading to be able to swap dispatch table when recording
 #define CONTINUE goto *dispatch_table[(ins = *pc++).op]
 	CONTINUE;
 
 op_ret:
-	if (!(pc = bp[1])) return bp[ins.a];
+	if (!(pc = bp[1])) return ins.a[ctx->bp = bp];
 	*bp = bp[ins.a]; // Copy return value to R(A) of CALL instruction
 	bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
 	consts = chunk_constants(((struct Closure *) *bp)->prototype->chunk);
@@ -261,7 +254,7 @@ op_call: op_tail_call:
 	case LISP_FUNCTION:
 		struct Subr *subr = ((struct Function *) *vals)->subr;
 		if (ins.c != subr->min_args) die("Too few arguments");
-		ctx->bp = bp; // Synchronize bp
+		1[ctx->bp = vals] = pc; // Synchronize bp and link call-frames
 		LispObject **args = vals + 2;
 		switch (subr->min_args) {
 		case 0: *vals = subr->a0(); break;
@@ -275,7 +268,14 @@ op_call: op_tail_call:
 	case LISP_CLOSURE:
 		struct Closure *closure = *vals;
 		struct Prototype *proto = closure->prototype;
-		if (ins.c != proto->arity) die("Wrong number of arguments");
+		uint8_t nargs = proto->arity & ~PROTO_VARIADIC;
+		if (proto->arity & PROTO_VARIADIC) {
+			LispObject *rest = NULL;
+			while (ins.c > nargs) rest = cons(vals[2 + --ins.c], rest);
+			vals[2 + ins.c++] = rest;
+		}
+		if (ins.c != nargs + !!(proto->arity & PROTO_VARIADIC))
+			die("Wrong number of arguments");
 
 		struct Instruction *to = chunk_instructions(proto->chunk) + proto->offset;
 		// Increment hotcount
@@ -301,7 +301,7 @@ op_call: op_tail_call:
 		if (ins.op == TAIL_CALL) {
 			*bp = *vals;
 			memmove(bp + 2, vals + 2, ins.c * sizeof *vals);
-		} else (bp = vals)[1] = pc;
+		} else 1[bp = vals] = pc;
 		pc = to;
 		consts = chunk_constants(proto->chunk);
 		break;
@@ -436,38 +436,27 @@ static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, ui
 		}
 }
 
-static size_t length(LispObject *x) {
-	size_t i = 0;
-	while (lisp_type(x) == LISP_CONS) { ++i; pop(&x); }
-	return i;
-}
+[[gnu::optimize ("-fnon-call-exceptions")]]
+static LispObject *apply(struct LispContext *ctx, LispObject *function, uint8_t n, LispObject *args[static n + 1]) {
+	enum LispObjectType ty = lisp_type(function);
+	if (ty != LISP_CLOSURE && ty != LISP_FUNCTION) throw(1);
 
-static bool maybe_eval_macro(struct ByteCompCtx *ctx, struct Symbol *sym, LispObject *args, LispObject **out) {
-	if (!(lisp_type(sym->value) == LISP_CONS
-			&& ((struct Cons *) sym->value)->car == ctx->lisp_ctx->smacro)) return false;
-	LispObject *macro = ((struct Cons *) sym->value)->cdr;
+	if (ty != LISP_CLOSURE) die("TODO Implement apply for native functions");
+	struct Closure *closure = function;
+	struct Prototype *proto = closure->prototype;
 
-	size_t argc = length(args), num_consts = 1 + argc, num_ins = 2 + argc;
-	struct Chunk *chunk;
-	char data[sizeof *chunk
-		+ num_consts * sizeof(LispObject *) + num_ins * sizeof(struct Instruction)];
-	chunk = (void *) data;
-	chunk->num_consts = num_consts;
-	chunk->count = num_ins;
+	*ctx->bp = function;
+	bool variadic = proto->arity & PROTO_VARIADIC;
+	uint8_t m = proto->arity & ~PROTO_VARIADIC;
+	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
 
-	LispObject **consts = chunk_constants(chunk);
-	struct Instruction *ins = chunk_instructions(chunk);
-	unsigned i = 0;
-	consts[i] = macro;
-	*ins++ = (struct Instruction) { .op = LOAD_OBJ, .a = 2 + i, .b = i };
-	while (args) {
-		consts[++i] = pop(&args);
-		*ins++ = (struct Instruction) { .op = LOAD_OBJ, .a = 3 + i, .b = i };
-	}
-	*ins++ = (struct Instruction) { .op = TAIL_CALL, .a = 2, .c = argc };
-
-	*out = run(ctx->lisp_ctx, chunk);
-	return true;
+	LispObject *xs = args[n];
+	if (n < m) while (xs && n < m) ctx->bp[2 + n++] = pop(&xs);
+	else while (n > m) xs = cons(args[--n], xs);
+	if (n < m || (xs && !variadic)) die("Wrong number of arguments");
+	if (variadic) ctx->bp[2 + m] = xs;
+	return run(ctx, chunk_constants(proto->chunk),
+		chunk_instructions(proto->chunk) + proto->offset);
 }
 
 static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject *x) {
@@ -561,9 +550,10 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject *x, s
 
 			uint8_t num_args = 0;
 			while (args) {
-				LispObject *sym = pop(&args);
+				LispObject *sym;
+				if (consp(args)) { sym = pop(&args); ++num_args; }
+				else { sym = args; args = NULL; num_args |= PROTO_VARIADIC; }
 				if (lisp_type(sym) != LISP_SYMBOL) throw(COMP_INVALID_VARIABLE);
-				++num_args;
 				ctx->vars[ctx->num_vars++]
 					= (struct Local) { .symbol = sym, .slot = ctx->num_regs++ };
 			}
@@ -651,8 +641,11 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject *x, s
 			} else noreturn = false;
 			ctx->ins[jmp].b = ctx->count - (jmp + 1);
 			if (noreturn) return COMP_NORETURN;
-		} else if (maybe_eval_macro(ctx, head, x, &x)) return compile_form(ctx, x, dst);
-		else { // Function call
+		} else if (lisp_type(head) == LISP_SYMBOL
+			&& car(((struct Symbol *) head)->value) == lisp_ctx->smacro) {
+			LispObject *macro = ((struct Cons *) ((struct Symbol *) head)->value)->cdr;
+			return compile_form(ctx, apply(ctx->lisp_ctx, macro, 0, &x), dst);
+		} else { // Function call
 			uint8_t prev_num_regs = ctx->num_regs, num_args = 0;
 			Register reg = dst.reg == ctx->num_regs - 1 ? dst.reg : ctx->num_regs++;
 			++ctx->num_regs; // Reserve register for PC
@@ -710,5 +703,8 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject *form) {
 
 LispObject *lisp_eval(struct LispContext *ctx, LispObject *form) {
 	struct Chunk *chunk = compile(ctx, form);
-	return run(ctx, chunk);
+	disassemble(chunk);
+	// Store dummy closure in first call frame to handle returns uniformly
+	*ctx->bp = &(struct Closure) { .prototype = &(struct Prototype) { .chunk = chunk } };
+	return run(ctx, chunk_constants(chunk), chunk_instructions(chunk));
 }
