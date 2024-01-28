@@ -306,6 +306,9 @@ bool lisp_init(struct LispCtx *ctx) {
 		sym->value = TAG_OBJ(x);
 	}
 
+	ctx->current_trace = NULL;
+	ctx->num_traces = 0;
+
 	return true;
 }
 

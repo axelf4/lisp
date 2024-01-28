@@ -90,6 +90,9 @@ struct LispCtx {
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
 
+	struct LispTrace *traces[32], *current_trace;
+	uint16_t num_traces;
+
 #ifndef LISP_GENERATED_FILE
 #define X(var, _) LispObject var;
 	FOR_SYMBOL_CONSTS(X)
@@ -186,6 +189,7 @@ enum Op : uint8_t {
 	/// R(A) <- R(A)(R(A+1), ..., R(A+C))
 	CALL,
 	TAIL_CALL,
+	TAIL_JIT_CALL,
 	MOV, ///< R(A) <- R(C)
 	JMP,
 	JNIL, ///< Conditional jump.
@@ -212,6 +216,8 @@ struct Chunk {
 	/// Array of #num_consts constants, followed by #count instructions.
 	alignas(LispObject) alignas(struct Instruction) char data[];
 };
+
+#define PROTO_VARIADIC 0x80
 
 /** Lisp closure prototype. */
 struct Prototype {
@@ -243,5 +249,17 @@ static inline LispObject *chunk_constants(struct Chunk *chunk) {
 static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 	return (struct Instruction *) (chunk_constants(chunk) + chunk->num_consts);
 }
+
+#define REG_LISP_CTX r15
+#define REG_PC rsi
+
+struct JitState;
+
+[[gnu::malloc]] struct JitState *jit_new(struct Closure *f);
+
+/** Records instruction preceding @a pc prior to it being executed. */
+bool jit_record(struct JitState *state, uintptr_t *bp, struct Instruction *pc);
+
+uint8_t trace_arity(struct LispTrace *trace);
 
 #endif
