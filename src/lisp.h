@@ -40,6 +40,8 @@
 #define NIL TAG_OBJ(NULL)
 #define NILP(x) ((uint32_t) (x) == 1)
 
+#define ENABLE_JIT 1
+
 enum LispObjectType : unsigned char {
 	LISP_PAIR,
 	LISP_SYMBOL,
@@ -89,6 +91,11 @@ struct LispCtx {
 	struct Table symbol_tbl;
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
+
+#if ENABLE_JIT
+	struct JitState *jit_state;
+	struct LispTrace *(*traces)[32], *current_trace;
+#endif
 
 #ifndef LISP_GENERATED_FILE
 #define X(var, _) LispObject var;
@@ -186,6 +193,7 @@ enum Op : uint8_t {
 	/// R(A) <- R(A)(R(A+1), ..., R(A+C))
 	CALL,
 	TAIL_CALL,
+	TAIL_JIT_CALL,
 	MOV, ///< R(A) <- R(C)
 	JMP,
 	JNIL, ///< Conditional jump.
@@ -212,6 +220,8 @@ struct Chunk {
 	/// Array of #num_consts constants, followed by #count instructions.
 	alignas(LispObject) alignas(struct Instruction) char data[];
 };
+
+#define PROTO_VARIADIC 0x80
 
 /** Lisp closure prototype. */
 struct Prototype {
@@ -243,5 +253,21 @@ static inline LispObject *chunk_constants(struct Chunk *chunk) {
 static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 	return (struct Instruction *) (chunk_constants(chunk) + chunk->num_consts);
 }
+
+#define REG_LISP_CTX r15
+#define REG_PC rsi
+
+struct JitState;
+
+[[gnu::malloc]] struct JitState *jit_new(struct LispCtx *ctx);
+
+void jit_free(struct JitState *state);
+
+bool jit_init(struct JitState *state, struct Closure *f);
+
+/** Records instruction preceding @a pc prior to it being executed. */
+bool jit_record(struct JitState *state, struct Instruction *pc);
+
+uint8_t trace_arity(struct LispTrace *trace);
 
 #endif
