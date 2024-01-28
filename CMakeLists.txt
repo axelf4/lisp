@@ -16,6 +16,8 @@ if(NOT HAVE_COMPUTED_GOTO)
   message(FATAL_ERROR "Computed goto support is required")
 endif()
 
+option(WITH_JIT "Enable just-in-time compilation." ON)
+
 add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-masm=intel -Wall -Wextra -Wpedantic
@@ -31,11 +33,13 @@ add_custom_command(
   COMMAND lisp-codegen ${PROJECT_BINARY_DIR}/lisp-generated.h)
 
 add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c
-  $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp-generated.h>)
+  $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp-generated.h>
+  $<$<BOOL:${WITH_JIT}>:src/jit.c>)
 target_include_directories(lisplib PRIVATE xxHash::xxhash)
 target_link_libraries(lisplib xxHash::xxhash)
-target_compile_definitions(lisplib
-  PUBLIC $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp-generated.h">)
+target_compile_definitions(lisplib PUBLIC
+  $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp-generated.h">
+  ENABLE_JIT=$<BOOL:${WITH_JIT}>)
 
 add_executable(lisp src/main.c)
 target_link_libraries(lisp lisplib)

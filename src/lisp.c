@@ -276,11 +276,8 @@ bool lisp_init(struct LispCtx *ctx) {
 	size_t size = STACK_LEN * sizeof *stack,
 		guard_size = (0xff * sizeof *stack + page_size - 1) & (page_size - 1);
 	if ((ctx->bp = stack = mmap(NULL, size + guard_size, PROT_NONE,
-				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) return NULL;
-	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) {
-		munmap(stack, size + guard_size);
-		return false;
-	}
+				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) goto err;
+	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) goto err_free_stack;
 	ctx->guard_end = (uintptr_t) stack + size + guard_size;
 	*stack = NIL;
 	stack[1] = (uintptr_t) NULL; // No return address for first call frame
@@ -306,10 +303,28 @@ bool lisp_init(struct LispCtx *ctx) {
 		sym->value = TAG_OBJ(x);
 	}
 
+#if ENABLE_JIT
+	if (!(ctx->traces = calloc(1, sizeof *ctx->traces))) goto err_free_stack;
+	if (!(ctx->jit_state = jit_new(ctx))) goto err_free_traces;
+	ctx->current_trace = NULL;
+#endif
+
 	return true;
+#if ENABLE_JIT
+err_free_traces:
+	free(ctx->traces);
+#endif
+err_free_stack:
+	munmap(stack, size + guard_size);
+err:
+	return false;
 }
 
 void lisp_free(struct LispCtx *ctx) {
-	munmap(ctx->bp, ctx->guard_end - (uintptr_t) ctx->bp);
+#if ENABLE_JIT
+	jit_free(ctx->jit_state);
+	free(ctx->traces);
+#endif
 	symbol_tbl_free(&ctx->symbol_tbl);
+	munmap(ctx->bp, ctx->guard_end - (uintptr_t) ctx->bp);
 }
