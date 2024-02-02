@@ -37,7 +37,7 @@ enum LispObjectType {
 	LISP_NIL,
 	LISP_CONS,
 	LISP_SYMBOL,
-	LISP_FUNCTION,
+	LISP_CFUNCTION,
 	LISP_CLOSURE,
 	LISP_INTEGER,
 };
@@ -82,7 +82,7 @@ struct Subr {
 	struct Subr *next;
 };
 
-struct Function { struct Subr *subr; };
+struct LispCFunction { struct Subr *subr; };
 
 /** Cons cell. */
 struct Cons {

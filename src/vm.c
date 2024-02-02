@@ -477,7 +477,7 @@ static enum TraceLink record_instruction(struct Recording *state, LispObject *bp
 	case CALL:
 		LispObject fun_value = bp[x.a];
 		switch (lisp_type(fun_value)) {
-		case LISP_FUNCTION:
+		case LISP_CFUNCTION:
 			IrRef ref = sload(state, bp, x.a);
 			// TODO If type of ref is TY_ANY then need to emit type check
 
@@ -508,7 +508,7 @@ static enum TraceLink record_instruction(struct Recording *state, LispObject *bp
 		// Specialize to the function value in question
 		take_snapshot(state);
 		IrRef ref = sload(state, bp, x.a),
-			fn_ref = emit_const(state, LISP_FUNCTION, (union SsaInstruction) { .v = fun_value });
+			fn_ref = emit_const(state, LISP_CFUNCTION, (union SsaInstruction) { .v = fun_value });
 		emit_folded(state, (union SsaInstruction) { .op = IR_EQ, .ty = LISP_CLOSURE, .a = ref, .b = fn_ref });
 
 		if (fun_value == state->start) {
@@ -552,7 +552,7 @@ static void print_ir_ref(struct Recording *state, IrType ty, uint16_t ref) {
 	if (ref >= IR_BIAS) { printf("%.4u", ref - IR_BIAS); return; }
 	union SsaInstruction x = IR_GET(state, ref);
 	switch (ty) {
-	case TY_ANY: case LISP_FUNCTION: case LISP_CLOSURE: printf("%p", x.v); break;
+	case TY_ANY: case LISP_CFUNCTION: case LISP_CLOSURE: printf("%p", x.v); break;
 	case LISP_SYMBOL:
 		struct Symbol *sym = x.v;
 		printf("[%.*s]", (int) sym->len, sym->name);
@@ -680,8 +680,8 @@ op_setupvalue:
 op_call: op_tail_call:
 	LispObject *vals = bp + ins.a;
 	switch (lisp_type(*vals)) {
-	case LISP_FUNCTION:
-		struct Subr *subr = ((struct Function *) *vals)->subr;
+	case LISP_CFUNCTION:
+		struct Subr *subr = ((struct LispCFunction *) *vals)->subr;
 		if (ins.c != subr->min_args) die("Too few arguments");
 		1[ctx->bp = vals] = pc; // Synchronize bp and link call-frames
 		LispObject *args = vals + 2;
@@ -774,7 +774,7 @@ do_record:
 [[gnu::optimize ("-fnon-call-exceptions")]]
 static LispObject apply(struct LispContext *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
 	enum LispObjectType ty = lisp_type(function);
-	if (ty != LISP_CLOSURE && ty != LISP_FUNCTION) throw(1);
+	if (ty != LISP_CLOSURE && ty != LISP_CFUNCTION) throw(1);
 
 	if (ty != LISP_CLOSURE) die("TODO Implement apply for native functions");
 	struct Closure *closure = function;
@@ -966,7 +966,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		default: __builtin_unreachable();
 		}
 		break;
-	case LISP_FUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
+	case LISP_CFUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
 	case LISP_CONS:
 		LispObject head = pop(&x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);

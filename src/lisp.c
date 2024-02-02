@@ -60,7 +60,7 @@ static void symbol_trace(struct GcHeap *heap, void *x) {
 	if (sym->value) gc_trace(heap, &sym->value);
 }
 
-static size_t function_size(void *) { return sizeof(struct Function); }
+static size_t cfunction_size(void *) { return sizeof(struct LispCFunction); }
 
 static size_t integer_size(void *) { return sizeof(int); }
 
@@ -73,9 +73,9 @@ static struct LispTypeInfo cons_tib = {
 }, symbol_tib = {
 	.gc_tib = { symbol_trace, symbol_size },
 	.tag = LISP_SYMBOL,
-}, function_tib = {
-	.gc_tib = { trace_small, function_size },
-	.tag = LISP_FUNCTION,
+}, cfunction_tib = {
+	.gc_tib = { trace_small, cfunction_size },
+	.tag = LISP_CFUNCTION,
 }, integer_tib = {
 	.gc_tib = { trace_small, integer_size },
 	.tag = LISP_INTEGER,
@@ -131,8 +131,8 @@ void lisp_print(LispObject object) {
 		struct Symbol *sym = object;
 		fwrite(sym->name, sizeof *sym->name, sym->len, stdout);
 		break;
-	case LISP_FUNCTION:
-		printf("#<subr %s>", ((struct Function *) object)->subr->name);
+	case LISP_CFUNCTION:
+		printf("#<subr %s>", ((struct LispCFunction *) object)->subr->name);
 		break;
 	case LISP_CLOSURE: printf("#<closure>"); break;
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
@@ -178,8 +178,8 @@ struct LispContext *lisp_new() {
 	ctx->smacro = intern(ctx, sizeof "macro" - 1, "macro");
 
 	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
-		struct Function *f = gc_alloc(heap, sizeof *f, &function_tib.gc_tib);
-		*f = (struct Function) { subr };
+		struct LispCFunction *f = gc_alloc(heap, sizeof *f, &cfunction_tib.gc_tib);
+		*f = (struct LispCFunction) { subr };
 		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
 		sym->value = f;
 	}
