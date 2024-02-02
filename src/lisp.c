@@ -18,23 +18,23 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 #define KEY struct Symbol *
 #include "tbl.h"
 
+#define COMMA ,
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
-#define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 8, 7, 6, 5, 4, 3, 2, 1, 0)
-
-struct Subr *subr_head;
+#define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, 2, 1, 0)
+#define MAP_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
+#define MAP_ARGS(...) MAP_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, *__args COMMA __args[1], *__args, )
 
 #define DEFUN(lname, cname, args, ...)									\
-	static LispObject F ## cname args;									\
-	[[gnu::constructor]] static void lisp_constructor_ ## cname(void) { \
-		static struct Subr subr = {										\
-			.CAT(a, NUM_ARGS args) = F ## cname,						\
-			.name = lname,												\
-			.min_args = NUM_ARGS args,									\
-		};																\
-		subr.next = subr_head;											\
-		subr_head = &subr;												\
+	static LispObject __ ## cname args;									\
+	static LispObject F ## cname(struct LispCtx *ctx, const LispObject *__args) { \
+		return __ ## cname(ctx, MAP_ARGS args);							\
 	}																	\
-	static LispObject F ## cname args
+	static struct LispCFunction S ## cname = {							\
+		.f = F ## cname,												\
+		.nargs = NUM_ARGS args,											\
+		.name = lname,													\
+	};																	\
+	static LispObject __ ## cname args
 
 static size_t string_size(void *x) { return strlen(x) + 1; }
 
@@ -60,7 +60,7 @@ static void symbol_trace(struct GcHeap *heap, void *x) {
 	if (sym->value) gc_trace(heap, &sym->value);
 }
 
-static size_t function_size(void *) { return sizeof(struct Function); }
+static size_t cfunction_size(void *) { return sizeof(struct LispCFunction); }
 
 static size_t integer_size(void *) { return sizeof(int); }
 
@@ -73,9 +73,9 @@ static struct LispTypeInfo cons_tib = {
 }, symbol_tib = {
 	.gc_tib = { symbol_trace, symbol_size },
 	.tag = LISP_SYMBOL,
-}, function_tib = {
-	.gc_tib = { trace_small, function_size },
-	.tag = LISP_FUNCTION,
+}, cfunction_tib = {
+	.gc_tib = { trace_small, cfunction_size },
+	.tag = LISP_CFUNCTION,
 }, integer_tib = {
 	.gc_tib = { trace_small, integer_size },
 	.tag = LISP_INTEGER,
@@ -131,8 +131,8 @@ void lisp_print(LispObject object) {
 		struct Symbol *sym = object;
 		fwrite(sym->name, sizeof *sym->name, sym->len, stdout);
 		break;
-	case LISP_FUNCTION:
-		printf("#<subr %s>", ((struct Function *) object)->subr->name);
+	case LISP_CFUNCTION:
+		printf("#<subr %s>", ((struct LispCFunction *) object)->name);
 		break;
 	case LISP_CLOSURE: printf("#<closure>"); break;
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
@@ -145,7 +145,7 @@ bool lisp_eq(LispObject a, LispObject b) {
 	enum LispObjectType ty = lisp_type(a);
 	if (lisp_type(b) != ty) return false;
 	switch (ty) {
-	case LISP_SYMBOL: case LISP_FUNCTION: case LISP_CLOSURE:
+	case LISP_SYMBOL: case LISP_CFUNCTION: case LISP_CLOSURE:
 		return false;
 	case LISP_PAIR:
 		struct LispPair *x = a, *y = b;
@@ -181,6 +181,34 @@ void gc_trace_roots(struct GcHeap *heap, void *userdata) {
 	// TODO Trace the stack
 }
 
+DEFUN("print", print, (struct LispCtx *, LispObject x)) {
+	lisp_print(x);
+	putchar('\n');
+	return NULL;
+}
+
+DEFUN("cons", cons, (struct LispCtx *, LispObject car, LispObject cdr)) {
+	return cons(car, cdr);
+}
+
+DEFUN("car", car, (struct LispCtx *, LispObject x)) { return car(x); }
+
+DEFUN("cdr", cdr, (struct LispCtx *, LispObject x)) {
+	return consp(x) ? ((struct LispPair *) x)->cdr : NULL;
+}
+
+DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
+	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
+		throw(1);
+	return lisp_integer(*(int *) a + *(int *) b);
+}
+
+DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
+	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
+		throw(1);
+	return *(int *) a < *(int *) b ? ctx->t : NULL;
+}
+
 bool lisp_init(struct LispCtx *ctx) {
 	long page_size = sysconf(_SC_PAGESIZE);
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
@@ -211,11 +239,15 @@ bool lisp_init(struct LispCtx *ctx) {
 	struct Symbol *t = ctx->t = intern(ctx, 1, "t");
 	t->value = t;
 
-	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
-		struct Function *f = gc_alloc(heap, sizeof *f, &function_tib.gc_tib);
-		*f = (struct Function) { subr };
-		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
-		sym->value = f;
+	struct LispCFunction *cfuns[] = { &Sprint, &Scons, &Scar, &Scdr, &Sadd, &Slt, };
+	for (size_t i = 0; i < LENGTH(cfuns); ++i) {
+		struct LispCFunction *x = gc_alloc(heap, sizeof *x, &cfunction_tib.gc_tib);
+		*x = *cfuns[i];
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnonnull"
+		struct Symbol *sym = intern(ctx, strlen(x->name), x->name);
+#pragma GCC diagnostic pop
+		sym->value = x;
 	}
 
 	return true;
@@ -224,28 +256,4 @@ bool lisp_init(struct LispCtx *ctx) {
 void lisp_free(struct LispCtx *ctx) {
 	munmap(ctx->bp, ctx->guard_end - (uintptr_t) ctx->bp);
 	symbol_tbl_free(&ctx->symbol_tbl);
-}
-
-DEFUN("print", print, (LispObject x)) { lisp_print(x); puts(""); return NULL; }
-
-DEFUN("cons", cons, (LispObject car, LispObject cdr)) {
-	return cons(car, cdr);
-}
-
-DEFUN("car", car, (LispObject x)) { return car(x); }
-
-DEFUN("cdr", cdr, (LispObject x)) {
-	return lisp_type(x) == LISP_PAIR ? ((struct LispPair *) x)->cdr : NULL;
-}
-
-DEFUN("+", add, (LispObject a, LispObject b)) {
-	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
-		throw(1);
-	return lisp_integer(*(int *) a + *(int *) b);
-}
-
-DEFUN("<", lt, (LispObject a, LispObject b)) {
-	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
-		throw(1);
-	return *(int *) a < *(int *) b ? lisp_integer(1) : NULL;
 }

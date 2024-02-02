@@ -37,7 +37,7 @@ enum LispObjectType {
 	LISP_NIL,
 	LISP_PAIR,
 	LISP_SYMBOL,
-	LISP_FUNCTION,
+	LISP_CFUNCTION,
 	LISP_CLOSURE,
 	LISP_INTEGER,
 };
@@ -70,19 +70,11 @@ struct LispCtx {
 	uintptr_t guard_end;
 };
 
-struct Subr {
-	union {
-		LispObject (*a0)();
-		LispObject (*a1)(LispObject);
-		LispObject (*a2)(LispObject, LispObject);
-		LispObject (*a3)(LispObject, LispObject, LispObject);
-	};
+struct LispCFunction {
+	LispObject (*f)(struct LispCtx *, const LispObject *args);
+	unsigned char nargs;
 	const char *name;
-	unsigned char min_args;
-	struct Subr *next;
 };
-
-struct Function { struct Subr *subr; };
 
 /** Cons cell. */
 struct LispPair {

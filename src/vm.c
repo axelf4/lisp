@@ -267,18 +267,11 @@ op_setupvalue:
 op_call: op_tail_call:
 	LispObject *vals = bp + ins.a;
 	switch (lisp_type(*vals)) {
-	case LISP_FUNCTION:
-		struct Subr *subr = ((struct Function *) *vals)->subr;
-		if (ins.c != subr->min_args) die("Too few arguments");
+	case LISP_CFUNCTION:
+		struct LispCFunction *cfun = (struct LispCFunction *) *vals;
+		if (ins.c != cfun->nargs) die("Wrong number of arguments");
 		1[ctx->bp = vals] = pc; // Synchronize bp and link call-frames
-		LispObject *args = vals + 2;
-		switch (subr->min_args) {
-		case 0: *vals = subr->a0(); break;
-		case 1: *vals = subr->a1(*args); break;
-		case 2: *vals = subr->a2(*args, args[1]); break;
-		case 3: *vals = subr->a3(*args, args[1], args[2]); break;
-		default: unreachable();
-		}
+		*vals = cfun->f(ctx, vals + 2);
 		if (ins.op == TAIL_CALL) { *bp = *vals; goto op_ret; }
 		break;
 	case LISP_CLOSURE:
@@ -357,7 +350,7 @@ op_close_upvals:
 [[gnu::optimize ("-fnon-call-exceptions")]]
 static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
 	enum LispObjectType ty = lisp_type(function);
-	if (ty != LISP_CLOSURE && ty != LISP_FUNCTION) throw(1);
+	if (ty != LISP_CLOSURE && ty != LISP_CFUNCTION) throw(1);
 
 	if (ty != LISP_CLOSURE) die("TODO Implement apply for native functions");
 	struct Closure *closure = function;
@@ -549,7 +542,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		default: unreachable();
 		}
 		break;
-	case LISP_FUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
+	case LISP_CFUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
 	case LISP_PAIR:
 		LispObject head = pop(&x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);
