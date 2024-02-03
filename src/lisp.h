@@ -104,6 +104,9 @@ LispObject lisp_eval(struct LispContext *ctx, LispObject form);
 
 void lisp_print(LispObject object);
 
+/** Returns whether @a a and @a b are structurally equal. */
+bool lisp_equal(LispObject a, LispObject b);
+
 struct LispContext *lisp_new();
 
 void lisp_free(struct LispContext *);

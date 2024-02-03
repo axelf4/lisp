@@ -140,6 +140,20 @@ void lisp_print(LispObject object) {
 	}
 }
 
+bool lisp_equal(LispObject a, LispObject b) {
+	if (a == b) return true;
+	enum LispObjectType ty = lisp_type(a);
+	if (lisp_type(b) != ty) return false;
+	switch (ty) {
+	case LISP_NIL: default: __builtin_unreachable();
+	case LISP_SYMBOL: case LISP_CFUNCTION: case LISP_CLOSURE: return false;
+	case LISP_CONS:
+		struct Cons *x = a, *y = b;
+		return lisp_equal(x->car, y->car) && lisp_equal(x->cdr, y->cdr);
+	case LISP_INTEGER: return *((int *) a) == *((int *) b);
+	}
+}
+
 size_t lisp_ctx_size(void *) { return sizeof(struct LispContext); }
 
 static void lisp_ctx_trace(struct GcHeap *, void *x) {
