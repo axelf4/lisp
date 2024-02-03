@@ -72,19 +72,7 @@ static int setup_lisp(void **state) { *state = lisp_new(); return 0; }
 static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
 
 static void assert_lisp_equal(LispObject a, LispObject b) {
-	enum LispObjectType type = lisp_type(b);
-	assert_int_equal(lisp_type(a), type);
-	switch (type) {
-	case LISP_NIL: break;
-	case LISP_PAIR:
-		struct LispPair *x = a, *y = b;
-		assert_lisp_equal(x->car, y->car);
-		assert_lisp_equal(x->cdr, y->cdr);
-		break;
-	case LISP_SYMBOL: assert_ptr_equal(a, b); break;
-	case LISP_INTEGER: assert_int_equal(*(int *) a, *(int *) b); break;
-	default: die("TODO");
-	}
+	assert_true(lisp_eq(a, b));
 }
 
 static void assert_read_whole_equal(void *state, const char *s, LispObject expected) {
