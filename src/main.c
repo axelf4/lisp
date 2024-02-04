@@ -25,7 +25,7 @@ int main(void) {
 
 	char line[256];
 	while (fgets(line, sizeof line, stdin)) {
-		LispObject *form;
+		LispObject form;
 		enum LispReadError error;
 		if ((error = lisp_read_whole(ctx, line, &form)))
 			fprintf(stderr, "Error: %d\n", error);

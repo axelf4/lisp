@@ -42,7 +42,7 @@ static void skip_whitespace(const char **s) {
 	}
 }
 
-static LispObject *read_integer(const char **s) {
+static LispObject read_integer(const char **s) {
 	int sign = 1;
 	switch (**s) {
 	case '-': sign = -1; [[fallthrough]];
@@ -64,19 +64,19 @@ struct StackElement {
 		CTN_PREFIX,
 	} tag;
 	union {
-		LispObject *object;
+		LispObject object;
 		struct Symbol *prefix_sym;
 	};
 };
 
-enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject **result) {
+enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject *result) {
 	struct StackElement stack[256], *x = stack;
 	size_t len = 0;
 
 val_beg:
 	skip_whitespace(s);
 val_beg_no_ws:
-	struct LispObject *value;
+	LispObject value;
 	const char *start = *s;
 	if (**s == '(') {
 		++*s;
@@ -120,7 +120,7 @@ val_end:
 	goto val_beg_no_ws;
 }
 
-enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject **result) {
+enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject *result) {
 	enum LispReadError error;
 	if ((error = lisp_read(ctx, &s, result))) return error;
 	skip_whitespace(&s);

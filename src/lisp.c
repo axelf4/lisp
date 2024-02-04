@@ -24,7 +24,7 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 struct Subr *subr_head;
 
 #define DEFUN(lname, cname, args, ...)									\
-	static LispObject *F ## cname args;									\
+	static LispObject F ## cname args;									\
 	[[gnu::constructor]] static void lisp_constructor_ ## cname(void) { \
 		static struct Subr subr = {										\
 			.CAT(a, NUM_ARGS args) = F ## cname,						\
@@ -34,7 +34,7 @@ struct Subr *subr_head;
 		subr.next = subr_head;											\
 		subr_head = &subr;												\
 	}																	\
-	static LispObject *F ## cname args
+	static LispObject F ## cname args
 
 static size_t string_size(void *x) { return strlen(x) + 1; }
 
@@ -81,13 +81,13 @@ static struct LispTypeInfo cons_tib = {
 	.tag = LISP_INTEGER,
 };
 
-LispObject *cons(LispObject *car, LispObject *cdr) {
+LispObject cons(LispObject car, LispObject cdr) {
 	struct Cons *cell = gc_alloc(heap, sizeof *cell, &cons_tib.gc_tib);
 	*cell = (struct Cons) { car, cdr };
 	return cell;
 }
 
-LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]) {
+LispObject intern(struct LispContext *ctx, size_t len, const char s[static len]) {
 	if (len == 3 && memcmp(s, "nil", 3) == 0) return NULL;
 
 	struct Symbol key = { .len = len, .name = s }, **entry;
@@ -102,13 +102,13 @@ LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]
 	return *entry;
 }
 
-LispObject *lisp_integer(int i) {
+LispObject lisp_integer(int i) {
 	int *p = gc_alloc(heap, sizeof *p, &integer_tib.gc_tib);
 	*p = i;
 	return p;
 }
 
-void lisp_print(LispObject *object) {
+void lisp_print(LispObject object) {
 	switch (lisp_type(object)) {
 	case LISP_NIL: printf("nil"); break;
 	case LISP_CONS:
@@ -188,7 +188,7 @@ struct LispContext *lisp_new() {
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
 	// exception handlers not to immediately trigger another overflow.
-	LispObject **stack;
+	LispObject *stack;
 #define STACK_LEN 0x1000
 	size_t size = STACK_LEN * sizeof *stack,
 		guard_size = (0xff * sizeof *stack + page_size - 1) & (page_size - 1);
@@ -211,25 +211,25 @@ void lisp_free(struct LispContext *ctx) {
 	symbol_tbl_free(&ctx->symbol_tbl);
 }
 
-DEFUN("print", print, (LispObject *x)) { lisp_print(x); puts(""); return NULL; }
+DEFUN("print", print, (LispObject x)) { lisp_print(x); puts(""); return NULL; }
 
-DEFUN("cons", cons, (LispObject *car, LispObject *cdr)) {
+DEFUN("cons", cons, (LispObject car, LispObject cdr)) {
 	return cons(car, cdr);
 }
 
-DEFUN("car", car, (LispObject *x)) { return car(x); }
+DEFUN("car", car, (LispObject x)) { return car(x); }
 
-DEFUN("cdr", cdr, (LispObject *x)) {
+DEFUN("cdr", cdr, (LispObject x)) {
 	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->cdr : NULL;
 }
 
-DEFUN("+", add, (LispObject *a, LispObject *b)) {
+DEFUN("+", add, (LispObject a, LispObject b)) {
 	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
 		throw(1);
 	return lisp_integer(*(int *) a + *(int *) b);
 }
 
-DEFUN("<", lt, (LispObject *a, LispObject *b)) {
+DEFUN("<", lt, (LispObject a, LispObject b)) {
 	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
 		throw(1);
 	return *(int *) a < *(int *) b ? lisp_integer(1) : NULL;

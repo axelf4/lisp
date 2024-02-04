@@ -47,9 +47,9 @@ struct LispTypeInfo {
 	enum LispObjectType tag;
 };
 
-typedef void LispObject;
+typedef void *LispObject;
 
-static inline enum LispObjectType lisp_type(LispObject *p) {
+static inline enum LispObjectType lisp_type(LispObject p) {
 	if (!p) return LISP_NIL;
 	struct LispTypeInfo *tib
 		= (struct LispTypeInfo *) ((struct GcObjectHeader *) p - 1)->tib;
@@ -59,23 +59,23 @@ static inline enum LispObjectType lisp_type(LispObject *p) {
 struct Symbol {
 	size_t len; ///< Name length (excluding NULL terminator).
 	const char *name; ///< NULL-terminated name string.
-	LispObject *value;
+	LispObject value;
 };
 
 struct LispContext {
 	struct Table symbol_tbl;
 	// Common interned symbols
 	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
-	LispObject **bp; ///< Base pointer.
+	LispObject *bp; ///< Base pointer.
 	uintptr_t guard_end;
 };
 
 struct Subr {
 	union {
-		LispObject *(*a0)();
-		LispObject *(*a1)(LispObject *);
-		LispObject *(*a2)(LispObject *, LispObject *);
-		LispObject *(*a3)(LispObject *, LispObject *, LispObject *);
+		LispObject (*a0)();
+		LispObject (*a1)(LispObject);
+		LispObject (*a2)(LispObject, LispObject);
+		LispObject (*a3)(LispObject, LispObject, LispObject);
 	};
 	const char *name;
 	unsigned char min_args;
@@ -86,14 +86,14 @@ struct Function { struct Subr *subr; };
 
 /** Cons cell. */
 struct Cons {
-	LispObject *car, *cdr;
+	LispObject car, cdr;
 };
 
-LispObject *cons(LispObject *car, LispObject *cdr);
+LispObject cons(LispObject car, LispObject cdr);
 
-LispObject *lisp_integer(int i);
+LispObject lisp_integer(int i);
 
-LispObject *intern(struct LispContext *ctx, size_t len, const char s[static len]);
+LispObject intern(struct LispContext *ctx, size_t len, const char s[static len]);
 
 enum LispReadError {
 	LISP_READ_OK,
@@ -103,11 +103,11 @@ enum LispReadError {
 	LISP_READ_TRAILING,
 };
 
-enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject **result);
+enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject *result);
 
-enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject **result);
+enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject *result);
 
-void lisp_print(LispObject *object);
+void lisp_print(LispObject object);
 
 struct LispContext *lisp_new();
 
@@ -124,17 +124,17 @@ void lisp_free(struct LispContext *);
 	struct LispContext *ctx);
 
 /** Evaluates @a form. */
-LispObject *lisp_eval(struct LispContext *ctx, LispObject *form);
+LispObject lisp_eval(struct LispContext *ctx, LispObject form);
 
-static inline bool consp(LispObject *x) { return lisp_type(x) == LISP_CONS; }
+static inline bool consp(LispObject x) { return lisp_type(x) == LISP_CONS; }
 
-static inline bool listp(LispObject *x) { return !x || consp(x); }
+static inline bool listp(LispObject x) { return !x || consp(x); }
 
-static inline LispObject *car(LispObject *x) {
+static inline LispObject car(LispObject x) {
 	return consp(x) ? ((struct Cons *) x)->car : NULL;
 }
 
-static inline LispObject *pop(LispObject **x) {
+static inline LispObject pop(LispObject *x) {
 	if (!consp(*x)) return NULL;
 	struct Cons *cell = *x, *result = cell->car;
 	*x = cell->cdr;
