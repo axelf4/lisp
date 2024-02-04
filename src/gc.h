@@ -26,9 +26,7 @@ struct GcTypeInfo {
 };
 
 struct GcObjectHeader {
-	alignas(max_align_t)
-		char mark, ///< Object mark bit: Ensures transitive closure terminates.
-		flags; ///< GC flags.
+	alignas(max_align_t) char flags; ///< GC flags.
 	union {
 		struct GcTypeInfo *tib;
 		void *fwd; ///< Forwarding pointer.
