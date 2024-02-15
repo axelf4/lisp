@@ -5,6 +5,7 @@
 #include "gc.h"
 #include "lisp.h"
 #include "rope.h"
+#include "asm.h"
 #include "util.h"
 
 static_assert(SAR(-1, 1) == -1);
@@ -55,6 +56,20 @@ static void test_rope(void **) {
 	rope_replace(&rope, 1, 17, 0, "");
 	assert_int_equal(rope_size(&rope), 10);
 	rope_free(&rope);
+}
+
+static_assert(MODRM(MOD_REG, 5, rsp) == 0xec);
+
+static void test_asm_mov(void **) {
+	struct Assembler ctx;
+	if (!asm_init(&ctx)) fail();
+
+	asm_loadu64(&ctx, rax, 42);
+	asm_ret(&ctx);
+
+	int (*f)() = asm_assemble(&ctx);
+	assert_int_equal(f(), 42);
+	asm_free(&ctx);
 }
 
 static void assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b) {
@@ -119,6 +134,7 @@ int main() {
 		cmocka_unit_test(test_hash_table),
 		cmocka_unit_test(test_gc_traces_live_object),
 		cmocka_unit_test(test_rope),
+		cmocka_unit_test(test_asm_mov),
 		cmocka_unit_test(test_reader),
 		cmocka_unit_test(test_reader_ignores_whitespace),
 		cmocka_unit_test(test_eval),
