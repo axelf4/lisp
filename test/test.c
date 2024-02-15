@@ -6,6 +6,7 @@
 #include "lisp.h"
 #include "rope.h"
 #include "phf.h"
+#include "asm.h"
 #include "util.h"
 
 static_assert(SAR(-1, 1) == -1);
@@ -75,6 +76,22 @@ static void test_phf_is_bijective(void **) {
 	phf_free(&f);
 }
 
+static_assert(MODRM(MOD_REG, 5, rsp) == 0xec);
+
+static void test_asm(void **) {
+#ifdef __x86_64__
+	struct Assembler ctx;
+	if (!asm_init(&ctx)) fail();
+	asm_ret(&ctx);
+	asm_loadu64(&ctx, rax, 42);
+	int (*f)() = (int (*)()) asm_assemble(&ctx);
+	assert_int_equal(f(), 42);
+	asm_free(&ctx);
+#else
+	skip();
+#endif
+}
+
 static void assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b) {
 	assert_true(lisp_eq(ctx, a, b));
 }
@@ -138,6 +155,7 @@ int main() {
 		cmocka_unit_test(test_gc_traces_live_object),
 		cmocka_unit_test(test_rope),
 		cmocka_unit_test(test_phf_is_bijective),
+		cmocka_unit_test(test_asm),
 		cmocka_unit_test(test_reader),
 		cmocka_unit_test(test_reader_ignores_whitespace),
 		cmocka_unit_test(test_eval),
