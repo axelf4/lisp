@@ -5,6 +5,7 @@
 #include "gc.h"
 #include "lisp.h"
 #include "rope.h"
+#include "asm.h"
 #include "util.h"
 
 static void test_next_power_of_2(void **) {
@@ -68,6 +69,20 @@ static void test_rope(void **) {
 	rope_free(&rope);
 }
 
+static_assert(MODRM(MOD_REG, 5, rsp) == 0xec);
+
+static void test_asm_mov(void **) {
+	struct Assembler ctx;
+	if (!asm_init(&ctx)) fail();
+
+	asm_loadu64(&ctx, rax, 42);
+	asm_ret(&ctx);
+
+	int (*f)() = asm_assemble(&ctx);
+	assert_int_equal(f(), 42);
+	asm_free(&ctx);
+}
+
 static int setup_lisp(void **state) { *state = lisp_new(); return 0; }
 static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
 
@@ -120,6 +135,7 @@ int main() {
 		cmocka_unit_test(test_hash_table),
 		cmocka_unit_test(test_gc_traces_live_obj),
 		cmocka_unit_test(test_rope),
+		cmocka_unit_test(test_asm_mov),
 	};
 	int result;
 	if ((result = cmocka_run_group_tests(tests, NULL, NULL))) return result;
