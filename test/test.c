@@ -42,6 +42,22 @@ static void test_hash_table(void **) {
 	my_tbl_free(&table);
 }
 
+struct MyObject { volatile int i; };
+
+static void my_object_trace(struct GcHeap *, void *p) {
+	gc_mark(sizeof(struct MyObject), p);
+	++((struct MyObject *) p)->i;
+}
+static size_t my_object_size(void *) { return sizeof(struct MyObject); }
+static struct GcTypeInfo my_object_tib = { my_object_trace, my_object_size };
+
+static void test_gc_traces_live_obj(void **) {
+	struct MyObject *obj = gc_alloc(heap, sizeof *obj, &my_object_tib);
+	obj->i = 0;
+	garbage_collect(heap);
+	assert_int_equal(obj->i, 1);
+}
+
 static void test_rope(void **) {
 	struct Rope rope;
 	if (!rope_init(&rope)) fail();
@@ -113,6 +129,7 @@ int main(void) {
 		cmocka_unit_test(test_next_power_of_2),
 		cmocka_unit_test(test_exception),
 		cmocka_unit_test(test_hash_table),
+		cmocka_unit_test(test_gc_traces_live_obj),
 		cmocka_unit_test(test_rope),
 	};
 	int result;

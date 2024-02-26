@@ -42,7 +42,7 @@ struct GcBlock {
 [[gnu::malloc, nodiscard]] struct GcHeap *gc_new();
 
 /** Allocates @a size bytes. */
-[[gnu::alloc_size (2), gnu::assume_aligned (alignof(max_align_t)), gnu::hot, gnu::malloc, nodiscard]]
+[[gnu::alloc_size (2), gnu::assume_aligned (alignof(max_align_t)), gnu::hot, gnu::malloc, gnu::noinline, nodiscard]]
 void *gc_alloc(struct GcHeap *heap, size_t size, struct GcTypeInfo *tib);
 
 void gc_trace(struct GcHeap *heap, void **p);
