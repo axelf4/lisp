@@ -681,17 +681,10 @@ op_call: op_tail_call:
 	LispObject *vals = bp + ins.a;
 	switch (lisp_type(*vals)) {
 	case LISP_CFUNCTION:
-		struct Subr *subr = ((struct LispCFunction *) *vals)->subr;
-		if (ins.c != subr->min_args) die("Too few arguments");
+		struct LispCFunction *cfun = (struct LispCFunction *) *vals;
+		if (ins.c != cfun->nargs) die("Wrong number of arguments");
 		1[ctx->bp = vals] = pc; // Synchronize bp and link call-frames
-		LispObject *args = vals + 2;
-		switch (subr->min_args) {
-		case 0: *vals = subr->a0(); break;
-		case 1: *vals = subr->a1(*args); break;
-		case 2: *vals = subr->a2(*args, args[1]); break;
-		case 3: *vals = subr->a3(*args, args[1], args[2]); break;
-		default: __builtin_unreachable();
-		}
+		*vals = cfun->f(ctx, vals + 2);
 		if (ins.op == TAIL_CALL) { *bp = *vals; goto op_ret; }
 		break;
 	case LISP_CLOSURE:

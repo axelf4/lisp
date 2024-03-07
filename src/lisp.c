@@ -18,23 +18,23 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 #define KEY struct Symbol *
 #include "tbl.h"
 
+#define COMMA ,
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
-#define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 8, 7, 6, 5, 4, 3, 2, 1, 0)
-
-struct Subr *subr_head;
+#define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, 2, 1, 0)
+#define MAP_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
+#define MAP_ARGS(...) MAP_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, *__args COMMA __args[1], *__args, )
 
 #define DEFUN(lname, cname, args, ...)									\
-	static LispObject F ## cname args;									\
-	[[gnu::constructor]] static void lisp_constructor_ ## cname(void) { \
-		static struct Subr subr = {										\
-			.CAT(a, NUM_ARGS args) = F ## cname,						\
-			.name = lname,												\
-			.min_args = NUM_ARGS args,									\
-		};																\
-		subr.next = subr_head;											\
-		subr_head = &subr;												\
+	static LispObject __ ## cname args;									\
+	static LispObject F ## cname(struct LispContext *ctx, const LispObject *__args) { \
+		return __ ## cname(ctx, MAP_ARGS args);							\
 	}																	\
-	static LispObject F ## cname args
+	static struct LispCFunction S ## cname = {							\
+		.f = F ## cname,												\
+		.nargs = NUM_ARGS args,											\
+		.name = lname,													\
+	};																	\
+	static LispObject __ ## cname args
 
 static size_t string_size(void *x) { return strlen(x) + 1; }
 
@@ -132,7 +132,7 @@ void lisp_print(LispObject object) {
 		fwrite(sym->name, sizeof *sym->name, sym->len, stdout);
 		break;
 	case LISP_CFUNCTION:
-		printf("#<subr %s>", ((struct LispCFunction *) object)->subr->name);
+		printf("#<subr %s>", ((struct LispCFunction *) object)->name);
 		break;
 	case LISP_CLOSURE: printf("#<closure>"); break;
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
@@ -152,6 +152,35 @@ static void lisp_ctx_trace(struct GcHeap *, void *x) {
 }
 
 struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
+
+
+DEFUN("print", print, (struct LispContext *, LispObject x)) {
+	lisp_print(x);
+	putchar('\n');
+	return NULL;
+}
+
+DEFUN("cons", cons, (struct LispContext *, LispObject car, LispObject cdr)) {
+	return cons(car, cdr);
+}
+
+DEFUN("car", car, (struct LispContext *, LispObject x)) { return car(x); }
+
+DEFUN("cdr", cdr, (struct LispContext *, LispObject x)) {
+	return consp(x) ? ((struct Cons *) x)->cdr : NULL;
+}
+
+DEFUN("+", add, (struct LispContext *, LispObject a, LispObject b)) {
+	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
+		throw(1);
+	return lisp_integer(*(int *) a + *(int *) b);
+}
+
+DEFUN("<", lt, (struct LispContext *ctx, LispObject a, LispObject b)) {
+	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
+		throw(1);
+	return *(int *) a < *(int *) b ? ctx->t : NULL;
+}
 
 bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispContext *ctx) {
 	if (sig == SIGSEGV) {
@@ -176,12 +205,18 @@ struct LispContext *lisp_new() {
 	ctx->fprogn = intern(ctx, sizeof "progn" - 1, "progn");
 	ctx->fquote = intern(ctx, sizeof "quote" - 1, "quote");
 	ctx->smacro = intern(ctx, sizeof "macro" - 1, "macro");
+	ctx->t = intern(ctx, 1, "t");
+	ctx->t->value = ctx->t;
 
-	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
-		struct LispCFunction *f = gc_alloc(heap, sizeof *f, &cfunction_tib.gc_tib);
-		*f = (struct LispCFunction) { subr };
-		struct Symbol *sym = intern(ctx, strlen(subr->name), subr->name);
-		sym->value = f;
+	struct LispCFunction *cfuns[] = { &Sprint, &Scons, &Scar, &Scdr, &Sadd, &Slt, };
+	for (size_t i = 0; i < LENGTH(cfuns); ++i) {
+		struct LispCFunction *x = gc_alloc(heap, sizeof *x, &cfunction_tib.gc_tib);
+		*x = *cfuns[i];
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnonnull"
+		struct Symbol *sym = intern(ctx, strlen(x->name), x->name);
+#pragma GCC diagnostic pop
+		sym->value = x;
 	}
 
 	long page_size = sysconf(_SC_PAGESIZE);
@@ -210,28 +245,4 @@ struct LispContext *lisp_new() {
 void lisp_free(struct LispContext *ctx) {
 	munmap(ctx->bp, ctx->guard_end - (uintptr_t) ctx->bp);
 	symbol_tbl_free(&ctx->symbol_tbl);
-}
-
-DEFUN("print", print, (LispObject x)) { lisp_print(x); puts(""); return NULL; }
-
-DEFUN("cons", cons, (LispObject car, LispObject cdr)) {
-	return cons(car, cdr);
-}
-
-DEFUN("car", car, (LispObject x)) { return car(x); }
-
-DEFUN("cdr", cdr, (LispObject x)) {
-	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->cdr : NULL;
-}
-
-DEFUN("+", add, (LispObject a, LispObject b)) {
-	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
-		throw(1);
-	return lisp_integer(*(int *) a + *(int *) b);
-}
-
-DEFUN("<", lt, (LispObject a, LispObject b)) {
-	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
-		throw(1);
-	return *(int *) a < *(int *) b ? lisp_integer(1) : NULL;
 }

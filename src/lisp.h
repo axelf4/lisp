@@ -65,24 +65,16 @@ struct Symbol {
 struct LispContext {
 	struct Table symbol_tbl;
 	// Common interned symbols
-	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
+	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote, *smacro, *t;
 	LispObject *bp; ///< Base pointer.
 	uintptr_t guard_end;
 };
 
-struct Subr {
-	union {
-		LispObject (*a0)();
-		LispObject (*a1)(LispObject);
-		LispObject (*a2)(LispObject, LispObject);
-		LispObject (*a3)(LispObject, LispObject, LispObject);
-	};
+struct LispCFunction {
+	LispObject (*f)(struct LispContext *, const LispObject *args);
+	unsigned char nargs;
 	const char *name;
-	unsigned char min_args;
-	struct Subr *next;
 };
-
-struct LispCFunction { struct Subr *subr; };
 
 /** Cons cell. */
 struct Cons {
