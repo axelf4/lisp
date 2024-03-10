@@ -222,7 +222,7 @@ void gc_trace(struct GcHeap *heap, void **p) {
 	} else object_map_add(*p);
 
 	if (!vec_reserve(&heap->trace_stack, 1)) die("malloc failed");
-	vec_push(&heap->trace_stack, p);
+	vec_push(&heap->trace_stack, *p);
 }
 
 static void pin_and_trace(struct GcHeap *heap, void *p) {
@@ -340,8 +340,8 @@ void garbage_collect(struct GcHeap *heap) {
 	}
 	size_t prev_num_free = heap->free.length;
 	while (heap->trace_stack.length) { // Trace live objects
-		void **p = heap->trace_stack.items[--heap->trace_stack.length];
-		((struct GcObjectHeader *) *p - 1)->tib->trace(heap, *p);
+		void *p = heap->trace_stack.items[--heap->trace_stack.length];
+		((struct GcObjectHeader *) p - 1)->tib->trace(heap, p);
 	}
 
 	heap->free.length = heap->recycled.length = 0;
