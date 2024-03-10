@@ -37,11 +37,25 @@ struct Instruction {
 	};
 };
 
+#define PROTO_VARIADIC 0x80
+/// Flag signifying that the upvalue captures a local instead of an upvalue.
+#define UPVALUE_LOCAL 0x80
+
+/** Lisp closure prototype. */
+struct Prototype {
+	uint8_t arity, num_upvalues;
+	union {
+		LispObject *consts;
+		size_t next;
+	};
+	struct Instruction body[];
+};
+
 /** Block of bytecode instructions. */
 struct Chunk {
 	size_t count;
 	uint16_t num_consts;
-	/// Array of #num_consts constants, followed by #count bytecode instructions.
+	/// Array of #num_consts constants, followed by #count instructions.
 	alignas(LispObject) alignas(struct Instruction) char data[];
 };
 
@@ -61,71 +75,66 @@ static size_t chunk_size(void *x) {
 	return sizeof *chunk + chunk->num_consts * sizeof(LispObject)
 		+ chunk->count * sizeof(struct Instruction);
 }
+static void forward_prototype_consts(LispObject *consts, struct Instruction *p, struct Instruction *end) {
+	for  (; p < end; ++p) if (p->op == CLOS) {
+			struct Prototype *proto = (struct Prototype *) (p + 1);
+			proto->consts = consts;
+			size_t metadata_size = proto->num_upvalues * sizeof(uint8_t) + sizeof *p - 1;
+			p += p->b;
+			forward_prototype_consts(consts, proto->body, p - metadata_size / sizeof *p);
+	}
+}
 static void chunk_trace(struct GcHeap *heap, void *x) {
 	struct Chunk *chunk = x;
 	gc_mark(chunk_size(x), x);
-	for (LispObject *consts = chunk_constants(chunk), *x = consts;
-			x < consts + chunk->num_consts; ++x) gc_trace(heap, x);
+	for (LispObject *p = chunk_constants(chunk), *end = p + chunk->num_consts;
+			p < end; ++p) gc_trace(heap, p);
+	struct Instruction *xs = chunk_instructions(chunk);
+	forward_prototype_consts(chunk_constants(chunk), xs, xs + chunk->count);
 }
 static struct GcTypeInfo chunk_tib = { chunk_trace, chunk_size };
 
-#define PROTO_VARIADIC 0x80
-/// Flag signifying that the upvalue captures a local instead of an upvalue.
-#define UPVALUE_LOCAL 0x80
-
-/** Lisp closure prototype. */
-struct Prototype {
-	struct Chunk *chunk;
-	size_t offset, // Offset into the chunk.
-		len;
-	uint8_t arity,
-		num_upvalues;
-	uint8_t upvalues[];
-};
-
-static size_t prototype_size(void *x) {
-	struct Prototype *prototype = x;
-	return sizeof *prototype + prototype->num_upvalues * sizeof *prototype->upvalues;
-}
-static void prototype_trace(struct GcHeap *, void *x) { gc_mark(prototype_size(x), x); }
-static struct GcTypeInfo prototype_tib = { prototype_trace, prototype_size };
-
-static void disassemble(struct Chunk *chunk) {
-	puts("Disassembling chunk:");
+static void disassemble_range(struct Chunk *chunk, size_t n, struct Instruction xs[static n], int indent) {
 	LispObject *consts = chunk_constants(chunk);
-	struct Instruction *xs = chunk_instructions(chunk);
-	for (size_t i = 0; i < chunk->count;) {
-		printf("%.4zu ", i);
-		struct Instruction ins = xs[i++];
-		switch (ins.op) {
-		case RET: printf("RET %" PRIu8 "\n", ins.a); break;
-		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", ins.a); break;
-		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %p\n", ins.a, consts[ins.b]); break;
-		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", ins.a, (int16_t) ins.b); break;
-		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", ins.a,
-			((struct Symbol *) consts[ins.b])->name); break;
-		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", ins.a,
-			((struct Symbol *) consts[ins.b])->name); break;
-		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", ins.a, ins.c); break;
-		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", ins.a, ins.c); break;
+	for (size_t i = 0; i < n; ++i) {
+		struct Instruction x = xs[i];
+		printf("%*s%.4zu ", indent, "", i);
+		switch (x.op) {
+		case RET: printf("RET %" PRIu8 "\n", x.a); break;
+		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", x.a); break;
+		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %p\n", x.a, consts[x.b]); break;
+		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
+		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", x.a,
+			((struct Symbol *) consts[x.b])->name); break;
+		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", x.a,
+			((struct Symbol *) consts[x.b])->name); break;
+		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
+		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
 		case CALL: case TAIL_CALL:
 			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
-				ins.op == TAIL_CALL ? "TAIL_" : "", ins.a, ins.a);
-			for (unsigned i = 0; i < ins.c; ++i) printf(" %" PRIu8, ins.a + 2 + i);
+				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
+			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);
 			puts(")");
 			break;
-		case MOV: printf("MOV %" PRIu8 " <- %" PRIu8 "\n", ins.a, ins.c); break;
-		case JMP: printf("JMP => %.4zu\n", i + ins.b); break;
-		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4zu\n", ins.a, i + ins.b); break;
+		case MOV: printf("MOV %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
+		case JMP: printf("JMP => %.4zu\n", i + x.b); break;
+		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4zu\n", x.a, i + x.b); break;
 		case CLOS:
-			struct Prototype *proto = consts[ins.b];
-			printf("CLOS %" PRIu8 " <- (arity: %" PRIu8 ") (num_upvals: %" PRIu8 ") (len: %zu):\n",
-				ins.a, proto->arity, proto->num_upvalues, proto->len);
+			struct Prototype *proto = (struct Prototype *) (xs + i + 1);
+			printf("CLOS %" PRIu8 " <- (arity: %" PRIu8 ") (num_upvals: %" PRIu8 "):\n",
+				x.a, proto->arity, proto->num_upvalues);
+			size_t metadata_size = sizeof *proto + proto->num_upvalues * sizeof(uint8_t) + sizeof x - 1;
+			disassemble_range(chunk, x.b - metadata_size / sizeof x, proto->body, indent + 2);
+			i += x.b;
 			break;
-		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", ins.a); break;
+		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", x.a); break;
 		default: __builtin_unreachable();
 		}
 	}
+}
+static void disassemble(struct Chunk *chunk) {
+	puts("Disassembling chunk:");
+	disassemble_range(chunk, chunk->count, chunk_instructions(chunk), 0);
 }
 
 struct Upvalue {
@@ -156,6 +165,13 @@ static size_t closure_size(void *x) {
 static void closure_trace(struct GcHeap *heap, void *x) {
 	struct Closure *closure = x;
 	gc_mark(closure_size(x), x);
+
+	char *chunk = (char *) closure->prototype->consts - offsetof(struct Chunk, data);
+	size_t prototype_offset = (char *) closure->prototype - chunk;
+	gc_trace(heap, (void **) &chunk);
+	// Update prototype as chunk may have moved
+	closure->prototype = (struct Prototype *) (chunk + prototype_offset);
+
 	for (unsigned i = 0; i < closure->prototype->num_upvalues; ++i)
 		gc_trace(heap, (void **) (closure->upvalues + i));
 }
@@ -235,7 +251,7 @@ op_ret:
 	if (!(pc = bp[1])) return ins.a[ctx->bp = bp];
 	*bp = bp[ins.a]; // Copy return value to R(A) of CALL instruction
 	bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
-	consts = chunk_constants(((struct Closure *) *bp)->prototype->chunk);
+	consts = ((struct Closure *) *bp)->prototype->consts;
 	CONTINUE;
 op_load_nil: bp[ins.a] = NULL; CONTINUE;
 op_load_obj: bp[ins.a] = consts[ins.b]; CONTINUE;
@@ -277,7 +293,7 @@ op_call: op_tail_call:
 		if (ins.c != nargs + !!(proto->arity & PROTO_VARIADIC))
 			die("Wrong number of arguments");
 
-		struct Instruction *to = chunk_instructions(proto->chunk) + proto->offset;
+		struct Instruction *to = proto->body;
 		// Increment hotcount
 		if (is_recording) {
 			if (closure == recording.start) {
@@ -303,7 +319,7 @@ op_call: op_tail_call:
 			memmove(bp + 2, vals + 2, ins.c * sizeof *vals);
 		} else 1[bp = vals] = pc;
 		pc = to;
-		consts = chunk_constants(proto->chunk);
+		consts = proto->consts;
 		break;
 	default: die("Bad function");
 	}
@@ -312,20 +328,20 @@ op_mov: bp[ins.a] = bp[ins.c]; CONTINUE;
 op_jmp: pc += ins.b; CONTINUE;
 op_jnil: if (!bp[ins.a]) pc += ins.b; CONTINUE;
 op_clos:
-	struct Prototype *proto = consts[ins.b];
-	struct Closure *closure
-		= gc_alloc(heap, sizeof *closure + proto->num_upvalues * sizeof *closure->upvalues,
-			&closure_tib.gc_tib);
+	struct Prototype *proto = (struct Prototype *) pc;
+	struct Closure *closure = gc_alloc(heap,
+		sizeof *closure + proto->num_upvalues * sizeof *closure->upvalues,
+		&closure_tib.gc_tib);
 	*closure = (struct Closure) { .prototype = proto };
 	// Read upvalues
+	uint8_t *indices = (uint8_t *) (pc += ins.b) - proto->num_upvalues;
 	for (unsigned i = 0; i < proto->num_upvalues; ++i) {
-		uint8_t index = proto->upvalues[i];
-		closure->upvalues[i] = (index & UPVALUE_LOCAL)
+		uint8_t index = indices[i];
+		closure->upvalues[i] = index & UPVALUE_LOCAL
 			? capture_upvalue(&upvalues, bp + (index & ~UPVALUE_LOCAL))
 			: ((struct Closure *) *bp)->upvalues[index];
 	}
 	bp[ins.a] = closure;
-	pc += proto->len;
 	CONTINUE;
 op_close_upvals:
 	while (upvalues && upvalues->location >= bp + ins.a) {
@@ -343,8 +359,7 @@ op_close_upvals:
 
 struct ConstantEntry {
 	LispObject obj;
-	uint16_t slot,
-		is_prototype;
+	uint16_t slot;
 };
 
 static uint64_t constant_hash(struct ConstantEntry x) { return moremur((uintptr_t) x.obj); }
@@ -378,13 +393,14 @@ struct ByteCompCtx {
 		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
 	struct Table constants;
+	size_t prototypes;
 
 	size_t count, capacity;
 	struct Instruction *ins;
 };
 
 enum CompileError {
-	COMP_INVALID_FORM = 2,
+	COMP_INVALID_FORM = 1,
 	COMP_EXPECTED_LIST,
 	COMP_INVALID_VARIABLE,
 	COMP_EXPECTED_CONSEQUENT,
@@ -416,14 +432,18 @@ static struct VarRef {
 	return (struct VarRef) { .type = VAR_GLOBAL };
 }
 
+static void chunk_reserve(struct ByteCompCtx *ctx, size_t additional) {
+	size_t n = ctx->count + additional;
+	if (__builtin_expect(n <= ctx->capacity, true)) return;
+	size_t new_capacity = MAX(ctx->capacity ? 2 * ctx->capacity : 32, n);
+	struct Instruction *ins;
+	if (!(ins = realloc(ctx->ins, new_capacity * sizeof *ins))) die("malloc failed");
+	ctx->ins = ins;
+	ctx->capacity = new_capacity;
+}
+
 static void emit(struct ByteCompCtx *ctx, struct Instruction ins) {
-	if (__builtin_expect(ctx->count >= ctx->capacity, false)) {
-		size_t new_capacity = ctx->capacity ? 2 * ctx->capacity : 32;
-		struct Instruction *ins;
-		if (!(ins = realloc(ctx->ins, new_capacity * sizeof *ins))) die("malloc failed");
-		ctx->ins = ins;
-		ctx->capacity = new_capacity;
-	}
+	chunk_reserve(ctx, 1);
 	ctx->ins[ctx->count++] = ins;
 }
 
@@ -455,8 +475,7 @@ static LispObject apply(struct LispContext *ctx, LispObject function, uint8_t n,
 	else while (n > m) xs = cons(args[--n], xs);
 	if (n < m || (xs && !variadic)) die("Wrong number of arguments");
 	if (variadic) ctx->bp[2 + m] = xs;
-	return run(ctx, chunk_constants(proto->chunk),
-		chunk_instructions(proto->chunk) + proto->offset);
+	return run(ctx, proto->consts, proto->body);
 }
 
 static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
@@ -511,7 +530,7 @@ static enum CompileResult compile_progn(struct ByteCompCtx *ctx, LispObject x, s
 static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, struct Destination dst) {
 	struct LispContext *lisp_ctx = ctx->lisp_ctx;
 	switch (lisp_type(x)) {
-	case LISP_NIL: emit_load_obj(ctx, NULL, dst); break;
+	case LISP_NIL: case LISP_INTEGER: emit_load_obj(ctx, x, dst); break;
 	case LISP_SYMBOL:
 		if (dst.discarded) break;
 		struct VarRef var = lookup_var(ctx, x);
@@ -530,8 +549,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		default: __builtin_unreachable();
 		}
 		break;
-	case LISP_INTEGER: emit_load_obj(ctx, x, dst); break;
-	case LISP_FUNCTION: throw(COMP_INVALID_FORM); break;
+	case LISP_FUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
 	case LISP_CONS:
 		LispObject head = pop(&x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);
@@ -548,6 +566,15 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->fun = &fun;
 			ctx->num_regs = 2; // Reserve closure and PC registers
 
+			chunk_reserve(ctx, 1 + (alignof(struct Prototype) - 1 + sizeof(struct Prototype))
+				/ sizeof *ctx->ins);
+			static_assert(alignof(struct Prototype) % sizeof *ctx->ins == 0);
+			while ((ctx->count + 1) * sizeof *ctx->ins % alignof(struct Prototype))
+				ctx->ins[ctx->count++] = (struct Instruction) { .op = JMP }; // Align with NOPs
+			ctx->ins[ctx->count++] = (struct Instruction) { .op = CLOS, .a = dst.reg };
+			size_t proto_beg = ctx->count;
+			ctx->count += sizeof(struct Prototype) / sizeof *ctx->ins;
+
 			uint8_t num_args = 0;
 			while (args) {
 				LispObject sym;
@@ -558,33 +585,24 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 					= (struct Local) { .symbol = sym, .slot = ctx->num_regs++ };
 			}
 
-			size_t closure_pos = ctx->count;
-			emit(ctx, (struct Instruction) { .op = CLOS, .a = dst.reg });
 			Register reg = ctx->num_regs++; // Return register
 			if (!compile_progn(ctx, x, (struct Destination) { .reg = reg, .is_return = true })) {
 				emit_close_upvalues(ctx, fun.vars_start, 0);
 				emit(ctx, (struct Instruction) { .op = RET, .a = reg });
 			}
 
-			struct Prototype *prototype = gc_alloc(heap,
-				sizeof *prototype + fun.num_upvalues * sizeof *prototype->upvalues,
-				&prototype_tib);
-			uint16_t prototype_idx = ctx->constants.len;
-			if (ctx->constants.len >= UINT16_MAX) throw(COMP_TOO_MANY_CONSTS);
-			struct ConstantEntry *entry;
-			constant_tbl_entry(&ctx->constants, (struct ConstantEntry) {
-					.obj = (LispObject) prototype,
-					.slot = prototype_idx,
-					.is_prototype = true,
-				}, &entry);
-			ctx->ins[closure_pos].b = prototype_idx;
-			*prototype = (struct Prototype) {
-				.offset = closure_pos + 1, .len = ctx->count - (closure_pos + 1),
-				.arity = num_args,
-				.num_upvalues = fun.num_upvalues,
+			*(struct Prototype *) (ctx->ins + proto_beg) = (struct Prototype) {
+				.arity = num_args, .num_upvalues = fun.num_upvalues,
+				.next = ctx->prototypes,
 			};
-			memcpy(prototype->upvalues, fun.upvalues,
-				fun.num_upvalues * sizeof *fun.upvalues); // Write upvalues
+			ctx->prototypes = proto_beg;
+
+			size_t upvalues_size = fun.num_upvalues * sizeof *fun.upvalues,
+				data_size = (upvalues_size + sizeof *ctx->ins - 1) / sizeof *ctx->ins;
+			chunk_reserve(ctx, data_size);
+			memcpy((char *) (ctx->ins + (ctx->count += data_size)) - upvalues_size,
+				fun.upvalues, fun.num_upvalues * sizeof *fun.upvalues); // Write upvalues
+			ctx->ins[proto_beg - 1].b = ctx->count - proto_beg; // Write prototype size
 
 			ctx->fun = fun.prev;
 			ctx->num_regs = fun.prev_num_regs;
@@ -688,13 +706,17 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject form) {
 		&chunk_tib);
 	chunk->count = ctx.count;
 	chunk->num_consts = ctx.constants.len;
+	LispObject *consts = chunk_constants(chunk);
 	struct ConstantEntry *constant;
-	for (size_t i = 0; constant_tbl_iter_next(&ctx.constants, &i, &constant);) {
-		chunk_constants(chunk)[constant->slot] = constant->obj;
-		// Patch prototype chunk pointer
-		if (constant->is_prototype) ((struct Prototype *) constant->obj)->chunk = chunk;
-	}
+	for (size_t i = 0; constant_tbl_iter_next(&ctx.constants, &i, &constant);)
+		consts[constant->slot] = constant->obj;
 	memcpy(chunk_instructions(chunk), ctx.ins, ctx.count * sizeof *ctx.ins);
+	// Patch prototype constants pointers
+	for (size_t i = ctx.prototypes, next; i; i = next) {
+		struct Prototype *proto = (struct Prototype *) (chunk_instructions(chunk) + i);
+		next = proto->next;
+		proto->consts = consts;
+	}
 
 	constant_tbl_free(&ctx.constants);
 	free(ctx.ins);
@@ -704,7 +726,8 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject form) {
 LispObject lisp_eval(struct LispContext *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
 	disassemble(chunk);
+	LispObject *consts = chunk_constants(chunk);
 	// Store dummy closure in first call frame to handle returns uniformly
-	*ctx->bp = &(struct Closure) { .prototype = &(struct Prototype) { .chunk = chunk } };
-	return run(ctx, chunk_constants(chunk), chunk_instructions(chunk));
+	*ctx->bp = &(struct Closure) { .prototype = &(struct Prototype) { .consts = consts } };
+	return run(ctx, consts, chunk_instructions(chunk));
 }
