@@ -116,16 +116,16 @@ void lisp_print(LispObject object) {
 		putchar('(');
 	print_next_cell:
 		lisp_print(cell->car);
-		if (!cell->cdr) printf(")");
-		else if (lisp_type(cell->cdr) == LISP_CONS) {
+		if (!cell->cdr) ;
+		else if (consp(cell->cdr)) {
 			putchar(' ');
 			cell = cell->cdr;
 			goto print_next_cell;
 		} else {
 			printf(" . ");
 			lisp_print(cell->cdr);
-			putchar(')');
 		}
+		putchar(')');
 		break;
 	case LISP_SYMBOL:
 		struct Symbol *sym = object;
@@ -208,6 +208,7 @@ struct LispContext *lisp_new() {
 }
 
 void lisp_free(struct LispContext *ctx) {
+	munmap(ctx->bp, ctx->guard_end - (uintptr_t) ctx->bp);
 	symbol_tbl_free(&ctx->symbol_tbl);
 }
 

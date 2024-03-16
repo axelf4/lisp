@@ -91,9 +91,9 @@ struct Cons {
 
 LispObject cons(LispObject car, LispObject cdr);
 
-LispObject lisp_integer(int i);
-
 LispObject intern(struct LispContext *ctx, size_t len, const char s[static len]);
+
+LispObject lisp_integer(int i);
 
 enum LispReadError {
 	LISP_READ_OK,
@@ -107,14 +107,16 @@ enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject
 
 enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject *result);
 
+/** Evaluates @a form. */
+LispObject lisp_eval(struct LispContext *ctx, LispObject form);
+
 void lisp_print(LispObject object);
 
 struct LispContext *lisp_new();
 
 void lisp_free(struct LispContext *);
 
-/**
- * Lisp VM signal handler to consult before user application signal handling.
+/** Lisp VM signal handler to consult before user application signal handling.
  *
  * This routine recognizes SIGSEGV signals.
  *
@@ -122,9 +124,6 @@ void lisp_free(struct LispContext *);
  */
 [[gnu::cold]] bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext,
 	struct LispContext *ctx);
-
-/** Evaluates @a form. */
-LispObject lisp_eval(struct LispContext *ctx, LispObject form);
 
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_CONS; }
 

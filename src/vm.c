@@ -344,6 +344,28 @@ op_close_upvals:
 #pragma GCC diagnostic pop
 }
 
+[[gnu::optimize ("-fnon-call-exceptions")]]
+static LispObject apply(struct LispContext *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
+	enum LispObjectType ty = lisp_type(function);
+	if (ty != LISP_CLOSURE && ty != LISP_FUNCTION) throw(1);
+
+	if (ty != LISP_CLOSURE) die("TODO Implement apply for native functions");
+	struct Closure *closure = function;
+	struct Prototype *proto = closure->prototype;
+
+	*ctx->bp = function;
+	bool variadic = proto->arity & PROTO_VARIADIC;
+	uint8_t m = proto->arity & ~PROTO_VARIADIC;
+	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
+
+	LispObject xs = args[n];
+	if (n < m) while (xs && n < m) ctx->bp[2 + n++] = pop(&xs);
+	else while (n > m) xs = cons(args[--n], xs);
+	if (n < m || (xs && !variadic)) die("Wrong number of arguments");
+	if (variadic) ctx->bp[2 + m] = xs;
+	return run(ctx, proto->consts, proto->body);
+}
+
 #define MAX_LOCAL_VARS 192
 #define MAX_UPVALUES 64
 
@@ -444,28 +466,6 @@ static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, ui
 			emit(ctx, (struct Instruction) { .op = CLOSE_UPVALS, .a = regs_start });
 			break;
 		}
-}
-
-[[gnu::optimize ("-fnon-call-exceptions")]]
-static LispObject apply(struct LispContext *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
-	enum LispObjectType ty = lisp_type(function);
-	if (ty != LISP_CLOSURE && ty != LISP_FUNCTION) throw(1);
-
-	if (ty != LISP_CLOSURE) die("TODO Implement apply for native functions");
-	struct Closure *closure = function;
-	struct Prototype *proto = closure->prototype;
-
-	*ctx->bp = function;
-	bool variadic = proto->arity & PROTO_VARIADIC;
-	uint8_t m = proto->arity & ~PROTO_VARIADIC;
-	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
-
-	LispObject xs = args[n];
-	if (n < m) while (xs && n < m) ctx->bp[2 + n++] = pop(&xs);
-	else while (n > m) xs = cons(args[--n], xs);
-	if (n < m || (xs && !variadic)) die("Wrong number of arguments");
-	if (variadic) ctx->bp[2 + m] = xs;
-	return run(ctx, proto->consts, proto->body);
 }
 
 static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
