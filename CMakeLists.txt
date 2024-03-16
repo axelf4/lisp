@@ -8,6 +8,7 @@ include(CTest)
 find_package(cmocka 1.1.0 REQUIRED)
 find_package(xxHash REQUIRED)
 
+add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-masm=intel -Wall -Wextra -Wpedantic
 	-Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)

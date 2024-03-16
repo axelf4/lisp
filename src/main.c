@@ -20,8 +20,8 @@ int main(void) {
 	struct sigaction action;
 	action.sa_sigaction = signal_handler;
 	sigemptyset(&action.sa_mask);
-	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK | SA_RESTART;
-	if (sigaction(SIGSEGV, &action, NULL) == -1) die("sigaction failed");
+	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
+	if (sigaction(SIGSEGV, &action, NULL)) die("sigaction failed");
 
 	char line[256];
 	while (fgets(line, sizeof line, stdin)) {
