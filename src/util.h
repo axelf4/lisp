@@ -37,9 +37,8 @@ static inline unsigned int next_power_of_2(unsigned int x) {
 [[noreturn, gnu::cold, gnu::format (printf, 1, 2)]] void die(const char *format, ...);
 
 static inline uint64_t rotate_left(uint64_t x, unsigned n) {
-	unsigned mask = CHAR_BIT * sizeof n - 1;
-	n &= mask;
-	return (x << n) | (x >> (-n & mask));
+	unsigned mask = CHAR_BIT * sizeof x - 1;
+	return x << (n & mask) | x >> (-n & mask);
 }
 
 #define FX_SEED64 0x517cc1b727220a95

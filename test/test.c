@@ -2,7 +2,6 @@
 #include <stdarg.h>
 #include <setjmp.h>
 #include <cmocka.h>
-#include <stdio.h>
 #include "gc.h"
 #include "lisp.h"
 #include "rope.h"
@@ -13,12 +12,12 @@ static void test_next_power_of_2(void **) {
 	assert_int_equal(next_power_of_2(8), 8);
 }
 
-static void do_nothing(void *) {}
-
-static void do_throw_error(void *) {
-	throw(42);
-	fail();
+static void test_rotate_left(void **) {
+	assert_int_equal(rotate_left(1ULL << 63 | 2, 65), 0b101);
 }
+
+static void do_nothing(void *) {}
+static void do_throw_error(void *) { throw(42); fail(); }
 
 static void test_exception(void **state) {
 	assert_int_equal(pcall(state, do_nothing), 0);
@@ -36,6 +35,7 @@ static void test_hash_table(void **) {
 	struct Table table = tbl_new();
 	int *entry;
 	my_tbl_entry(&table, 1, &entry);
+	assert_int_equal(table.len, 1);
 	assert_int_equal(*entry, 1);
 	assert_ptr_equal(my_tbl_find(&table, 1), entry);
 	assert_null(my_tbl_find(&table, 2));
@@ -122,11 +122,12 @@ static void test_eval(void **state) {
 	assert_lisp_equal(eval(ctx, "(mymacro)"), lisp_integer(3));
 }
 
-int main(void) {
+int main() {
 	if (!(heap = gc_new())) return 1;
 
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_next_power_of_2),
+		cmocka_unit_test(test_rotate_left),
 		cmocka_unit_test(test_exception),
 		cmocka_unit_test(test_hash_table),
 		cmocka_unit_test(test_gc_traces_live_obj),
