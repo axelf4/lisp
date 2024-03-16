@@ -69,8 +69,8 @@ struct StackElement {
 	};
 };
 
-enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject *result) {
-	struct StackElement stack[256], *x = stack;
+enum LispReadError lisp_read(struct LispCtx *ctx, const char **s, LispObject *result) {
+	struct StackElement stack[256], *p = stack;
 	size_t len = 0;
 
 val_beg:
@@ -82,12 +82,12 @@ val_beg_no_ws:
 		++*s;
 		skip_whitespace(s);
 		if (__builtin_expect(**s == ')', false)) { ++*s; value = NULL; goto val_end; }
-		*x++ = (struct StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
+		*p++ = (struct StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
 		len = 0;
 		goto val_beg_no_ws;
 	} else if (**s == '\'') {
 		++*s;
-		*x++ = (struct StackElement)
+		*p++ = (struct StackElement)
 			{ .tag = len << TYPE_BITS | CTN_PREFIX, .prefix_sym = ctx->fquote };
 		len = 0;
 		goto val_beg;
@@ -97,22 +97,22 @@ val_beg_no_ws:
 		value = intern(ctx, *s - start, start); // Read a symbol
 	}
 val_end:
-	if (x == stack) { *result = value; return LISP_READ_OK; } // No remaining nesting
-	struct StackElement *ctn = x - ++len;
+	if (p == stack) { *result = value; return LISP_READ_OK; } // No remaining nesting
+	struct StackElement *ctn = p - ++len;
 	enum ContainerType ctn_ty = ctn->tag & ((1 << TYPE_BITS) - 1);
 	if (ctn_ty == CTN_PREFIX) {
 		value = cons(ctn->prefix_sym, cons(value, NULL));
-		len = (--x)->tag >> TYPE_BITS;
+		len = (--p)->tag >> TYPE_BITS;
 		goto val_end;
 	}
-	x++->object = value;
+	p++->object = value;
 
 	skip_whitespace(s);
 	if (**s == ')') {
 		++*s;
-		value = ctn_ty == CTN_DOTTED ? --len, --x, value : NULL;
-		do value = cons((--x)->object, value); while (--len);
-		len = (--x)->tag >> TYPE_BITS; // Pop container from stack
+		value = ctn_ty == CTN_DOTTED ? --len, --p, value : NULL;
+		do value = cons((--p)->object, value); while (--len);
+		len = (--p)->tag >> TYPE_BITS; // Pop container from stack
 		goto val_end;
 	} else if (__builtin_expect(ctn_ty == CTN_DOTTED, false))
 		return LISP_READ_EXPECTED_RPAREN;
@@ -120,7 +120,7 @@ val_end:
 	goto val_beg_no_ws;
 }
 
-enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject *result) {
+enum LispReadError lisp_read_whole(struct LispCtx *ctx, const char *s, LispObject *result) {
 	enum LispReadError error;
 	if ((error = lisp_read(ctx, &s, result))) return error;
 	skip_whitespace(&s);

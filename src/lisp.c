@@ -42,10 +42,10 @@ static void string_trace(struct GcHeap *, void *x) { gc_mark(string_size(x), x);
 
 static struct GcTypeInfo string_tib = { string_trace, string_size };
 
-static size_t cons_size(void *) { return sizeof(struct Cons); }
+static size_t cons_size(void *) { return sizeof(struct LispPair); }
 
 static void cons_trace(struct GcHeap *heap, void *x) {
-	struct Cons *cons = x;
+	struct LispPair *cons = x;
 	gc_mark(sizeof *cons, x);
 	if (cons->car) gc_trace(heap, &cons->car);
 	if (cons->cdr) gc_trace(heap, &cons->cdr);
@@ -69,7 +69,7 @@ static void trace_small(struct GcHeap *, void *x) { gc_mark(1, x); }
 
 static struct LispTypeInfo cons_tib = {
 	.gc_tib = { cons_trace, cons_size },
-	.tag = LISP_CONS,
+	.tag = LISP_PAIR,
 }, symbol_tib = {
 	.gc_tib = { symbol_trace, symbol_size },
 	.tag = LISP_SYMBOL,
@@ -82,12 +82,12 @@ static struct LispTypeInfo cons_tib = {
 };
 
 LispObject cons(LispObject car, LispObject cdr) {
-	struct Cons *cell = gc_alloc(heap, sizeof *cell, &cons_tib.gc_tib);
-	*cell = (struct Cons) { car, cdr };
+	struct LispPair *cell = gc_alloc(heap, sizeof *cell, &cons_tib.gc_tib);
+	*cell = (struct LispPair) { car, cdr };
 	return cell;
 }
 
-LispObject intern(struct LispContext *ctx, size_t len, const char s[static len]) {
+LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	if (len == 3 && memcmp(s, "nil", 3) == 0) return NULL;
 
 	struct Symbol key = { .len = len, .name = s }, **entry;
@@ -111,21 +111,21 @@ LispObject lisp_integer(int i) {
 void lisp_print(LispObject object) {
 	switch (lisp_type(object)) {
 	case LISP_NIL: printf("nil"); break;
-	case LISP_CONS:
-		struct Cons *cell = object;
+	case LISP_PAIR:
+		struct LispPair *cell = object;
 		putchar('(');
 	print_next_cell:
 		lisp_print(cell->car);
-		if (!cell->cdr) printf(")");
-		else if (lisp_type(cell->cdr) == LISP_CONS) {
+		if (!cell->cdr) ;
+		else if (consp(cell->cdr)) {
 			putchar(' ');
 			cell = cell->cdr;
 			goto print_next_cell;
 		} else {
 			printf(" . ");
 			lisp_print(cell->cdr);
-			putchar(')');
 		}
+		putchar(')');
 		break;
 	case LISP_SYMBOL:
 		struct Symbol *sym = object;
@@ -140,10 +140,10 @@ void lisp_print(LispObject object) {
 	}
 }
 
-size_t lisp_ctx_size(void *) { return sizeof(struct LispContext); }
+size_t lisp_ctx_size(void *) { return sizeof(struct LispCtx); }
 
 static void lisp_ctx_trace(struct GcHeap *, void *x) {
-	struct LispContext *ctx = x;
+	struct LispCtx *ctx = x;
 	gc_mark(sizeof *ctx, x);
 
 	struct Symbol **sym;
@@ -153,7 +153,7 @@ static void lisp_ctx_trace(struct GcHeap *, void *x) {
 
 struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
 
-bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispContext *ctx) {
+bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispCtx *ctx) {
 	if (sig == SIGSEGV) {
 		// Check if fault was within the stack guard pages
 		if ((uintptr_t) ctx->bp <= (uintptr_t) info->si_addr
@@ -165,11 +165,30 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 	return false;
 }
 
-struct LispContext *lisp_new() {
-	struct LispContext *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
+static bool lisp_init(struct LispCtx *ctx) {
+	long page_size = sysconf(_SC_PAGESIZE);
+	// TODO Divide guard pages into yellow and red zones (in HotSpot
+	// terminology) where the yellow zone is temporarily disabled for
+	// exception handlers not to immediately trigger another overflow.
+	LispObject *stack;
+#define STACK_LEN 0x1000
+	size_t size = STACK_LEN * sizeof *stack,
+		guard_size = (0xff * sizeof *stack + page_size - 1) & (page_size - 1);
+	if ((ctx->bp = stack = mmap(NULL, size + guard_size,
+				PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
+		== MAP_FAILED) return NULL;
+	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) {
+		munmap(stack, size + guard_size);
+		return false;
+	}
+	ctx->guard_end = (uintptr_t) stack + size + guard_size;
+#ifndef __linux__
+	*stack = stack[1] = NULL; // No return address for first call frame
+#endif
+
 	ctx->symbol_tbl = tbl_new();
 
-	ctx->flambda = intern(ctx, sizeof "fn" - 1, "fn");
+	ctx->ffn = intern(ctx, sizeof "fn" - 1, "fn");
 	ctx->fif = intern(ctx, sizeof "if" - 1, "if");
 	ctx->flet = intern(ctx, sizeof "let" - 1, "let");
 	ctx->fset = intern(ctx, sizeof "set" - 1, "set");
@@ -184,30 +203,16 @@ struct LispContext *lisp_new() {
 		sym->value = f;
 	}
 
-	long page_size = sysconf(_SC_PAGESIZE);
-	// TODO Divide guard pages into yellow and red zones (in HotSpot
-	// terminology) where the yellow zone is temporarily disabled for
-	// exception handlers not to immediately trigger another overflow.
-	LispObject *stack;
-#define STACK_LEN 0x1000
-	size_t size = STACK_LEN * sizeof *stack,
-		guard_size = (0xff * sizeof *stack + page_size - 1) & (page_size - 1);
-	if ((ctx->bp = stack = mmap(NULL, size + guard_size,
-				PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
-		== MAP_FAILED) return NULL;
-	if (mprotect(stack, size, PROT_READ | PROT_WRITE) == -1) {
-		munmap(stack, size + guard_size);
-		return NULL;
-	}
-	ctx->guard_end = (uintptr_t) stack + size + guard_size;
-#ifndef __linux__
-	*stack = stack[1] = NULL; // No return address for first call frame
-#endif
-
-	return ctx;
+	return true;
 }
 
-void lisp_free(struct LispContext *ctx) {
+struct LispCtx *lisp_new() {
+	struct LispCtx *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
+	return lisp_init(ctx) ? ctx : NULL;
+}
+
+void lisp_free(struct LispCtx *ctx) {
+	munmap(ctx->bp, ctx->guard_end - (uintptr_t) ctx->bp);
 	symbol_tbl_free(&ctx->symbol_tbl);
 }
 
@@ -220,7 +225,7 @@ DEFUN("cons", cons, (LispObject car, LispObject cdr)) {
 DEFUN("car", car, (LispObject x)) { return car(x); }
 
 DEFUN("cdr", cdr, (LispObject x)) {
-	return lisp_type(x) == LISP_CONS ? ((struct Cons *) x)->cdr : NULL;
+	return lisp_type(x) == LISP_PAIR ? ((struct LispPair *) x)->cdr : NULL;
 }
 
 DEFUN("+", add, (LispObject a, LispObject b)) {

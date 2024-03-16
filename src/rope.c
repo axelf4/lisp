@@ -124,7 +124,7 @@ static void make_parents(size_t count, struct NodeSlice xs[static count], size_t
 	for (unsigned i = 0; i < count; ++i) {
 		struct NodeSlice x = xs[i];
 		while (x.len) {
-			// If cannot fit the rest then leave enough for a non-underfilled node
+			// If the rest cannot fit then leave enough for a non-underfilled node
 			unsigned max = (total > MAX_CHILDREN
 				? MIN(MAX_CHILDREN, total - MIN_CHILDREN) : total) - acc.len,
 				n = MIN(x.len, max);
@@ -296,11 +296,6 @@ static void insert_at_depth(struct Internal *parent, unsigned i, Node *x) {
 /** String slice. */
 struct Str { size_t len; const char *p; };
 
-static struct SplitStr { struct Str left, right; } str_split_at(struct Str s, size_t i) {
-	// TODO Check char boundary
-	return (struct SplitStr) { { i, s.p }, { s.len - i, s.p + i } };
-}
-
 static struct NodeSlice segment_chunks(size_t size, size_t count, struct Str segments[static count]) {
 	size_t capacity = (size + MAX_BYTES - 1) / MAX_BYTES;
 	Node **nodes, **p;
@@ -308,7 +303,7 @@ static struct NodeSlice segment_chunks(size_t size, size_t count, struct Str seg
 	for (Node **node = nodes; node < nodes + capacity; ++node) {
 		struct Leaf *leaf;
 		if (!(leaf = malloc(sizeof *leaf))) {
-			for (Node **x = nodes; x < node; ++x) free(*x);
+			while (p < node) free(*p++);
 			free(nodes);
 			return (struct NodeSlice) {};
 		}
@@ -459,27 +454,22 @@ static struct NodeSlice node_replace(Node **node, size_t beg, size_t end, struct
 			rr = (struct Str) { i, buf->data + MAX_BYTES - i };
 		}
 
-		size_t new_len = 0; // The new length of this gap buffer
-		struct Str segments[] = { ll, lr, s, rl, rr }, *x = segments;
-		while (new_len + x->len <= MAX_BYTES && len - new_len - x->len >= MIN_BYTES)
-			new_len += x++->len;
-		size_t split_idx = MIN(x->len, MAX_BYTES - new_len);
-		if (len - (new_len + split_idx) < MIN_BYTES)
-			split_idx = len - new_len - MIN_BYTES;
-		struct SplitStr split = str_split_at(*x, split_idx);
-		new_len += split.left.len;
-		*x = split.right;
+		size_t split_idx, n = 0; // The new length of this gap buffer
+		struct Str segments[] = { ll, lr, s, rl, rr }, *p = segments;
+		while (p->len <= (split_idx = MIN(MAX_BYTES - n, len - n - MIN_BYTES)))
+			n += p++->len;
+		n += split_idx;
+		struct Str last = { split_idx, p->p };
+		*p = (struct Str) { p->len - split_idx, p->p + split_idx };
 
-		// Now x holds the new segments. Allocate new gap buffers.
+		// Now p holds the new segments: Allocate new leaves
 		struct NodeSlice extras
-			= segment_chunks(len - new_len, segments + LENGTH(segments) - x, x);
+			= segment_chunks(len - n, segments + LENGTH(segments) - p, p);
 		if (!extras.xs) die("malloc failed");
-		buf->len_left = x > segments ? ll.len : 0;
-		buf->len_right = 0;
-		for (struct Str *y = segments + 1; y < x; buf->len_left += y++->len)
-			memmove(buf->data + buf->len_left, y->p, y->len);
-		memmove(buf->data + buf->len_left, split.left.p, split.left.len);
-		buf->len_left += split.left.len;
+		buf->len_left = p > segments ? ll.len : 0;
+		for (struct Str *q = segments + 1; q < p; buf->len_left += q++->len)
+			memmove(buf->data + buf->len_left, q->p, q->len);
+		memmove(buf->data + MAX_BYTES - (buf->len_right = last.len), last.p, last.len);
 		return extras;
 	}
 
@@ -496,8 +486,8 @@ static struct NodeSlice node_replace(Node **node, size_t beg, size_t end, struct
         /* No one child envelops the whole range. Proceed by:
          *
          *                   x
-         *       (1) ___-   /|\   -___
-         *          /______/ | \______\ (3)
+         *       (1) ___-  / | \  -___
+         *          /_____/  |  \_____\ (3)
          *         //        |   (4)  \\
          *        |x   (2)   x    ^   |x
          *       _/\\_   \   |\_/ | \_/\\_

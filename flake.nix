@@ -16,11 +16,13 @@
       doCheck = true;
 
       cmakeFlags = [ "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE" ];
+
+      env.CFLAGS = "-O3 -march=x86-64-v3";
     };
 
     devShells.${system}.default = pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } {
       inputsFrom = [ self.packages.${system}.default ];
-      buildInputs = with pkgs; [ doxygen valgrind ];
+      packages = with pkgs; [ doxygen valgrind ];
     };
   };
 }

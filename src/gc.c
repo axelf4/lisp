@@ -154,8 +154,7 @@ found:
 
 enum {
 	GC_MARK = 1, ///< Object mark bit: Ensures transitive closure terminates.
-	GC_PINNED = 2,
-	GC_FORWARDED = 4,
+	GC_FORWARDED = 2,
 };
 
 #define MIN_FREE (BLOCKS_PER_CHUNK / (100 / 3) + 3)
@@ -214,8 +213,7 @@ void gc_trace(struct GcHeap *heap, void **p) {
 	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) header & ~(GC_BLOCK_SIZE - 1));
 	size_t size;
 	void *q;
-	if (block->flag && !(header->flags & GC_PINNED)
-		&& (q = gc_alloc(heap, size = header->tib->size(*p), header->tib))) {
+	if (block->flag && (q = gc_alloc(heap, size = header->tib->size(*p), header->tib))) {
 		memcpy(q, *p, size);
 		header->fwd = *p = q;
 		header->flags |= GC_FORWARDED;
@@ -227,7 +225,7 @@ void gc_trace(struct GcHeap *heap, void **p) {
 
 static void pin_and_trace(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *header = (struct GcObjectHeader *) p - 1;
-	header->flags = heap->mark_color | GC_PINNED;
+	header->flags = heap->mark_color;
 	object_map_add(p);
 	header->tib->trace(heap, p);
 }

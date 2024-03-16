@@ -35,7 +35,7 @@ extern struct GcHeap *heap;
 
 enum LispObjectType {
 	LISP_NIL,
-	LISP_CONS,
+	LISP_PAIR,
 	LISP_SYMBOL,
 	LISP_FUNCTION,
 	LISP_CLOSURE,
@@ -62,10 +62,10 @@ struct Symbol {
 	LispObject value;
 };
 
-struct LispContext {
+struct LispCtx {
 	struct Table symbol_tbl;
 	// Common interned symbols
-	struct Symbol *flambda, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
+	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
 	LispObject *bp; ///< Base pointer.
 	uintptr_t guard_end;
 };
@@ -85,15 +85,15 @@ struct Subr {
 struct Function { struct Subr *subr; };
 
 /** Cons cell. */
-struct Cons {
+struct LispPair {
 	LispObject car, cdr;
 };
 
 LispObject cons(LispObject car, LispObject cdr);
 
-LispObject lisp_integer(int i);
+LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]);
 
-LispObject intern(struct LispContext *ctx, size_t len, const char s[static len]);
+LispObject lisp_integer(int i);
 
 enum LispReadError {
 	LISP_READ_OK,
@@ -103,40 +103,39 @@ enum LispReadError {
 	LISP_READ_TRAILING,
 };
 
-enum LispReadError lisp_read(struct LispContext *ctx, const char **s, LispObject *result);
+enum LispReadError lisp_read(struct LispCtx *ctx, const char **s, LispObject *result);
 
-enum LispReadError lisp_read_whole(struct LispContext *ctx, const char *s, LispObject *result);
+enum LispReadError lisp_read_whole(struct LispCtx *ctx, const char *s, LispObject *result);
+
+/** Evaluates @a form. */
+LispObject lisp_eval(struct LispCtx *ctx, LispObject form);
 
 void lisp_print(LispObject object);
 
-struct LispContext *lisp_new();
+struct LispCtx *lisp_new();
 
-void lisp_free(struct LispContext *);
+void lisp_free(struct LispCtx *);
 
-/**
- * Lisp VM signal handler to consult before user application signal handling.
+/** Lisp VM signal handler to consult before user application signal handling.
  *
  * This routine recognizes SIGSEGV signals.
  *
  * @return Whether the signal was handled.
  */
 [[gnu::cold]] bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext,
-	struct LispContext *ctx);
+	struct LispCtx *ctx);
 
-/** Evaluates @a form. */
-LispObject lisp_eval(struct LispContext *ctx, LispObject form);
-
-static inline bool consp(LispObject x) { return lisp_type(x) == LISP_CONS; }
+static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
 static inline bool listp(LispObject x) { return !x || consp(x); }
 
 static inline LispObject car(LispObject x) {
-	return consp(x) ? ((struct Cons *) x)->car : NULL;
+	return consp(x) ? ((struct LispPair *) x)->car : NULL;
 }
 
 static inline LispObject pop(LispObject *x) {
 	if (!consp(*x)) return NULL;
-	struct Cons *cell = *x, *result = cell->car;
+	struct LispPair *cell = *x, *result = cell->car;
 	*x = cell->cdr;
 	return result;
 }

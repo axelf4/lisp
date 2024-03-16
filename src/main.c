@@ -3,7 +3,7 @@
 #include "gc.h"
 #include "lisp.h"
 
-static struct LispContext *ctx;
+static struct LispCtx *ctx;
 
 static void signal_handler(int sig, siginfo_t *info, void *ucontext) {
 	if (lisp_signal_handler(sig, info, ucontext, ctx)) return;
@@ -13,9 +13,8 @@ static void signal_handler(int sig, siginfo_t *info, void *ucontext) {
 	// allows the signal to be re-delivered.
 }
 
-int main(void) {
-	if (!(heap = gc_new())) return 1;
-	ctx = lisp_new();
+int main() {
+	if (!(heap = gc_new()) || !(ctx = lisp_new())) return 1;
 
 	struct sigaction action;
 	action.sa_sigaction = signal_handler;

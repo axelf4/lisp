@@ -204,7 +204,7 @@ struct TraceRecording {
 };
 
 [[gnu::optimize ("-fnon-call-exceptions")]]
-static LispObject run(struct LispContext *ctx, LispObject *consts, struct Instruction *pc) {
+static LispObject run(struct LispCtx *ctx, LispObject *consts, struct Instruction *pc) {
 	LispObject *bp = ctx->bp;
 	struct Upvalue *upvalues = NULL;
 	uint8_t hotcounts[64] = {};
@@ -354,6 +354,28 @@ op_close_upvals:
 #pragma GCC diagnostic pop
 }
 
+[[gnu::optimize ("-fnon-call-exceptions")]]
+static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
+	enum LispObjectType ty = lisp_type(function);
+	if (ty != LISP_CLOSURE && ty != LISP_FUNCTION) throw(1);
+
+	if (ty != LISP_CLOSURE) die("TODO Implement apply for native functions");
+	struct Closure *closure = function;
+	struct Prototype *proto = closure->prototype;
+
+	*ctx->bp = function;
+	bool variadic = proto->arity & PROTO_VARIADIC;
+	uint8_t m = proto->arity & ~PROTO_VARIADIC;
+	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
+
+	LispObject xs = args[n];
+	if (n < m) while (xs && n < m) ctx->bp[2 + n++] = pop(&xs);
+	else while (n > m) xs = cons(args[--n], xs);
+	if (n < m || (xs && !variadic)) die("Wrong number of arguments");
+	if (variadic) ctx->bp[2 + m] = xs;
+	return run(ctx, proto->consts, proto->body);
+}
+
 #define MAX_LOCAL_VARS 192
 #define MAX_UPVALUES 64
 
@@ -387,7 +409,7 @@ struct FuncState {
 };
 
 struct ByteCompCtx {
-	struct LispContext *lisp_ctx;
+	struct LispCtx *lisp_ctx;
 	struct FuncState *fun;
 	uint8_t num_regs,
 		num_vars;
@@ -456,28 +478,6 @@ static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, ui
 		}
 }
 
-[[gnu::optimize ("-fnon-call-exceptions")]]
-static LispObject apply(struct LispContext *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
-	enum LispObjectType ty = lisp_type(function);
-	if (ty != LISP_CLOSURE && ty != LISP_FUNCTION) throw(1);
-
-	if (ty != LISP_CLOSURE) die("TODO Implement apply for native functions");
-	struct Closure *closure = function;
-	struct Prototype *proto = closure->prototype;
-
-	*ctx->bp = function;
-	bool variadic = proto->arity & PROTO_VARIADIC;
-	uint8_t m = proto->arity & ~PROTO_VARIADIC;
-	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
-
-	LispObject xs = args[n];
-	if (n < m) while (xs && n < m) ctx->bp[2 + n++] = pop(&xs);
-	else while (n > m) xs = cons(args[--n], xs);
-	if (n < m || (xs && !variadic)) die("Wrong number of arguments");
-	if (variadic) ctx->bp[2 + m] = xs;
-	return run(ctx, proto->consts, proto->body);
-}
-
 static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
 	struct ConstantEntry *entry;
 	if (!(constant_tbl_entry(&ctx->constants, (struct ConstantEntry) { .obj = x }, &entry))) {
@@ -528,7 +528,7 @@ static enum CompileResult compile_progn(struct ByteCompCtx *ctx, LispObject x, s
 
 /** Byte-compiles the form @a x. */
 static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, struct Destination dst) {
-	struct LispContext *lisp_ctx = ctx->lisp_ctx;
+	struct LispCtx *lisp_ctx = ctx->lisp_ctx;
 	switch (lisp_type(x)) {
 	case LISP_NIL: case LISP_INTEGER: emit_load_obj(ctx, x, dst); break;
 	case LISP_SYMBOL:
@@ -550,13 +550,13 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		}
 		break;
 	case LISP_FUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
-	case LISP_CONS:
+	case LISP_PAIR:
 		LispObject head = pop(&x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);
 
 		if (head == lisp_ctx->fprogn) return compile_progn(ctx, x, dst);
 		else if (head == lisp_ctx->fquote) emit_load_obj(ctx, pop(&x), dst);
-		else if (head == lisp_ctx->flambda) {
+		else if (head == lisp_ctx->ffn) {
 			if (dst.discarded) break;
 			LispObject args = pop(&x);
 			struct FuncState fun = {
@@ -661,7 +661,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			if (noreturn) return COMP_NORETURN;
 		} else if (lisp_type(head) == LISP_SYMBOL
 			&& car(((struct Symbol *) head)->value) == lisp_ctx->smacro) {
-			LispObject macro = ((struct Cons *) ((struct Symbol *) head)->value)->cdr;
+			LispObject macro = ((struct LispPair *) ((struct Symbol *) head)->value)->cdr;
 			return compile_form(ctx, apply(ctx->lisp_ctx, macro, 0, &x), dst);
 		} else { // Function call
 			uint8_t prev_num_regs = ctx->num_regs, num_args = 0;
@@ -692,7 +692,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 	return COMP_OK;
 }
 
-static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject form) {
+static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 	struct ByteCompCtx ctx = {
 		.lisp_ctx = lisp_ctx,
 		.num_regs = 3, // Reserve return, closure and PC registers
@@ -723,7 +723,7 @@ static struct Chunk *compile(struct LispContext *lisp_ctx, LispObject form) {
 	return chunk;
 }
 
-LispObject lisp_eval(struct LispContext *ctx, LispObject form) {
+LispObject lisp_eval(struct LispCtx *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
 	disassemble(chunk);
 	LispObject *consts = chunk_constants(chunk);

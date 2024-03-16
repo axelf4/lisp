@@ -24,7 +24,7 @@ static inline unsigned int next_power_of_2(unsigned int x) {
 
 /** Converts @a x to little endian from the target's endianness. */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-#define HTOL(x) x
+#define HTOL(x) (x)
 #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define HTOL(x) _Generic((x),					\
 		uint32_t: __builtin_bswap32,			\

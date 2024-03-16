@@ -35,7 +35,7 @@ static inline size_t capacity_to_buckets(size_t capacity) {
 typedef size_t Group;
 
 /** Return the integer with all bytes equal to @a x. */
-#define REPEAT(x) ((x) * (~0ULL / 0xff))
+#define REPEAT(x) (~0ULL / 0xff * (x))
 
 #define FOR_SET_BITS(var, x) for (typeof(x) _i = (x), var;		\
 		_i && (var = __builtin_ctzll(_i), true); _i &= _i - 1)

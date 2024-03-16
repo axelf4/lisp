@@ -76,8 +76,8 @@ static void assert_lisp_equal(LispObject a, LispObject b) {
 	assert_int_equal(lisp_type(a), type);
 	switch (type) {
 	case LISP_NIL: break;
-	case LISP_CONS:
-		struct Cons *x = a, *y = b;
+	case LISP_PAIR:
+		struct LispPair *x = a, *y = b;
 		assert_lisp_equal(x->car, y->car);
 		assert_lisp_equal(x->cdr, y->cdr);
 		break;
@@ -101,14 +101,14 @@ static void test_reader(void **state) {
 	assert_read_whole_equal(*state, "1x", intern(*state, sizeof "1x" - 1, "1x"));
 }
 
-static LispObject eval(struct LispContext *ctx, const char *s) {
+static LispObject eval(struct LispCtx *ctx, const char *s) {
 	LispObject form;
 	assert_int_equal(lisp_read_whole(ctx, s, &form), LISP_READ_OK);
 	return lisp_eval(ctx, form);
 }
 
 static void test_eval(void **state) {
-	struct LispContext *ctx = *state;
+	struct LispCtx *ctx = *state;
 	assert_lisp_equal(eval(ctx, "\
 (let ((mult (fn (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x)))))) \
   (mult 4 3 0))"),
