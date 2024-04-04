@@ -49,7 +49,7 @@ struct Vec { size_t length, capacity; void **items; };
 
 static bool vec_reserve(struct Vec *vec, size_t additional) {
 	size_t n = vec->length + additional;
-	if (__builtin_expect(n <= vec->capacity, true)) return true;
+	if (LIKELY(n <= vec->capacity)) return true;
 	size_t new_capacity = MAX(vec->capacity ? 2 * vec->capacity : 4, n);
 	void **items;
 	if (!(items = realloc(vec->items, new_capacity * sizeof *items))) return false;

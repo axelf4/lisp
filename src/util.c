@@ -65,7 +65,7 @@ void throw(unsigned errcode) {
 static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 	_Unwind_Exception_Class exception_class, struct _Unwind_Exception *exception_object,
 	struct _Unwind_Context *context) {
-	if (__builtin_expect(version != 1, false)) return _URC_FATAL_PHASE1_ERROR;
+	if (UNLIKELY(version != 1)) return _URC_FATAL_PHASE1_ERROR;
 
 	if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
 	else if (actions & _UA_CLEANUP_PHASE) {

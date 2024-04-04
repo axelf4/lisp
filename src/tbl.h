@@ -82,7 +82,7 @@ static inline struct Table tbl_new() {
 static inline size_t find_insert_slot(struct Table *table, uint64_t h) {
 	PROBE(table, h, bucket, group) {
 		size_t x = match_empty_or_deleted(group);
-		if (!__builtin_expect(x, true)) continue;
+		if (UNLIKELY(!x)) continue;
 		size_t match = (bucket + __builtin_ctzll(x) / CHAR_BIT) & table->bucket_mask;
 		// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
 		if (IS_FULL(table->ctrl[match])) {
@@ -107,10 +107,10 @@ KEY *CAT(NAME, _tbl_find)(struct Table *table, KEY key) {
 		// Search the group for h2 of the key
 		FOR_SET_BITS(i, match_byte(h2(h), group)) {
 			KEY *entry = buckets - ((bucket + i / CHAR_BIT) & table->bucket_mask) - 1;
-			if (__builtin_expect(CAT(NAME, _equal)(*entry, key), true)) return entry;
+			if (LIKELY(CAT(NAME, _equal)(*entry, key))) return entry;
 		}
 		// If there were any empty matches then probing is done
-		if (__builtin_expect(match_byte(EMPTY, group), true)) return NULL;
+		if (LIKELY(match_byte(EMPTY, group))) return NULL;
 	}
 }
 
@@ -130,7 +130,7 @@ static bool CAT(NAME, _tbl_iter_next)(struct Table *table, size_t *i, KEY **entr
 }
 
 static bool CAT(NAME, _tbl_reserve)(struct Table *table, size_t additional) {
-	if (__builtin_expect(additional <= table->growth_left, true)) return true;
+	if (LIKELY(additional <= table->growth_left)) return true;
 	size_t new_capacity
 		= MAX(table->len + additional, bucket_mask_to_capacity(table->bucket_mask) + 1),
 		n = capacity_to_buckets(new_capacity);
@@ -161,7 +161,7 @@ static bool CAT(NAME, _tbl_reserve)(struct Table *table, size_t additional) {
 bool CAT(NAME, _tbl_entry)(struct Table *table, KEY key, KEY **entry) {
 	if ((*entry = CAT(NAME, _tbl_find)(table, key))) return true;
 
-	if (!(__builtin_expect(table->growth_left, true) || CAT(NAME, _tbl_reserve)(table, 1)))
+	if (!(LIKELY(table->growth_left) || CAT(NAME, _tbl_reserve)(table, 1)))
 		return (*entry = NULL);
 	// Key is not present: Search for EMPTY/DELETED instead
 	uint64_t h = CAT(NAME, _hash)(key);

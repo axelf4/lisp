@@ -81,7 +81,7 @@ val_beg_no_ws:
 	if (**s == '(') {
 		++*s;
 		skip_whitespace(s);
-		if (__builtin_expect(**s == ')', false)) { ++*s; value = NULL; goto val_end; }
+		if (UNLIKELY(**s == ')')) { ++*s; value = NULL; goto val_end; }
 		*p++ = (struct StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
 		len = 0;
 		goto val_beg_no_ws;
@@ -93,7 +93,7 @@ val_beg_no_ws:
 		goto val_beg;
 	} else if ((value = read_integer(s))) ; else {
 		while (is_ident(**s)) ++*s;
-		if (__builtin_expect(*s == start, false)) return LISP_READ_EOF;
+		if (UNLIKELY(*s == start)) return LISP_READ_EOF;
 		value = intern(ctx, *s - start, start); // Read a symbol
 	}
 val_end:
@@ -114,8 +114,7 @@ val_end:
 		do value = cons((--p)->object, value); while (--len);
 		len = (--p)->tag >> TYPE_BITS; // Pop container from stack
 		goto val_end;
-	} else if (__builtin_expect(ctn_ty == CTN_DOTTED, false))
-		return LISP_READ_EXPECTED_RPAREN;
+	} else if (UNLIKELY(ctn_ty == CTN_DOTTED)) return LISP_READ_EXPECTED_RPAREN;
 	else if (**s == '.') { ++*s; ctn->tag |= CTN_DOTTED; goto val_beg; }
 	goto val_beg_no_ws;
 }

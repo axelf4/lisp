@@ -17,6 +17,14 @@
 
 #define SWAP(x, y) do { auto _tmp = (x); (x) = (y); (y) = _tmp; } while(0)
 
+#if defined __has_builtin && __has_builtin(__builtin_expect)
+#define LIKELY(x) __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define LIKELY(x) (x)
+#define UNLIKELY(x) (x)
+#endif
+
 /** Returns the smallest power of two greater than or equal to @a x. */
 static inline unsigned int next_power_of_2(unsigned int x) {
 	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - __builtin_clz(x)) : x;

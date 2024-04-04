@@ -456,7 +456,7 @@ static struct VarRef {
 
 static void chunk_reserve(struct ByteCompCtx *ctx, size_t additional) {
 	size_t n = ctx->count + additional;
-	if (__builtin_expect(n <= ctx->capacity, true)) return;
+	if (LIKELY(n <= ctx->capacity)) return;
 	size_t new_capacity = MAX(ctx->capacity ? 2 * ctx->capacity : 32, n);
 	struct Instruction *ins;
 	if (!(ins = realloc(ctx->ins, new_capacity * sizeof *ins))) die("malloc failed");
