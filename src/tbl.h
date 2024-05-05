@@ -38,7 +38,7 @@ typedef size_t Group;
 #define REPEAT(x) (~0ULL / 0xff * (x))
 
 #define FOR_SET_BITS(var, x) for (typeof(x) _i = (x), var;		\
-		_i && (var = __builtin_ctzll(_i), true); _i &= _i - 1)
+		_i && (var = stdc_trailing_zeros(_i), true); _i &= _i - 1)
 
 static inline size_t match_byte(unsigned char x, size_t group) {
 	size_t cmp = group ^ REPEAT(x);
@@ -83,11 +83,11 @@ static inline size_t find_insert_slot(struct Table *table, uint64_t h) {
 	PROBE(table, h, bucket, group) {
 		size_t x = match_empty_or_deleted(group);
 		if (UNLIKELY(!x)) continue;
-		size_t match = (bucket + __builtin_ctzll(x) / CHAR_BIT) & table->bucket_mask;
+		size_t match = (bucket + stdc_trailing_zeros(x) / CHAR_BIT) & table->bucket_mask;
 		// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
 		if (IS_FULL(table->ctrl[match])) {
 			group = HTOL(*(Group *) table->ctrl);
-			match = __builtin_ctzll(match_empty_or_deleted(group)) / CHAR_BIT
+			match = stdc_trailing_zeros(match_empty_or_deleted(group)) / CHAR_BIT
 				& table->bucket_mask;
 		}
 		return match;

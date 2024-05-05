@@ -3,6 +3,7 @@
 #ifndef UTIL_H
 #define UTIL_H
 
+#include <stdbit.h>
 #include <stdint.h>
 #include <limits.h>
 
@@ -27,7 +28,7 @@
 
 /** Returns the smallest power of two greater than or equal to @a x. */
 static inline unsigned int next_power_of_2(unsigned int x) {
-	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - __builtin_clz(x)) : x;
+	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - stdc_leading_zeros_ui(x)) : x;
 }
 
 /** Converts @a x to little endian from the target's endianness. */
