@@ -34,8 +34,8 @@ static bool is_ident(char c) { return !(char_table[(unsigned char) c]
 
 /** Skips whitespace and comments. */
 static void skip_whitespace(const char **s) {
-	for (const char *x = *s;;) {
-		if (*x == ';') { ++x; while (*x++ != '\n') ; continue; }
+	for (const char *x = *s; ;) {
+		if (*x == ';') { ++x; while (*x != '\n' && *x) ++x; continue; }
 		if (!(char_table[(unsigned char) *x] & CHAR_SPACE)) { *s = x; break; }
 		++x;
 		while (char_table[(unsigned char) *x] & CHAR_SPACE) ++x;
@@ -56,21 +56,17 @@ static LispObject read_integer(const char **s) {
 
 #define TYPE_BITS 2
 
-struct StackElement {
-	/** For containers: The type ORed with the parent length shifted by TYPE_BITS. */
+union StackElement {
 	enum ContainerType : size_t {
 		CTN_LIST,
 		CTN_DOTTED,
 		CTN_PREFIX,
-	} tag;
-	union {
-		LispObject object;
-		struct Symbol *prefix_sym;
-	};
+	} tag; ///< The container type ORed with parent length shifted by TYPE_BITS.
+	LispObject value;
 };
 
 enum LispReadError lisp_read(struct LispCtx *ctx, const char **s, LispObject *result) {
-	struct StackElement stack[256], *p = stack;
+	union StackElement stack[256], *p = stack;
 	size_t len = 0;
 
 val_beg:
@@ -82,13 +78,13 @@ val_beg_no_ws:
 		++*s;
 		skip_whitespace(s);
 		if (UNLIKELY(**s == ')')) { ++*s; value = NULL; goto val_end; }
-		*p++ = (struct StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
+		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
 		len = 0;
 		goto val_beg_no_ws;
 	} else if (**s == '\'') {
 		++*s;
-		*p++ = (struct StackElement)
-			{ .tag = len << TYPE_BITS | CTN_PREFIX, .prefix_sym = ctx->fquote };
+		*p++ = (union StackElement) { .value = ctx->fquote };
+		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_PREFIX };
 		len = 0;
 		goto val_beg;
 	} else if ((value = read_integer(s))) ; else {
@@ -98,20 +94,20 @@ val_beg_no_ws:
 	}
 val_end:
 	if (p == stack) { *result = value; return LISP_READ_OK; } // No remaining nesting
-	struct StackElement *ctn = p - ++len;
+	union StackElement *ctn = p - ++len;
 	enum ContainerType ctn_ty = ctn->tag & ((1 << TYPE_BITS) - 1);
 	if (ctn_ty == CTN_PREFIX) {
-		value = cons(ctn->prefix_sym, cons(value, NULL));
 		len = (--p)->tag >> TYPE_BITS;
+		value = cons((--p)->value, cons(value, NULL));
 		goto val_end;
 	}
-	p++->object = value;
+	p++->value = value;
 
 	skip_whitespace(s);
 	if (**s == ')') {
 		++*s;
 		value = ctn_ty == CTN_DOTTED ? --len, --p, value : NULL;
-		do value = cons((--p)->object, value); while (--len);
+		do value = cons((--p)->value, value); while (--len);
 		len = (--p)->tag >> TYPE_BITS; // Pop container from stack
 		goto val_end;
 	} else if (UNLIKELY(ctn_ty == CTN_DOTTED)) return LISP_READ_EXPECTED_RPAREN;
