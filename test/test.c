@@ -7,6 +7,8 @@
 #include "rope.h"
 #include "util.h"
 
+static_assert(SAR(-1, 1) == -1);
+
 static void test_next_power_of_2(void **) {
 	assert_int_equal(next_power_of_2(3), 4);
 	assert_int_equal(next_power_of_2(8), 8);
