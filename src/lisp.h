@@ -4,13 +4,13 @@
  * The virtual machine maintains a stack of frames, each of the form:
  *
  *     v-- BP
- *     +----+----+----     ----
- *     | A  | B  | x₀  ...  xₙ  ...
- *     +----+----+----     ----
+ *     +---+---+---     ---
+ *     | A | B | x₀ ...  xₙ ...
+ *     +---+---+---     ---
  *
  * where
- * - If A is a correctly aligned pointer, then A is the closure that
- *   was called with arguments in slots x₀,...,xₙ, and B is the return
+ * - If A is a tagged object pointer, then A is the closure that was
+ *   called with arguments in slots x₀,...,xₙ, and B is the return
  *   address, or NULL for the first frame.
  * - (Exception handlers, etc. will eventually also use stack frames
  *   disambiguated via pointer tagging of A.)
@@ -31,32 +31,43 @@
 #include "gc.h"
 #include "tbl.h"
 
-extern struct GcHeap *heap;
+#define IS_SMI(x) (!((x) & 1))
+#define TAG_SMI(i) ((uintptr_t) (i) << 1)
+#define UNTAG_SMI(x) SAR((union { uint32_t u; int32_t i; }) { (x) }.i, 1)
+#define TAG_OBJ(p) ((uintptr_t) (p) + 1)
+#define UNTAG_OBJ(x) ((void *) ((x) - 1))
 
-enum LispObjectType {
-	LISP_NIL,
+#define NIL TAG_OBJ(NULL)
+#define NILP(x) ((uint32_t) (x) == 1)
+
+enum LispObjectType : unsigned char {
 	LISP_PAIR,
 	LISP_SYMBOL,
+	LISP_STRING,
 	LISP_CFUNCTION,
 	LISP_CLOSURE,
+	LISP_UPVALUE,
+	LISP_BYTECODE_CHUNK,
+	LISP_NIL,
 	LISP_INTEGER,
 };
 
-struct LispTypeInfo {
-	struct GcTypeInfo gc_tib;
+struct LispObjectHeader {
+	struct GcObjectHeader hdr;
 	enum LispObjectType tag;
 };
 
-typedef void *LispObject;
+typedef uintptr_t LispObject;
+typedef struct GcRef Lobj;
 
 static inline enum LispObjectType lisp_type(LispObject p) {
-	if (!p) return LISP_NIL;
-	struct LispTypeInfo *tib
-		= (struct LispTypeInfo *) ((struct GcObjectHeader *) p - 1)->tib;
-	return tib->tag;
+	if (NILP(p)) return LISP_NIL;
+	if (IS_SMI(p)) return LISP_INTEGER;
+	return ((struct LispObjectHeader *) UNTAG_OBJ(p))->tag;
 }
 
 struct Symbol {
+	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
 	size_t len; ///< Name length (excluding NULL terminator).
 	const char *name; ///< NULL-terminated name string.
 	LispObject value;
@@ -66,26 +77,26 @@ struct LispCtx {
 	struct Table symbol_tbl;
 	// Common interned symbols
 	LispObject ffn, fif, flet, fset, fprogn, fquote, t;
-	LispObject *bp; ///< Base pointer.
-	uintptr_t guard_end;
+	uintptr_t *bp, ///< Base pointer.
+		guard_end;
 };
 
 struct LispCFunction {
-	LispObject (*f)(struct LispCtx *, const LispObject *args);
+	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
 	unsigned char nargs;
+	LispObject (*f)(struct LispCtx *, const LispObject *args);
 	const char *name;
 };
 
 /** Cons cell. */
 struct LispPair {
-	LispObject car, cdr;
+	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	Lobj car, cdr;
 };
 
-LispObject cons(LispObject car, LispObject cdr);
+LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr);
 
 LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]);
-
-LispObject lisp_integer(int i);
 
 enum LispReadError {
 	LISP_READ_OK,
@@ -102,10 +113,10 @@ enum LispReadError lisp_read_whole(struct LispCtx *ctx, const char *s, LispObjec
 /** Evaluates @a form. */
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form);
 
-void lisp_print(LispObject object);
+void lisp_print(struct LispCtx *ctx, LispObject object);
 
 /** Returns whether @a a and @a b are structurally equal. */
-bool lisp_eq(LispObject a, LispObject b);
+bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b);
 
 /** Lisp VM signal handler to consult before user application signal handling.
  *
@@ -122,17 +133,21 @@ void lisp_free(struct LispCtx *);
 
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
-static inline bool listp(LispObject x) { return !x || consp(x); }
+static inline bool listp(LispObject x) { return NILP(x) || consp(x); }
 
-static inline LispObject car(LispObject x) {
-	return consp(x) ? ((struct LispPair *) x)->car : NULL;
+static inline LispObject car(struct LispCtx *ctx, LispObject x) {
+	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *) UNTAG_OBJ(x))->car) : NIL;
 }
 
-static inline LispObject pop(LispObject *x) {
-	if (!consp(*x)) return NULL;
-	struct LispPair *cell = *x, *result = cell->car;
-	*x = cell->cdr;
-	return result;
+static inline LispObject cdr(struct LispCtx *ctx, LispObject x) {
+	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *) UNTAG_OBJ(x))->cdr) : NIL;
+}
+
+static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
+	if (!consp(*x)) return NIL;
+	struct LispPair *cell = UNTAG_OBJ(*x);
+	*x = GC_DECOMPRESS(ctx, cell->cdr);
+	return GC_DECOMPRESS(ctx, cell->car);
 }
 
 #endif

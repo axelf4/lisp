@@ -44,20 +44,10 @@ static void test_hash_table(void **) {
 	my_tbl_free(&table);
 }
 
-struct MyObject { volatile int i; };
-
-static void my_object_trace(struct GcHeap *, void *p) {
-	gc_mark(sizeof(struct MyObject), p);
-	++((struct MyObject *) p)->i;
-}
-static size_t my_object_size(void *) { return sizeof(struct MyObject); }
-static struct GcTypeInfo my_object_tib = { my_object_trace, my_object_size };
-
-static void test_gc_traces_live_obj(void **) {
-	struct MyObject *obj = gc_alloc(heap, sizeof *obj, &my_object_tib);
-	obj->i = 0;
-	garbage_collect(heap);
-	assert_int_equal(obj->i, 1);
+static void test_gc_traces_live_obj(void **state) {
+	LispObject obj = cons(*state, TAG_SMI(1), NIL);
+	garbage_collect(*state);
+	assert_int_equal(UNTAG_SMI(car(*state, obj)), 1);
 }
 
 static void test_rope(void **) {
@@ -70,14 +60,14 @@ static void test_rope(void **) {
 	rope_free(&rope);
 }
 
-static void assert_lisp_equal(LispObject a, LispObject b) {
-	assert_true(lisp_eq(a, b));
+static void assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b) {
+	assert_true(lisp_eq(ctx, a, b));
 }
 
-static void assert_read_whole_equal(void *state, const char *s, LispObject expected) {
+static void assert_read_whole_equal(struct LispCtx *ctx, const char *s, LispObject expected) {
 	LispObject x;
-	assert_int_equal(lisp_read_whole(state, s, &x), LISP_READ_OK);
-	assert_lisp_equal(x, expected);
+	assert_int_equal(lisp_read_whole(ctx, s, &x), LISP_READ_OK);
+	assert_lisp_equal(ctx, x, expected);
 }
 
 static void test_reader(void **state) {
@@ -96,25 +86,26 @@ static LispObject eval(struct LispCtx *ctx, const char *s) {
 
 static void test_eval(void **state) {
 	struct LispCtx *ctx = *state;
-	assert_lisp_equal(eval(ctx, "\
-(let ((mult (fn (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x)))))) \
-  (mult 4 3 0))"),
-		lisp_integer(12));
-
 	// Test that closures capture the environment
-	assert_lisp_equal(eval(ctx, "((let ((x t)) (fn () x)))"), ctx->t);
+	assert_lisp_equal(ctx, eval(ctx, "((let ((x t)) (fn () x)))"), ctx->t);
 
 	// Test that macros work
 	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");
-	assert_lisp_equal(eval(ctx, "(mymacro)"), lisp_integer(3));
+	assert_lisp_equal(ctx, eval(ctx, "(mymacro)"), TAG_SMI(3));
+
+	assert_lisp_equal(ctx, eval(ctx, "\
+(let ((mult (fn (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x)))))) \
+  (mult 4 3 0))"), TAG_SMI(12));
 }
 
 static int setup(void **state) {
-	struct LispCtx *ctx;
-	return !((*state = ctx = malloc(sizeof *ctx))
-		&& (heap = gc_new(ctx)) && lisp_init(ctx));
+	return !((*state = gc_new()) && lisp_init(*state));
 }
-static int teardown(void **state) { lisp_free(*state); free(*state); return 0; }
+static int teardown(void **state) {
+	lisp_free(*state);
+	gc_free(*state);
+	return 0;
+}
 
 int main() {
 	const struct CMUnitTest tests[] = {

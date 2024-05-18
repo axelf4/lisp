@@ -42,16 +42,17 @@ static void skip_whitespace(const char **s) {
 	}
 }
 
-static LispObject read_integer(const char **s) {
+static bool read_integer(const char **s, LispObject *result) {
 	int sign = 1;
 	switch (**s) {
 	case '-': sign = -1; [[fallthrough]];
 	case '+': ++*s;
 	}
-	if (!is_digit(**s)) return NULL;
-	int result = 0;
-	do result = 10 * result + (**s - '0'); while (is_digit(*++*s));
-	return is_ident(**s) ? NULL : lisp_integer(sign * result);
+	if (!is_digit(**s)) return false;
+	int i = 0;
+	do i = 10 * i + (**s - '0'); while (is_digit(*++*s));
+	*result = TAG_SMI(sign * i);
+	return !is_ident(**s);
 }
 
 #define TYPE_BITS 2
@@ -77,7 +78,7 @@ val_beg_no_ws:
 	if (**s == '(') {
 		++*s;
 		skip_whitespace(s);
-		if (UNLIKELY(**s == ')')) { ++*s; value = NULL; goto val_end; }
+		if (UNLIKELY(**s == ')')) { ++*s; value = NIL; goto val_end; }
 		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
 		len = 0;
 		goto val_beg_no_ws;
@@ -87,7 +88,7 @@ val_beg_no_ws:
 		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_PREFIX };
 		len = 0;
 		goto val_beg;
-	} else if ((value = read_integer(s))) ; else {
+	} else if (!read_integer(s, &value)) {
 		while (is_ident(**s)) ++*s;
 		if (UNLIKELY(*s == start)) return LISP_READ_EOF;
 		value = intern(ctx, *s - start, start); // Read a symbol
@@ -95,10 +96,10 @@ val_beg_no_ws:
 val_end:
 	if (p == stack) { *result = value; return LISP_READ_OK; } // No remaining nesting
 	union StackElement *ctn = p - ++len;
-	enum ContainerType ctn_ty = ctn->tag & ((1 << TYPE_BITS) - 1);
+	enum ContainerType ctn_ty = ctn->tag % (1 << TYPE_BITS);
 	if (ctn_ty == CTN_PREFIX) {
 		len = (--p)->tag >> TYPE_BITS;
-		value = cons((--p)->value, cons(value, NULL));
+		value = cons(ctx, (--p)->value, cons(ctx, value, NIL));
 		goto val_end;
 	}
 	p++->value = value;
@@ -106,8 +107,8 @@ val_end:
 	skip_whitespace(s);
 	if (**s == ')') {
 		++*s;
-		value = ctn_ty == CTN_DOTTED ? --len, --p, value : NULL;
-		do value = cons((--p)->value, value); while (--len);
+		value = ctn_ty == CTN_DOTTED ? --len, --p, value : NIL;
+		do value = cons(ctx, (--p)->value, value); while (--len);
 		len = (--p)->tag >> TYPE_BITS; // Pop container from stack
 		goto val_end;
 	} else if (UNLIKELY(ctn_ty == CTN_DOTTED)) return LISP_READ_EXPECTED_RPAREN;

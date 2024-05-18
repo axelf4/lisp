@@ -1,22 +1,12 @@
 #include "lisp.h"
+#include <stdckdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <xxh3.h>
+#include "vm.h"
 #include "util.h"
-
-struct GcHeap *heap;
-
-static uint64_t symbol_hash(struct Symbol *x) { return XXH3_64bits(x->name, x->len); }
-
-static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
-	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
-}
-
-#define NAME symbol
-#define KEY struct Symbol *
-#include "tbl.h"
 
 #define COMMA ,
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
@@ -30,130 +20,99 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 		return __ ## cname(ctx, MAP_ARGS args);							\
 	}																	\
 	static struct LispCFunction S ## cname = {							\
+		.hdr.tag = LISP_CFUNCTION, .nargs = NUM_ARGS args,				\
 		.f = F ## cname,												\
-		.nargs = NUM_ARGS args,											\
 		.name = lname,													\
 	};																	\
 	static LispObject __ ## cname args
 
-static size_t string_size(void *x) { return strlen(x) + 1; }
+static uint64_t symbol_hash(struct Symbol *x) { return XXH3_64bits(x->name, x->len); }
 
-static void string_trace(struct GcHeap *, void *x) { gc_mark(string_size(x), x); }
-
-static struct GcTypeInfo string_tib = { string_trace, string_size };
-
-static size_t cons_size(void *) { return sizeof(struct LispPair); }
-
-static void cons_trace(struct GcHeap *heap, void *x) {
-	struct LispPair *cons = x;
-	gc_mark(sizeof *cons, x);
-	if (cons->car) gc_trace(heap, &cons->car);
-	if (cons->cdr) gc_trace(heap, &cons->cdr);
+static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
+	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
 }
 
-static size_t symbol_size(void *) { return sizeof(struct Symbol); }
+#define NAME symbol
+#define KEY struct Symbol *
+#include "tbl.h"
 
-static void symbol_trace(struct GcHeap *heap, void *x) {
-	struct Symbol *sym = x;
-	gc_mark(sizeof *sym, x);
-	gc_mark(sym->len + 1, sym->name);
-	if (sym->value) gc_trace(heap, &sym->value);
+LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
+	struct GcHeap *heap = (struct GcHeap *) ctx;
+	struct LispPair *cell = gc_alloc(heap, alignof(struct LispPair), sizeof *cell);
+	*cell = (struct LispPair) { { cell->hdr.hdr, LISP_PAIR }, GC_COMPRESS(car), GC_COMPRESS(cdr) };
+	return TAG_OBJ(cell);
 }
 
-static size_t cfunction_size(void *) { return sizeof(struct LispCFunction); }
-
-static size_t integer_size(void *) { return sizeof(int); }
-
-// Generic trace function for objects that fit in a line.
-static void trace_small(struct GcHeap *, void *x) { gc_mark(1, x); }
-
-static struct LispTypeInfo cons_tib = {
-	.gc_tib = { cons_trace, cons_size },
-	.tag = LISP_PAIR,
-}, symbol_tib = {
-	.gc_tib = { symbol_trace, symbol_size },
-	.tag = LISP_SYMBOL,
-}, cfunction_tib = {
-	.gc_tib = { trace_small, cfunction_size },
-	.tag = LISP_CFUNCTION,
-}, integer_tib = {
-	.gc_tib = { trace_small, integer_size },
-	.tag = LISP_INTEGER,
+struct LispString {
+	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	size_t len;
+	char s[];
 };
 
-LispObject cons(LispObject car, LispObject cdr) {
-	struct LispPair *cell = gc_alloc(heap, sizeof *cell, &cons_tib.gc_tib);
-	*cell = (struct LispPair) { car, cdr };
-	return cell;
-}
-
 LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
-	if (len == 3 && memcmp(s, "nil", 3) == 0) return NULL;
+	if (len == 3 && memcmp(s, "nil", 3) == 0) return NIL;
 
+	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct Symbol key = { .len = len, .name = s }, **entry;
 	if (!symbol_tbl_entry(&ctx->symbol_tbl, &key, &entry)) {
 		if (!entry) die("malloc failed");
-		char *name = gc_alloc(heap, len + 1, &string_tib);
-		memcpy(name, s, len);
-		name[len] = '\0';
-		*entry = gc_alloc(heap, sizeof **entry, &symbol_tib.gc_tib);
-		**entry = (struct Symbol) { .name = name, .len = len, };
+		struct LispString *name = gc_alloc(heap, alignof(struct LispString), sizeof *name + len + 1);
+		name->hdr.tag = LISP_STRING;
+		memcpy(name->s, s, name->len = len);
+		name->s[len] = '\0';
+		*entry = gc_alloc(heap, alignof(struct Symbol), sizeof **entry);
+		**entry = (struct Symbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
+			.name = name->s, .len = len, };
 	}
-	return *entry;
+	return TAG_OBJ(*entry);
 }
 
-LispObject lisp_integer(int i) {
-	int *p = gc_alloc(heap, sizeof *p, &integer_tib.gc_tib);
-	*p = i;
-	return p;
-}
-
-void lisp_print(LispObject object) {
-	switch (lisp_type(object)) {
+void lisp_print(struct LispCtx *ctx, LispObject x) {
+	switch (lisp_type(x)) {
 	case LISP_NIL: printf("nil"); break;
+	case LISP_INTEGER: printf("%i", UNTAG_SMI(x)); break;
 	case LISP_PAIR:
-		struct LispPair *cell = object;
+		struct LispPair *cell = UNTAG_OBJ(x);
 		putchar('(');
 	print_next_cell:
-		lisp_print(cell->car);
-		if (!cell->cdr) ;
-		else if (consp(cell->cdr)) {
+		LispObject car = GC_DECOMPRESS(ctx, cell->car),
+			cdr = GC_DECOMPRESS(ctx, cell->cdr);
+		lisp_print(ctx, car);
+		if (consp(cdr)) {
 			putchar(' ');
-			cell = cell->cdr;
+			cell = UNTAG_OBJ(cdr);
 			goto print_next_cell;
-		} else {
+		} else if (!NILP(cdr)) {
 			printf(" . ");
-			lisp_print(cell->cdr);
+			lisp_print(ctx, cdr);
 		}
 		putchar(')');
 		break;
 	case LISP_SYMBOL:
-		struct Symbol *sym = object;
+		struct Symbol *sym = UNTAG_OBJ(x);
 		fwrite(sym->name, sizeof *sym->name, sym->len, stdout);
 		break;
 	case LISP_CFUNCTION:
-		printf("#<subr %s>", ((struct LispCFunction *) object)->name);
+		printf("#<subr %s>", ((struct LispCFunction *) UNTAG_OBJ(x))->name);
 		break;
 	case LISP_CLOSURE: printf("#<closure>"); break;
-	case LISP_INTEGER: printf("%i", *(int *) object); break;
 	default: unreachable();
 	}
 }
 
-bool lisp_eq(LispObject a, LispObject b) {
+bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b) {
 	if (a == b) return true;
 	enum LispObjectType ty = lisp_type(a);
 	if (lisp_type(b) != ty) return false;
 	switch (ty) {
-	case LISP_SYMBOL: case LISP_CFUNCTION: case LISP_CLOSURE:
+	case LISP_INTEGER: case LISP_SYMBOL: case LISP_CFUNCTION: case LISP_CLOSURE:
 		return false;
 	case LISP_PAIR:
-		struct LispPair *x = a, *y = b;
-		return lisp_eq(x->car, y->car) && lisp_eq(x->cdr, y->cdr);
-	case LISP_INTEGER: return *((int *) a) == *((int *) b);
-	case LISP_NIL:
+		struct LispPair *x = UNTAG_OBJ(a), *y = UNTAG_OBJ(b);
+		return lisp_eq(ctx, GC_DECOMPRESS(ctx, x->car), GC_DECOMPRESS(ctx, y->car))
+			&& lisp_eq(ctx, GC_DECOMPRESS(ctx, x->cdr), GC_DECOMPRESS(ctx, y->cdr));
+	default: unreachable();
 	}
-	unreachable();
 }
 
 bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispCtx *ctx) {
@@ -168,45 +127,154 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 	return false;
 }
 
-void gc_trace_roots(struct GcHeap *heap, void *userdata) {
-	struct LispCtx *ctx = userdata;
+static size_t lisp_string_size(struct LispString *x) { return sizeof *x + x->len + 1; }
+
+static size_t closure_size(struct Closure *x) {
+	return sizeof *x + x->prototype->num_upvalues * sizeof *x->upvalues;
+}
+
+static size_t chunk_size(struct Chunk *x) {
+	return sizeof *x + x->num_consts * sizeof(LispObject)
+		+ x->count * sizeof(struct Instruction);
+}
+static void forward_prototype_consts(LispObject *consts, struct Instruction *p, struct Instruction *end) {
+	for (; p < end; ++p) {
+		if (LIKELY(p->op != CLOS)) continue;
+		struct Prototype *proto = (struct Prototype *) (p + 1);
+		proto->consts = consts;
+		size_t metadata_size = proto->num_upvalues * sizeof(uint8_t) + sizeof *p - 1;
+		p += p->b;
+		forward_prototype_consts(consts, proto->body, p - metadata_size / sizeof *p);
+	}
+}
+
+static void lisp_trace(struct GcHeap *heap, LispObject *p) {
+	if (!(IS_SMI(*p) || NILP(*p))) *p = TAG_OBJ(gc_trace(heap, UNTAG_OBJ(*p)));
+}
+static void lisp_trace_compressed(struct GcHeap *heap, Lobj *p) {
+	if (IS_SMI(p->p) || NILP(p->p)) return;
+	*p = GC_COMPRESS(TAG_OBJ(gc_trace(heap, UNTAG_OBJ(GC_DECOMPRESS(heap, *p)))));
+}
+
+void gc_object_visit(struct GcHeap *heap, void *p) {
+	struct LispObjectHeader *hdr = p;
+	switch (hdr->tag) {
+	case LISP_PAIR:
+		struct LispPair *pair = p;
+		gc_mark(sizeof *pair, p);
+		lisp_trace_compressed(heap, &pair->cdr);
+		lisp_trace_compressed(heap, &pair->car);
+		break;
+	case LISP_SYMBOL:
+		struct Symbol *sym = p;
+		gc_mark(sizeof *sym, p);
+		struct LispString *str
+			= gc_trace(heap, (char *) sym->name - offsetof(struct LispString, s));
+		sym->name = str->s;
+		lisp_trace(heap, &sym->value);
+		break;
+	case LISP_STRING: gc_mark(lisp_string_size(p), p); break;
+	case LISP_CFUNCTION: gc_mark(sizeof(struct LispCFunction), p); break;
+	case LISP_CLOSURE: {
+		struct Closure *x = p;
+		gc_mark(closure_size(x), p);
+		for (struct Upvalue **it = x->upvalues, **end = it + x->prototype->num_upvalues;
+				it < end; ++it) *it = gc_trace(heap, *it);
+
+		char *chunk = (char *) x->prototype->consts - offsetof(struct Chunk, data);
+		size_t prototype_offset = (char *) x->prototype - chunk;
+		chunk = gc_trace(heap, chunk);
+		// Update prototype as chunk may have moved
+		x->prototype = (struct Prototype *) (chunk + prototype_offset);
+		break;
+	}
+	case LISP_UPVALUE:
+		struct Upvalue *x = p;
+		gc_mark(sizeof *x, p);
+		if (x->is_closed) lisp_trace(heap, x->location = &x->value);
+		else x->next = gc_trace(heap, x->next);
+		break;
+	case LISP_BYTECODE_CHUNK:
+		struct Chunk *chunk = p;
+		gc_mark(chunk_size(p), p);
+		for (LispObject *x = chunk_constants(chunk), *end = x + chunk->num_consts;
+				x < end; ++x) lisp_trace(heap, x);
+		struct Instruction *xs = chunk_instructions(chunk);
+		forward_prototype_consts(chunk_constants(chunk), xs, xs + chunk->count);
+		break;
+	case LISP_NIL: case LISP_INTEGER: unreachable();
+	}
+}
+
+size_t gc_object_size(void *p, size_t *alignment) {
+	struct LispObjectHeader *hdr = p;
+	switch (hdr->tag) {
+	case LISP_PAIR:
+		*alignment = alignof(struct LispPair);
+		return sizeof(struct LispPair);
+	case LISP_SYMBOL:
+		*alignment = alignof(struct Symbol);
+		return sizeof(struct Symbol);
+	case LISP_STRING:
+		*alignment = alignof(struct LispString);
+		return lisp_string_size(p);
+	case LISP_CFUNCTION:
+		*alignment = alignof(struct LispCFunction);
+		return sizeof(struct LispCFunction);
+	case LISP_CLOSURE:
+		*alignment = alignof(struct Closure);
+		return closure_size(p);
+	case LISP_UPVALUE:
+		*alignment = alignof(struct Upvalue);
+		return sizeof(struct Upvalue);
+	case LISP_BYTECODE_CHUNK:
+		*alignment = alignof(struct Chunk);
+		return chunk_size(p);
+	case LISP_NIL: case LISP_INTEGER:
+	}
+	unreachable();
+}
+
+void gc_trace_roots(struct GcHeap *heap) {
+	struct LispCtx *ctx = (struct LispCtx *) heap;
 	struct Symbol **sym;
 	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
-		gc_trace(heap, (void **) sym);
+		*sym = gc_trace(heap, *sym);
 
 	LispObject *objs[] = { &ctx->ffn, &ctx->fif, &ctx->flet, &ctx->fset,
 		&ctx->fprogn, &ctx->fquote, &ctx->t };
-	for (size_t i = 0; i < LENGTH(objs); ++i) gc_trace(heap, objs[i]);
+	for (size_t i = 0; i < LENGTH(objs); ++i) lisp_trace(heap, objs[i]);
 
 	// TODO Trace the stack
 }
 
-DEFUN("print", print, (struct LispCtx *, LispObject x)) {
-	lisp_print(x);
+DEFUN("eval", eval, (struct LispCtx *ctx, LispObject form)) { return lisp_eval(ctx, form); }
+
+DEFUN("print", print, (struct LispCtx *ctx, LispObject x)) {
+	lisp_print(ctx, x);
 	putchar('\n');
-	return NULL;
+	return NIL;
 }
 
-DEFUN("cons", cons, (struct LispCtx *, LispObject car, LispObject cdr)) {
-	return cons(car, cdr);
+DEFUN("cons", cons, (struct LispCtx *ctx, LispObject car, LispObject cdr)) {
+	return cons(ctx, car, cdr);
 }
 
-DEFUN("car", car, (struct LispCtx *, LispObject x)) { return car(x); }
+DEFUN("car", car, (struct LispCtx *ctx, LispObject x)) { return car(ctx, x); }
 
-DEFUN("cdr", cdr, (struct LispCtx *, LispObject x)) {
-	return consp(x) ? ((struct LispPair *) x)->cdr : NULL;
-}
+DEFUN("cdr", cdr, (struct LispCtx *ctx, LispObject x)) { return cdr(ctx, x); }
 
 DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
-	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
+	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
+	int32_t result;
+	if (ckd_add(&result, (int32_t) (uint32_t) a, (int32_t) (uint32_t) b))
 		throw(1);
-	return lisp_integer(*(int *) a + *(int *) b);
+	return result;
 }
 
 DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
-	if (!(lisp_type(a) == LISP_INTEGER && lisp_type(b) == LISP_INTEGER))
-		throw(1);
-	return *(int *) a < *(int *) b ? ctx->t : NULL;
+	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
+	return (int32_t) (uint32_t) a < (int32_t) (uint32_t) b ? ctx->t : NIL;
 }
 
 bool lisp_init(struct LispCtx *ctx) {
@@ -214,7 +282,7 @@ bool lisp_init(struct LispCtx *ctx) {
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
 	// exception handlers not to immediately trigger another overflow.
-	LispObject *stack;
+	uintptr_t *stack;
 #define STACK_LEN 0x1000
 	size_t size = STACK_LEN * sizeof *stack,
 		guard_size = (0xff * sizeof *stack + page_size - 1) & (page_size - 1);
@@ -226,7 +294,8 @@ bool lisp_init(struct LispCtx *ctx) {
 		return false;
 	}
 	ctx->guard_end = (uintptr_t) stack + size + guard_size;
-	*stack = stack[1] = NULL; // No return address for first call frame
+	*stack = NIL;
+	stack[1] = (uintptr_t) NULL; // No return address for first call frame
 
 	ctx->symbol_tbl = tbl_new();
 
@@ -236,18 +305,19 @@ bool lisp_init(struct LispCtx *ctx) {
 	ctx->fset = intern(ctx, sizeof "set" - 1, "set");
 	ctx->fprogn = intern(ctx, sizeof "progn" - 1, "progn");
 	ctx->fquote = intern(ctx, sizeof "quote" - 1, "quote");
-	struct Symbol *t = ctx->t = intern(ctx, 1, "t");
-	t->value = t;
+	ctx->t = intern(ctx, 1, "t");
+	((struct Symbol *) UNTAG_OBJ(ctx->t))->value = ctx->t;
 
-	struct LispCFunction *cfuns[] = { &Sprint, &Scons, &Scar, &Scdr, &Sadd, &Slt, };
+	struct GcHeap *heap = (struct GcHeap *) ctx;
+	struct LispCFunction *cfuns[]
+		= { &Seval, &Sprint, &Scons, &Scar, &Scdr, &Sadd, &Slt, };
 	for (size_t i = 0; i < LENGTH(cfuns); ++i) {
-		struct LispCFunction *x = gc_alloc(heap, sizeof *x, &cfunction_tib.gc_tib);
+		struct LispCFunction *x = gc_alloc(heap, alignof(struct LispCFunction), sizeof *x);
+		struct GcObjectHeader hdr = x->hdr.hdr;
 		*x = *cfuns[i];
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wnonnull"
-		struct Symbol *sym = intern(ctx, strlen(x->name), x->name);
-#pragma GCC diagnostic pop
-		sym->value = x;
+		x->hdr.hdr = hdr;
+		struct Symbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
+		sym->value = TAG_OBJ(x);
 	}
 
 	return true;
