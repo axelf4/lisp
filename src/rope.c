@@ -5,6 +5,8 @@
 #include <assert.h>
 #include "util.h"
 
+#pragma GCC diagnostic ignored "-Wcast-align"
+
 #ifdef DEBUG
 #define MAX_BYTES 16
 #else
@@ -62,8 +64,6 @@ struct Leaf {
 	struct GapBuffer value;
 };
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
 static bool is_underfilled(Node *x) {
 	return x->depth ? ((struct Internal *) x)->num_children < MIN_CHILDREN
 		: gap_buffer_len(&((struct Leaf *) x)->value) < MIN_BYTES;
@@ -483,20 +483,20 @@ static struct NodeSlice node_replace(Node **node, size_t beg, size_t end, struct
 	count_child(x, 1, *child);
 
 	if (n < end) {
-        /* No one child envelops the whole range. Proceed by:
-         *
-         *                   x
-         *       (1) ___-  / | \  -___
-         *          /_____/  |  \_____\ (3)
-         *         //        |   (4)  \\
-         *        |x   (2)   x    ^   |x
-         *       _/\\_   \   |\_/ | \_/\\_
-         *      /   \ \   >  | /\   /\  \ \
-         *     x     > x     x   . .     > x
-         *             |<---edit-range---->|
-         *
-         * 1. Finding leftmost affected leaf and applying replacement
-         *    for a list of extra leaves to smear out over edit range.
+		/* No one child envelops the whole range. Proceed by:
+		 *
+		 *                   x
+		 *       (1) ___-  / | \  -___
+		 *          /_____/  |  \_____\ (3)
+		 *         //        |   (4)  \\
+		 *        |x   (2)   x    ^   |x
+		 *       _/\\_   \   |\_/ | \_/\\_
+		 *      /   \ \   >  | /\   /\  \ \
+		 *     x     > x     x   . .     > x
+		 *             |<---edit-range---->|
+		 *
+		 * 1. Finding leftmost affected leaf and applying replacement
+		 *    for a list of extra leaves to smear out over edit range.
 		 * 2. Substituting leaves left-to-right, removing remaining
 		 *    subtrees upon exhausting the extra leaves.
 		 * 3. Finding rightmost affected leaf and balancing it with
@@ -552,7 +552,6 @@ bool rope_init(struct Rope *rope) {
 	rope->root = &root->node;
 	return true;
 }
-#pragma GCC diagnostic pop
 
 void rope_free(struct Rope *rope) { node_free(rope->root); }
 

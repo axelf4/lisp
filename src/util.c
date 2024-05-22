@@ -89,7 +89,7 @@ static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 }
 
 [[gnu::naked]] unsigned pcall(void *, void (*)(void *)) {
-	asm ("DW_EH_PE_absptr = 0x00\n\t"
+	__asm__ ("DW_EH_PE_absptr = 0x00\n\t"
 		".cfi_personality DW_EH_PE_absptr, eh_personality\n\t"
 		"sub rsp, 8\n\t"
 		".cfi_adjust_cfa_offset 8\n\t"

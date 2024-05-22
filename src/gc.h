@@ -35,11 +35,13 @@ struct GcObjectHeader {
 
 struct GcBlock {
 	alignas(GC_BLOCK_SIZE) char data[GC_LINE_SIZE * GC_LINE_COUNT];
-	char line_marks[GC_LINE_COUNT];
+	bool line_marks[GC_LINE_COUNT];
 	unsigned char flag;
 };
 
 [[gnu::malloc, nodiscard]] struct GcHeap *gc_new(void *userdata);
+
+void gc_free(struct GcHeap *heap);
 
 /** Allocates @a size bytes. */
 [[gnu::alloc_size (2), gnu::assume_aligned (alignof(max_align_t)), gnu::hot, gnu::malloc, gnu::noinline, nodiscard]]

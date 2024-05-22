@@ -9,18 +9,18 @@ static void signal_handler(int sig, siginfo_t *info, void *ucontext) {
 	if (lisp_signal_handler(sig, info, ucontext, &ctx)) return;
 
 	signal(sig, SIG_DFL);
-	// Returning is technically not defined by POSIX, but in practice
-	// allows the signal to be re-delivered.
+	// Returning is not defined by POSIX, but in practice allows the
+	// signal to be re-delivered.
 }
 
 int main() {
-	if (!((heap = gc_new(&ctx)) && lisp_init(&ctx))) return 1;
+	if (!((heap = gc_new(&ctx)) && lisp_init(&ctx))) return EXIT_FAILURE;
 
 	struct sigaction action;
 	action.sa_sigaction = signal_handler;
 	sigemptyset(&action.sa_mask);
 	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
-	if (sigaction(SIGSEGV, &action, NULL)) die("sigaction failed");
+	if (sigaction(SIGSEGV, &action, NULL)) return EXIT_FAILURE;
 
 	char line[256];
 	while (fgets(line, sizeof line, stdin)) {
@@ -37,5 +37,7 @@ int main() {
 		}
 	}
 
+#ifndef NDEBUG
 	lisp_free(&ctx);
+#endif
 }
