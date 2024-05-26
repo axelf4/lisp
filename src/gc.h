@@ -1,5 +1,5 @@
 /** @file
- * Conservative single-threaded immix garbage collector.
+ * Generational conservative single-threaded immix garbage collector.
  *
  * For disambiguating tagged pointers from SMIs the LSB is reserved,
  * and, on 64-bit platforms, pointer compression (inspired by V8, see
@@ -19,7 +19,7 @@
 #define GC_H
 
 #include <stddef.h>
-#include <stdint.h>
+#include "util.h"
 
 #define GC_LINE_SIZE 0x100
 #define GC_BLOCK_SIZE 0x8000
@@ -65,6 +65,20 @@ void gc_free(struct GcHeap *heap);
 /** Allocates @a size bytes. */
 [[gnu::alloc_align (2), gnu::alloc_size (3), gnu::malloc, gnu::hot, nodiscard]]
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size);
+
+enum {
+	/// Object is not already remembered (nor in the nursery).
+	GC_UNLOGGED = 4,
+};
+/** Remembers that a reference field of the object @a src was mutated.
+ *
+ * @see YANG, Xi, et al. Barriers reconsidered, friendlier still!. ACM
+ *      SIGPLAN Notices, 2012, 47.11: 37-48.
+ */
+static inline void gc_write_barrier(struct GcHeap *heap, struct GcObjectHeader *src) {
+	void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src);
+	if (UNLIKELY(src->flags & GC_UNLOGGED)) gc_log_object(heap, src);
+}
 
 /**
  * Traces the GC object @a p.

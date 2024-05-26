@@ -136,12 +136,18 @@ op_load_nil: bp[ins.a] = NIL; CONTINUE;
 op_load_obj: bp[ins.a] = consts[ins.b]; CONTINUE;
 op_load_short: bp[ins.a] = TAG_SMI((int16_t) ins.b); CONTINUE;
 op_getglobal: bp[ins.a] = ((struct Symbol *) UNTAG_OBJ(consts[ins.b]))->value; CONTINUE;
-op_setglobal: ((struct Symbol *) UNTAG_OBJ(consts[ins.b]))->value = bp[ins.a]; CONTINUE;
+op_setglobal:
+	struct Symbol *sym = UNTAG_OBJ(consts[ins.b]);
+	sym->value = bp[ins.a];
+	gc_write_barrier(heap, &sym->hdr.hdr);
+	CONTINUE;
 op_getupvalue:
 	bp[ins.a] = *((struct Closure *) UNTAG_OBJ(*bp))->upvalues[ins.c]->location;
 	CONTINUE;
 op_setupvalue:
-	*((struct Closure *) UNTAG_OBJ(*bp))->upvalues[ins.c]->location = bp[ins.a];
+	struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[ins.c];
+	*upvalue->location = bp[ins.a];
+	gc_write_barrier(heap, &upvalue->hdr.hdr);
 	CONTINUE;
 op_call: op_tail_call:
 	LispObject *vals = bp + ins.a;

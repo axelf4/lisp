@@ -77,7 +77,7 @@ struct GcHeap {
 	struct BumpPointer ptr, overflow_ptr;
 	struct Vec free, recycled, trace_stack;
 
-	bool mark_color, inhibit_gc, defrag;
+	bool mark_color, inhibit_gc, defrag, is_major_gc;
 	char *object_map; ///< Bitset of object start positions.
 	size_t object_map_size;
 	struct GcBlock blocks[];
@@ -193,13 +193,19 @@ out:
 	return p;
 }
 
+void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
+	src->flags = (src->flags & ~GC_UNLOGGED) ^ heap->mark_color;
+	if (!vec_reserve(&heap->trace_stack, 1)) die("malloc failed");
+	vec_push(&heap->trace_stack, src); // Add to remembered set
+}
+
 void *gc_trace(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
 	struct GcRef *fwd = (struct GcRef *) (((uintptr_t) (hdr + 1) // Forwarding pointer
 			+ alignof(struct GcRef) - 1) & ~(alignof(struct GcRef) - 1));
 	if ((hdr->flags & GC_MARK) == heap->mark_color) // Already traced
 		return hdr->flags & GC_FORWARDED ? (void *) GC_DECOMPRESS(heap, *fwd) : p;
-	hdr->flags = heap->mark_color;
+	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
 	// Opportunistic evacuation if block is a defragmentation candidate
 	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) hdr & ~(GC_BLOCK_SIZE - 1));
@@ -215,12 +221,6 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	if (!vec_reserve(&heap->trace_stack, 1)) die("malloc failed");
 	vec_push(&heap->trace_stack, p);
 	return p;
-}
-
-static void pin_and_trace(struct GcHeap *heap, void *p) {
-	((struct GcObjectHeader *) p)->flags = heap->mark_color;
-	object_map_add(heap, p);
-	gc_object_visit(heap, p);
 }
 
 /** Call @a fn with callee-saved registers pushed to the stack. */
@@ -283,6 +283,8 @@ static enum BlockStatus {
 
 void garbage_collect(struct GcHeap *heap) {
 	heap->inhibit_gc = true;
+	if (heap->is_major_gc) heap->trace_stack.length = 0; // Ignore remembered set
+	size_t remembered_set_len = heap->trace_stack.length;
 	with_callee_saves_pushed(collect_roots, heap); // Collect conservative roots
 
 	if (heap->defrag) {
@@ -309,25 +311,22 @@ void garbage_collect(struct GcHeap *heap) {
 		}
 	}
 
-	memset(heap->object_map, 0, heap->object_map_size); // Clear object map
-	// Unmark blocks
-	for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
-		memset(block->line_marks, 0, sizeof block->line_marks);
+	if (heap->is_major_gc) {
+		memset(heap->object_map, 0, heap->object_map_size); // Clear object map
+		// Unmark blocks
+		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
+			memset(block->line_marks, 0, sizeof block->line_marks);
+	}
 
 	// Alternate the liveness color to skip zeroing object marks
 	heap->mark_color = !heap->mark_color;
-	size_t num_roots = heap->trace_stack.length;
-	for (size_t i = 0; i < num_roots; ++i)
+	for (size_t i = remembered_set_len; i < heap->trace_stack.length; ++i) {
 		// Pin to not "evacuate" a false positive root
-		pin_and_trace(heap, heap->trace_stack.items[i]);
-	if (heap->trace_stack.length -= num_roots) {
-		size_t n = MIN(num_roots, heap->trace_stack.length);
-		memcpy(heap->trace_stack.items,
-			heap->trace_stack.items + num_roots + heap->trace_stack.length - n,
-			n * sizeof *heap->trace_stack.items);
+		char *p = heap->trace_stack.items[i];
+		((struct GcObjectHeader *) p)->flags = heap->mark_color | GC_UNLOGGED;
+		object_map_add(heap, p);
 	}
 	gc_trace_roots(heap);
-	size_t prev_num_free = heap->free.length;
 	while (heap->trace_stack.length) // Trace live objects
 		gc_object_visit(heap, heap->trace_stack.items[--heap->trace_stack.length]);
 
@@ -341,6 +340,8 @@ void garbage_collect(struct GcHeap *heap) {
 		}
 	}
 
-	heap->defrag = heap->free.length <= MAX(MIN_FREE, prev_num_free);
+	if (!(heap->is_major_gc = heap->free.length <= NUM_BLOCKS / 4))
+		heap->mark_color = !heap->mark_color;
+	heap->defrag = heap->free.length <= 2 * MIN_FREE;
 	heap->inhibit_gc = false;
 }
