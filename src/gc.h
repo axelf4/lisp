@@ -39,7 +39,7 @@ struct GcBlock {
 	unsigned char flag;
 };
 
-[[gnu::malloc, nodiscard]] struct GcHeap *gc_new();
+[[gnu::malloc, nodiscard]] struct GcHeap *gc_new(void *userdata);
 
 /** Allocates @a size bytes. */
 [[gnu::alloc_size (2), gnu::assume_aligned (alignof(max_align_t)), gnu::hot, gnu::malloc, gnu::noinline, nodiscard]]
@@ -59,5 +59,10 @@ static inline void gc_mark(size_t len, const char p[static len]) {
 }
 
 [[gnu::noinline]] void garbage_collect(struct GcHeap *heap);
+
+/* Embedder API */
+
+/** Traces all explicit GC roots. */
+void gc_trace_roots(struct GcHeap *heap, void *userdata);
 
 #endif

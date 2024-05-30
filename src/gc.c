@@ -85,6 +85,7 @@ struct GcHeap {
 
 	bool mark_color, inhibit_gc, defrag;
 	struct Vec trace_stack;
+	void *userdata;
 };
 
 static struct GcBlock *acquire_block(struct GcHeap *heap) {
@@ -120,13 +121,14 @@ static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
 	return (struct BumpPointer) { block->data + sizeof block->data, block->data };
 }
 
-struct GcHeap *gc_new() {
+struct GcHeap *gc_new(void *userdata) {
 	struct GcHeap *heap;
 	if (!((heap = calloc(1, sizeof *heap)) && (heap->head = acquire_block(heap)))) {
 		free(heap);
 		return NULL;
 	}
 	heap->ptr = empty_block_ptr(heap->head);
+	heap->userdata = userdata;
 	return heap;
 }
 
@@ -336,6 +338,7 @@ void garbage_collect(struct GcHeap *heap) {
 			heap->trace_stack.items + num_roots + heap->trace_stack.length - n,
 			n * sizeof *heap->trace_stack.items);
 	}
+	gc_trace_roots(heap, heap->userdata);
 	size_t prev_num_free = heap->free.length;
 	while (heap->trace_stack.length) { // Trace live objects
 		void *p = heap->trace_stack.items[--heap->trace_stack.length];

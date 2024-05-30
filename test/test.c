@@ -13,7 +13,7 @@ static void test_next_power_of_2(void **) {
 }
 
 static void test_rotate_left(void **) {
-	assert_int_equal(rotate_left(1ULL << 63 | 2, 65), 0b101);
+	assert_int_equal(rotate_left(UINT64_C(1) << 63 | 2, 65), 0b101);
 }
 
 static void do_nothing(void *) {}
@@ -68,9 +68,6 @@ static void test_rope(void **) {
 	rope_free(&rope);
 }
 
-static int setup_lisp(void **state) { *state = lisp_new(); return 0; }
-static int teardown_lisp(void **state) { lisp_free(*state); return 0; }
-
 static void assert_lisp_equal(LispObject a, LispObject b) {
 	assert_true(lisp_eq(a, b));
 }
@@ -103,16 +100,21 @@ static void test_eval(void **state) {
 		lisp_integer(12));
 
 	// Test that closures capture the environment
-	assert_lisp_equal(eval(ctx, "((let ((x 1)) (fn () x)))"), lisp_integer(1));
+	assert_lisp_equal(eval(ctx, "((let ((x t)) (fn () x)))"), ctx->t);
 
 	// Test that macros work
 	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");
 	assert_lisp_equal(eval(ctx, "(mymacro)"), lisp_integer(3));
 }
 
-int main() {
-	if (!(heap = gc_new())) return 1;
+static int setup(void **state) {
+	struct LispCtx *ctx;
+	return !((*state = ctx = malloc(sizeof *ctx))
+		&& (heap = gc_new(ctx)) && lisp_init(ctx));
+}
+static int teardown(void **state) { lisp_free(*state); free(*state); return 0; }
 
+int main() {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_next_power_of_2),
 		cmocka_unit_test(test_rotate_left),
@@ -120,13 +122,8 @@ int main() {
 		cmocka_unit_test(test_hash_table),
 		cmocka_unit_test(test_gc_traces_live_obj),
 		cmocka_unit_test(test_rope),
-	};
-	int result;
-	if ((result = cmocka_run_group_tests(tests, NULL, NULL))) return result;
-
-	const struct CMUnitTest lisp_tests[] = {
 		cmocka_unit_test(test_reader),
 		cmocka_unit_test(test_eval),
 	};
-	return cmocka_run_group_tests(lisp_tests, setup_lisp, teardown_lisp);
+	return cmocka_run_group_tests(tests, setup, teardown);
 }

@@ -156,19 +156,6 @@ bool lisp_eq(LispObject a, LispObject b) {
 	unreachable();
 }
 
-size_t lisp_ctx_size(void *) { return sizeof(struct LispCtx); }
-
-static void lisp_ctx_trace(struct GcHeap *, void *x) {
-	struct LispCtx *ctx = x;
-	gc_mark(sizeof *ctx, x);
-
-	struct Symbol **sym;
-	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
-		gc_trace(heap, (void **) sym);
-}
-
-struct GcTypeInfo lisp_ctx_tib = { lisp_ctx_trace, lisp_ctx_size };
-
 bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispCtx *ctx) {
 	if (sig == SIGSEGV) {
 		// Check if fault was within the stack guard pages
@@ -181,7 +168,20 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 	return false;
 }
 
-static bool lisp_init(struct LispCtx *ctx) {
+void gc_trace_roots(struct GcHeap *heap, void *userdata) {
+	struct LispCtx *ctx = userdata;
+	struct Symbol **sym;
+	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
+		gc_trace(heap, (void **) sym);
+
+	LispObject *objs[] = { &ctx->ffn, &ctx->fif, &ctx->flet, &ctx->fset,
+		&ctx->fprogn, &ctx->fquote, &ctx->t };
+	for (size_t i = 0; i < LENGTH(objs); ++i) gc_trace(heap, objs[i]);
+
+	// TODO Trace the stack
+}
+
+bool lisp_init(struct LispCtx *ctx) {
 	long page_size = sysconf(_SC_PAGESIZE);
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
@@ -198,9 +198,7 @@ static bool lisp_init(struct LispCtx *ctx) {
 		return false;
 	}
 	ctx->guard_end = (uintptr_t) stack + size + guard_size;
-#ifndef __linux__
 	*stack = stack[1] = NULL; // No return address for first call frame
-#endif
 
 	ctx->symbol_tbl = tbl_new();
 
@@ -210,6 +208,8 @@ static bool lisp_init(struct LispCtx *ctx) {
 	ctx->fset = intern(ctx, sizeof "set" - 1, "set");
 	ctx->fprogn = intern(ctx, sizeof "progn" - 1, "progn");
 	ctx->fquote = intern(ctx, sizeof "quote" - 1, "quote");
+	struct Symbol *t = ctx->t = intern(ctx, 1, "t");
+	t->value = t;
 
 	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
 		struct Function *f = gc_alloc(heap, sizeof *f, &function_tib.gc_tib);
@@ -219,11 +219,6 @@ static bool lisp_init(struct LispCtx *ctx) {
 	}
 
 	return true;
-}
-
-struct LispCtx *lisp_new() {
-	struct LispCtx *ctx = gc_alloc(heap, sizeof *ctx, &lisp_ctx_tib);
-	return lisp_init(ctx) ? ctx : NULL;
 }
 
 void lisp_free(struct LispCtx *ctx) {

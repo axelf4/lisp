@@ -5,7 +5,7 @@
  *
  *     v-- BP
  *     +----+----+----     ----
- *     | A  | B  | x₀  ...  xₙ ...
+ *     | A  | B  | x₀  ...  xₙ  ...
  *     +----+----+----     ----
  *
  * where
@@ -18,7 +18,7 @@
  * Stack overflows are detected by setting up (memory protected) guard
  * pages after the allocated stack. The base pointer (BP), which
  * points to the topmost frame, is kept in a register while in the VM,
- * and only synchronized with @ref LispContext.bp due to:
+ * and only synchronized with @ref LispCtx.bp due to:
  * - Pushing or popping an exception handler.
  * - Entering a native function, which may recursively call @ref
  *   ::lisp_eval.
@@ -65,7 +65,7 @@ struct Symbol {
 struct LispCtx {
 	struct Table symbol_tbl;
 	// Common interned symbols
-	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote;
+	LispObject ffn, fif, flet, fset, fprogn, fquote, t;
 	LispObject *bp; ///< Base pointer.
 	uintptr_t guard_end;
 };
@@ -115,10 +115,6 @@ void lisp_print(LispObject object);
 /** Returns whether @a a and @a b are structurally equal. */
 bool lisp_eq(LispObject a, LispObject b);
 
-struct LispCtx *lisp_new();
-
-void lisp_free(struct LispCtx *);
-
 /** Lisp VM signal handler to consult before user application signal handling.
  *
  * This routine recognizes SIGSEGV signals.
@@ -127,6 +123,10 @@ void lisp_free(struct LispCtx *);
  */
 [[gnu::cold]] bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext,
 	struct LispCtx *ctx);
+
+bool lisp_init(struct LispCtx *);
+
+void lisp_free(struct LispCtx *);
 
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
