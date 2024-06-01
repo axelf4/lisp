@@ -210,7 +210,6 @@ static bool lisp_init(struct LispCtx *ctx) {
 	ctx->fset = intern(ctx, sizeof "set" - 1, "set");
 	ctx->fprogn = intern(ctx, sizeof "progn" - 1, "progn");
 	ctx->fquote = intern(ctx, sizeof "quote" - 1, "quote");
-	ctx->smacro = intern(ctx, sizeof "macro" - 1, "macro");
 
 	for (struct Subr *subr = subr_head; subr; subr = subr->next) {
 		struct Function *f = gc_alloc(heap, sizeof *f, &function_tib.gc_tib);

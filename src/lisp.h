@@ -65,7 +65,7 @@ struct Symbol {
 struct LispCtx {
 	struct Table symbol_tbl;
 	// Common interned symbols
-	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote, *smacro;
+	struct Symbol *ffn, *fif, *flet, *fset, *fprogn, *fquote;
 	LispObject *bp; ///< Base pointer.
 	uintptr_t guard_end;
 };

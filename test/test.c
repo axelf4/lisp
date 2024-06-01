@@ -106,7 +106,7 @@ static void test_eval(void **state) {
 	assert_lisp_equal(eval(ctx, "((let ((x 1)) (fn () x)))"), lisp_integer(1));
 
 	// Test that macros work
-	eval(ctx, "(set mymacro (cons 'macro (fn () '(+ 1 2))))");
+	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");
 	assert_lisp_equal(eval(ctx, "(mymacro)"), lisp_integer(3));
 }
 

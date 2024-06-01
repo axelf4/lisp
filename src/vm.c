@@ -660,8 +660,8 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->ins[jmp].b = ctx->count - (jmp + 1);
 			if (noreturn) return COMP_NORETURN;
 		} else if (lisp_type(head) == LISP_SYMBOL
-			&& car(((struct Symbol *) head)->value) == lisp_ctx->smacro) {
-			LispObject macro = ((struct LispPair *) ((struct Symbol *) head)->value)->cdr;
+			&& consp(((struct Symbol *) head)->value)) {
+			LispObject macro = ((struct LispPair *) ((struct Symbol *) head)->value)->car;
 			return compile_form(ctx, apply(ctx->lisp_ctx, macro, 0, &x), dst);
 		} else { // Function call
 			uint8_t prev_num_regs = ctx->num_regs, num_args = 0;

@@ -7,8 +7,8 @@ Bytecode interpreter for a small imperative Lisp-1 dialect.
 Forms are evaluated according to the following rules:
 
 * `(F ...)` where `F` is a special form is evaluated as per below.
-* `(M ARG...)` where `M` is a symbol *globally* bound to `(macro . F)`
-  gets recursively expanded to the result of applying `F` to `ARG...`,
+* `(M ARG...)` where `M` is a symbol *globally* bound to `(F)` gets
+  recursively expanded to the result of applying `F` to `ARG...`,
   *before* the top-level form is evaluated.
 * `(F ARG...)` first evaluates `F` and then applies the result to
   the result of evaluating each of `ARG...`.
