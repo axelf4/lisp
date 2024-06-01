@@ -137,16 +137,6 @@ static size_t chunk_size(struct Chunk *x) {
 	return sizeof *x + x->num_consts * sizeof(LispObject)
 		+ x->count * sizeof(struct Instruction);
 }
-static void forward_prototype_consts(LispObject *consts, struct Instruction *p, struct Instruction *end) {
-	for (; p < end; ++p) {
-		if (LIKELY(p->op != CLOS)) continue;
-		struct Prototype *proto = (struct Prototype *) (p + 1);
-		proto->consts = consts;
-		size_t metadata_size = proto->num_upvalues * sizeof(uint8_t) + sizeof *p - 1;
-		p += p->b;
-		forward_prototype_consts(consts, proto->body, p - metadata_size / sizeof *p);
-	}
-}
 
 static void lisp_trace(struct GcHeap *heap, LispObject *p) {
 	if (!(IS_SMI(*p) || NILP(*p))) *p = TAG_OBJ(gc_trace(heap, UNTAG_OBJ(*p)));
@@ -181,11 +171,9 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 		for (struct Upvalue **it = x->upvalues, **end = it + x->prototype->num_upvalues;
 				it < end; ++it) *it = gc_trace(heap, *it);
 
-		char *chunk = (char *) x->prototype->consts - offsetof(struct Chunk, data);
-		size_t prototype_offset = (char *) x->prototype - chunk;
-		chunk = gc_trace(heap, chunk);
+		char *chunk = gc_trace(heap, (char *) x->prototype - x->prototype->offset);
 		// Update prototype as chunk may have moved
-		x->prototype = (struct Prototype *) (chunk + prototype_offset);
+		x->prototype = (struct Prototype *) (chunk + x->prototype->offset);
 		break;
 	}
 	case LISP_UPVALUE:
@@ -199,8 +187,6 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 		gc_mark(chunk_size(p), p);
 		for (LispObject *x = chunk_constants(chunk), *end = x + chunk->num_consts;
 				x < end; ++x) lisp_trace(heap, x);
-		struct Instruction *xs = chunk_instructions(chunk);
-		forward_prototype_consts(chunk_constants(chunk), xs, xs + chunk->count);
 		break;
 	case LISP_NIL: case LISP_INTEGER: unreachable();
 	}

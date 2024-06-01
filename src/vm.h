@@ -47,10 +47,7 @@ struct Chunk {
 /** Lisp closure prototype. */
 struct Prototype {
 	uint8_t arity, num_upvalues;
-	union {
-		LispObject *consts;
-		size_t next;
-	};
+	unsigned offset; ///< Byte offset within chunk.
 	struct Instruction body[];
 };
 

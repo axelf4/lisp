@@ -14,20 +14,20 @@
 
 static_assert(sizeof(LispObject) % alignof(struct Instruction) == 0);
 
-static void disassemble_range(struct Chunk *chunk, size_t n, struct Instruction xs[static n], int indent) {
-	LispObject *consts = chunk_constants(chunk);
-	for (size_t i = 0; i < n; ++i) {
-		struct Instruction x = xs[i];
+static void disassemble_range(size_t n, struct Instruction xs[static n], int indent) {
+	for (size_t i = 0; i < n;) {
 		printf("%*s%.4zu ", indent, "", i);
+		struct Instruction x = xs[i++];
+#define GET_CONST (*(LispObject *) (xs + i - x.b))
 		switch (x.op) {
 		case RET: printf("RET %" PRIu8 "\n", x.a); break;
 		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", x.a); break;
-		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIuPTR "\n", x.a, consts[x.b]); break;
+		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIuPTR "\n", x.a, GET_CONST); break;
 		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
 		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", x.a,
-			((struct Symbol *) UNTAG_OBJ(consts[x.b]))->name); break;
+			((struct Symbol *) UNTAG_OBJ(GET_CONST))->name); break;
 		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", x.a,
-			((struct Symbol *) UNTAG_OBJ(consts[x.b]))->name); break;
+			((struct Symbol *) UNTAG_OBJ(GET_CONST))->name); break;
 		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
 		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
 		case CALL: case TAIL_CALL:
@@ -40,11 +40,11 @@ static void disassemble_range(struct Chunk *chunk, size_t n, struct Instruction 
 		case JMP: printf("JMP => %.4zu\n", i + x.b); break;
 		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4zu\n", x.a, i + x.b); break;
 		case CLOS:
-			struct Prototype *proto = (struct Prototype *) (xs + i + 1);
+			struct Prototype *proto = (struct Prototype *) (xs + i);
 			printf("CLOS %" PRIu8 " <- (arity: %" PRIu8 ") (num_upvals: %" PRIu8 "):\n",
 				x.a, proto->arity, proto->num_upvalues);
 			size_t metadata_size = sizeof *proto + proto->num_upvalues * sizeof(uint8_t) + sizeof x - 1;
-			disassemble_range(chunk, x.b - metadata_size / sizeof x, proto->body, indent + 2);
+			disassemble_range(x.b - metadata_size / sizeof x, proto->body, indent + 2);
 			i += x.b;
 			break;
 		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", x.a); break;
@@ -54,7 +54,7 @@ static void disassemble_range(struct Chunk *chunk, size_t n, struct Instruction 
 }
 static void disassemble(struct Chunk *chunk) {
 	puts("Disassembling chunk:");
-	disassemble_range(chunk, chunk->count, chunk_instructions(chunk), 0);
+	disassemble_range(chunk->count, chunk_instructions(chunk), 0);
 }
 
 union SsaInstruction {
@@ -81,8 +81,8 @@ static struct Upvalue *capture_upvalue(struct GcHeap *heap, struct Upvalue **p, 
 	return *p = new;
 }
 
-[[gnu::optimize ("-fnon-call-exceptions")]]
-static LispObject run(struct LispCtx *ctx, LispObject *consts, struct Instruction *pc) {
+[[gnu::optimize ("-fnon-call-exceptions"), gnu::hot]]
+static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 	struct GcHeap *heap = (struct GcHeap *) ctx;
 	uintptr_t *bp = ctx->bp;
 	struct Upvalue *upvalues = NULL;
@@ -126,18 +126,18 @@ static LispObject run(struct LispCtx *ctx, LispObject *consts, struct Instructio
 #define CONTINUE goto *dispatch_table[(ins = *pc++).op]
 	CONTINUE;
 
+#define LOAD_CONST (*(LispObject *) (pc - ins.b))
 op_ret:
 	if (!(pc = (struct Instruction *) bp[1])) return ins.a[ctx->bp = bp];
 	*bp = bp[ins.a]; // Copy return value to R(A) of CALL instruction
 	bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
-	consts = ((struct Closure *) UNTAG_OBJ(*bp))->prototype->consts;
 	CONTINUE;
 op_load_nil: bp[ins.a] = NIL; CONTINUE;
-op_load_obj: bp[ins.a] = consts[ins.b]; CONTINUE;
+op_load_obj: bp[ins.a] = LOAD_CONST; CONTINUE;
 op_load_short: bp[ins.a] = TAG_SMI((int16_t) ins.b); CONTINUE;
-op_getglobal: bp[ins.a] = ((struct Symbol *) UNTAG_OBJ(consts[ins.b]))->value; CONTINUE;
+op_getglobal: bp[ins.a] = ((struct Symbol *) UNTAG_OBJ(LOAD_CONST))->value; CONTINUE;
 op_setglobal:
-	struct Symbol *sym = UNTAG_OBJ(consts[ins.b]);
+	struct Symbol *sym = UNTAG_OBJ(LOAD_CONST);
 	sym->value = bp[ins.a];
 	gc_write_barrier(heap, &sym->hdr.hdr);
 	CONTINUE;
@@ -197,7 +197,6 @@ op_call: op_tail_call:
 			memmove(bp + 2, vals + 2, ins.c * sizeof *vals);
 		} else 1[bp = vals] = (uintptr_t) pc;
 		pc = to;
-		consts = proto->consts;
 		break;
 	default: die("Bad function");
 	}
@@ -262,7 +261,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	if (n < m || (!NILP(xs) && !variadic)) die("Wrong number of arguments");
 	if (variadic) ctx->bp[2 + m] = xs;
 
-	return run(ctx, proto->consts, proto->body);
+	return run(ctx, proto->body);
 }
 
 #define MAX_LOCAL_VARS 192
@@ -303,11 +302,11 @@ struct ByteCompCtx {
 	uint8_t num_regs,
 		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
-	struct Table constants;
-	size_t prototypes; ///< Linked list of function prototype offsets.
+	unsigned prototypes; ///< Linked list of function prototype offsets.
 
 	size_t count, capacity;
 	struct Instruction *ins;
+	struct Table constants;
 };
 
 enum CompileError {
@@ -371,10 +370,11 @@ static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
 	struct ConstantEntry *entry;
 	if (!(constant_tbl_entry(&ctx->constants, (struct ConstantEntry) { .obj = x }, &entry))) {
 		if (!entry) die("malloc failed");
-		if (ctx->constants.len > UINT16_MAX) throw(COMP_TOO_MANY_CONSTS);
-		entry->slot = ctx->constants.len - 1;
+		entry->slot = ctx->constants.len;
 	}
-	return entry->slot;
+	size_t offset = (sizeof x / sizeof *ctx->ins) * entry->slot + ctx->count + 1;
+	if (offset > UINT16_MAX) throw(COMP_TOO_MANY_CONSTS);
+	return offset;
 }
 
 // Provides a limited form of register coalescing.
@@ -457,7 +457,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 			chunk_reserve(ctx, 1 + (alignof(struct Prototype) - 1 + sizeof(struct Prototype))
 				/ sizeof *ctx->ins);
-			static_assert(alignof(struct Prototype) % sizeof *ctx->ins == 0);
+			static_assert(IS_POWER_OF_TWO(sizeof *ctx->ins));
 			while ((ctx->count + 1) * sizeof *ctx->ins % alignof(struct Prototype))
 				ctx->ins[ctx->count++] = (struct Instruction) { .op = JMP }; // Align with NOPs
 			ctx->ins[ctx->count++] = (struct Instruction) { .op = CLOS, .a = dst.reg };
@@ -482,7 +482,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 			*(struct Prototype *) (ctx->ins + proto_beg) = (struct Prototype) {
 				.arity = num_args, .num_upvalues = fun.num_upvalues,
-				.next = ctx->prototypes,
+				.offset = ctx->prototypes,
 			};
 			ctx->prototypes = proto_beg;
 
@@ -597,13 +597,12 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 	LispObject *consts = chunk_constants(chunk);
 	struct ConstantEntry *constant;
 	for (size_t i = 0; constant_tbl_iter_next(&ctx.constants, &i, &constant);)
-		consts[constant->slot] = constant->obj;
+		consts[chunk->num_consts - constant->slot] = constant->obj;
 	memcpy(chunk_instructions(chunk), ctx.ins, ctx.count * sizeof *ctx.ins);
-	// Patch prototype constants pointers
-	for (size_t i = ctx.prototypes, next; i; i = next) {
+	for (size_t i = ctx.prototypes; i;) { // Patch prototype chunk offsets
 		struct Prototype *proto = (struct Prototype *) (chunk_instructions(chunk) + i);
-		next = proto->next;
-		proto->consts = consts;
+		i = proto->offset;
+		proto->offset = (char *) proto - (char *) chunk;
 	}
 
 	constant_tbl_free(&ctx.constants);
@@ -614,8 +613,5 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
 	disassemble(chunk);
-	LispObject *consts = chunk_constants(chunk);
-	// Store dummy closure in first call frame to handle returns uniformly
-	*ctx->bp = TAG_OBJ(&(struct Closure) { .prototype = &(struct Prototype) { .consts = consts } });
-	return run(ctx, consts, chunk_instructions(chunk));
+	return run(ctx, chunk_instructions(chunk));
 }

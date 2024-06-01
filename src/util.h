@@ -39,6 +39,8 @@
 /** Arithmetic right shift of @a x by @a y bits. */
 #define SAR(x, y) ((x) < 0 ? ~(~(x) >> (y)) : (x) >> (y))
 
+#define IS_POWER_OF_TWO(x) (!(x & (x - 1)))
+
 /** Returns the smallest power of two greater than or equal to @a x. */
 static inline unsigned int next_power_of_2(unsigned int x) {
 	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - stdc_leading_zeros_ui(x)) : x;

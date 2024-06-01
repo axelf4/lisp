@@ -8,6 +8,8 @@
 #include "util.h"
 
 static_assert(SAR(-1, 1) == -1);
+static_assert(IS_POWER_OF_TWO(16));
+static_assert(!IS_POWER_OF_TWO(10));
 
 static void test_next_power_of_2(void **) {
 	assert_int_equal(next_power_of_2(3), 4);
