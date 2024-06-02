@@ -179,7 +179,7 @@ static void insert_children_overflowing(struct Internal *node, unsigned i, struc
  * @return Whether @a b became empty.
  */
 static bool balance(Node *a, Node *b) {
-	if (a->depth != b->depth) __builtin_unreachable();
+	if (a->depth != b->depth) unreachable();
 	if (!(is_underfilled(b) || is_underfilled(a))) ;
 	else if (b->depth) {
 		struct Internal *x = (struct Internal *) a, *y = (struct Internal *) b;

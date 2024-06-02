@@ -136,7 +136,7 @@ void lisp_print(LispObject object) {
 		break;
 	case LISP_CLOSURE: printf("#<closure>"); break;
 	case LISP_INTEGER: printf("%i", *(int *) object); break;
-	default: __builtin_unreachable();
+	default: unreachable();
 	}
 }
 
@@ -153,7 +153,7 @@ bool lisp_eq(LispObject a, LispObject b) {
 	case LISP_INTEGER: return *((int *) a) == *((int *) b);
 	case LISP_NIL:
 	}
-	__builtin_unreachable();
+	unreachable();
 }
 
 size_t lisp_ctx_size(void *) { return sizeof(struct LispCtx); }

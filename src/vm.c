@@ -128,7 +128,7 @@ static void disassemble_range(struct Chunk *chunk, size_t n, struct Instruction 
 			i += x.b;
 			break;
 		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", x.a); break;
-		default: __builtin_unreachable();
+		default: unreachable();
 		}
 	}
 }
@@ -277,7 +277,7 @@ op_call: op_tail_call:
 		case 1: *vals = subr->a1(*args); break;
 		case 2: *vals = subr->a2(*args, args[1]); break;
 		case 3: *vals = subr->a3(*args, args[1], args[2]); break;
-		default: __builtin_unreachable();
+		default: unreachable();
 		}
 		if (ins.op == TAIL_CALL) { *bp = *vals; goto op_ret; }
 		break;
@@ -546,7 +546,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			uint16_t slot = constant_slot(ctx, x);
 			emit(ctx, (struct Instruction) { .op = GETGLOBAL, .a = dst.reg, .b = slot });
 			break;
-		default: __builtin_unreachable();
+		default: unreachable();
 		}
 		break;
 	case LISP_FUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
@@ -642,7 +642,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				uint16_t slot = constant_slot(ctx, var);
 				emit(ctx, (struct Instruction) { .op = SETGLOBAL, .a = dst.reg, .b = slot });
 				break;
-			default: __builtin_unreachable();
+			default: unreachable();
 			}
 		} else if (head == lisp_ctx->fif) {
 			// Emit condition
@@ -687,7 +687,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			}
 		}
 		break;
-	default: __builtin_unreachable();
+	default: unreachable();
 	}
 	return COMP_OK;
 }
