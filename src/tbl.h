@@ -9,11 +9,8 @@
 #ifndef TBL_H
 #define TBL_H
 
-#include <stddef.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 #include "util.h"
 
 #define EMPTY 0b1111'1111
@@ -29,7 +26,7 @@ static inline size_t bucket_mask_to_capacity(size_t mask) {
 	return mask < 8 ? mask : ((mask + 1) / 8) * 7;
 }
 static inline size_t capacity_to_buckets(size_t capacity) {
-	return capacity < 8 ? (capacity < 4 ? 4 : 8) : next_power_of_2(capacity * 8 / 7);
+	return capacity < 8 ? (capacity < 4 ? 4 : 8) : stdc_bit_ceil(capacity * 8 / 7);
 }
 
 typedef size_t Group;
@@ -37,7 +34,7 @@ typedef size_t Group;
 /** Return the integer with all bytes equal to @a x. */
 #define REPEAT(x) (~0ULL / 0xff * (x))
 
-#define FOR_SET_BITS(var, x) for (typeof(x) _i = (x), var;		\
+#define FOR_SET_BITS(var, x) for (typeof(x) _i = (x), var; \
 		_i && (var = stdc_trailing_zeros(_i), true); _i &= _i - 1)
 
 static inline size_t match_byte(unsigned char x, size_t group) {

@@ -11,11 +11,6 @@ static_assert(SAR(-1, 1) == -1);
 static_assert(IS_POWER_OF_TWO(16));
 static_assert(!IS_POWER_OF_TWO(10));
 
-static void test_next_power_of_2(void **) {
-	assert_int_equal(next_power_of_2(3), 4);
-	assert_int_equal(next_power_of_2(8), 8);
-}
-
 static void test_rotate_left(void **) {
 	assert_int_equal(rotate_left(UINT64_C(1) << 63 | 2, 65), 0b101);
 }
@@ -111,7 +106,6 @@ static int teardown(void **state) {
 
 int main() {
 	const struct CMUnitTest tests[] = {
-		cmocka_unit_test(test_next_power_of_2),
 		cmocka_unit_test(test_rotate_left),
 		cmocka_unit_test(test_exception),
 		cmocka_unit_test(test_hash_table),

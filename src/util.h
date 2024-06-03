@@ -25,9 +25,9 @@
 #endif
 
 /** Converts @a x to little endian from the target's endianness. */
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#if __STDC_ENDIAN_NATIVE__ == __STDC_ENDIAN_LITTLE__
 #define HTOL(x) (x)
-#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#elif __STDC_ENDIAN_NATIVE__ == __STDC_ENDIAN_BIG__
 #define HTOL(x) _Generic((x),					\
 		uint16_t: __builtin_bswap16,			\
 		uint32_t: __builtin_bswap32,			\
@@ -39,12 +39,8 @@
 /** Arithmetic right shift of @a x by @a y bits. */
 #define SAR(x, y) ((x) < 0 ? ~(~(x) >> (y)) : (x) >> (y))
 
-#define IS_POWER_OF_TWO(x) (!(x & (x - 1)))
-
-/** Returns the smallest power of two greater than or equal to @a x. */
-static inline unsigned int next_power_of_2(unsigned int x) {
-	return x & (x - 1) ? 1U << (CHAR_BIT * sizeof x - stdc_leading_zeros_ui(x)) : x;
-}
+/** Returns true iff @a x == 2^k for some k. */
+#define IS_POWER_OF_TWO(x) ((x) && !(x & (x - 1)))
 
 /** Terminates the program with the specified error message. */
 [[noreturn, gnu::cold, gnu::format (printf, 1, 2)]] void die(const char *format, ...);
