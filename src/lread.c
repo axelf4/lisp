@@ -10,7 +10,7 @@ static enum CharType : unsigned char {
 	CHAR_COMMENT = 1 << 2,
 	CHAR_DIGIT = 1 << 3,
 } char_table[256] = {
-	0x02, 0, 0, 0, 0, 0, 0, 0,
+	0x2, 0, 0, 0, 0, 0, 0, 0,
 	0, /* \t */ 0x1, /* \n */ 0x1, 0, 0, /* \r */ 0x1, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,

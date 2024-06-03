@@ -41,7 +41,7 @@ static void test_hash_table(void **) {
 	my_tbl_free(&table);
 }
 
-static void test_gc_traces_live_obj(void **state) {
+static void test_gc_traces_live_object(void **state) {
 	LispObject obj = cons(*state, TAG_SMI(1), NIL);
 	garbage_collect(*state);
 	assert_int_equal(UNTAG_SMI(car(*state, obj)), 1);
@@ -68,11 +68,19 @@ static void assert_read_whole_equal(struct LispCtx *ctx, const char *s, LispObje
 }
 
 static void test_reader(void **state) {
+	struct LispCtx *ctx = *state;
 	LispObject obj;
-	assert_int_equal(lisp_read_whole(*state, "(0 .", &obj), LISP_READ_EOF);
-	assert_int_equal(lisp_read_whole(*state, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
+	assert_int_equal(lisp_read_whole(ctx, "(0 .", &obj), LISP_READ_EOF);
+	assert_int_equal(lisp_read_whole(ctx, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
 	// Test lexing a symbol with a numeric prefix
-	assert_read_whole_equal(*state, "1x", intern(*state, sizeof "1x" - 1, "1x"));
+	assert_read_whole_equal(ctx, "1x", intern(ctx, sizeof "1x" - 1, "1x"));
+}
+
+static void test_reader_ignores_whitespace(void **state) {
+	struct LispCtx *ctx = *state;
+	assert_read_whole_equal(ctx, " ( x 0\n . ' y ) ",
+		cons(ctx, intern(ctx, 1, "x"), cons(ctx, 0,
+				cons(ctx, ctx->fquote, cons(ctx, intern(ctx, 1, "y"), NIL)))));
 }
 
 static LispObject eval(struct LispCtx *ctx, const char *s) {
@@ -109,9 +117,10 @@ int main() {
 		cmocka_unit_test(test_rotate_left),
 		cmocka_unit_test(test_exception),
 		cmocka_unit_test(test_hash_table),
-		cmocka_unit_test(test_gc_traces_live_obj),
+		cmocka_unit_test(test_gc_traces_live_object),
 		cmocka_unit_test(test_rope),
 		cmocka_unit_test(test_reader),
+		cmocka_unit_test(test_reader_ignores_whitespace),
 		cmocka_unit_test(test_eval),
 	};
 	return cmocka_run_group_tests(tests, setup, teardown);
