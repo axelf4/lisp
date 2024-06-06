@@ -75,11 +75,23 @@ struct Symbol {
 
 struct LispCtx {
 	struct Table symbol_tbl;
-	// Common interned symbols
-	LispObject ffn, fif, flet, fset, fprogn, fquote, t;
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
+
+#ifndef LISP_GENERATED_FILE
+	// Common interned symbols
+	LispObject ffn, fif, flet, fset, fprogn, fquote, t;
+#endif
 };
+
+#ifdef LISP_GENERATED_FILE
+#include LISP_GENERATED_FILE
+#define LISP_CONST(ctx, name) GC_DECOMPRESS(ctx, lisp_constants.name)
+#define LISP_CONST_COMPRESSED(ctx, name) lisp_constants.name
+#else
+#define LISP_CONST(ctx, name) (ctx)->name
+#define LISP_CONST_COMPRESSED(ctx, name) GC_COMPRESS((ctx)->name)
+#endif
 
 struct LispCFunction {
 	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;

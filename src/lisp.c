@@ -228,9 +228,11 @@ void gc_trace_roots(struct GcHeap *heap) {
 	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
 		*sym = gc_trace(heap, *sym);
 
+#ifndef LISP_GENERATED_FILE
 	LispObject *objs[] = { &ctx->ffn, &ctx->fif, &ctx->flet, &ctx->fset,
 		&ctx->fprogn, &ctx->fquote, &ctx->t };
 	for (size_t i = 0; i < LENGTH(objs); ++i) lisp_trace(heap, objs[i]);
+#endif
 
 	// TODO Trace the stack
 }
@@ -261,7 +263,7 @@ DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
 
 DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
-	return (int32_t) (uint32_t) a < (int32_t) (uint32_t) b ? ctx->t : NIL;
+	return (int32_t) (uint32_t) a < (int32_t) (uint32_t) b ? LISP_CONST((ctx), t) : NIL;
 }
 
 bool lisp_init(struct LispCtx *ctx) {
@@ -286,14 +288,21 @@ bool lisp_init(struct LispCtx *ctx) {
 
 	ctx->symbol_tbl = tbl_new();
 
-	ctx->ffn = intern(ctx, sizeof "fn" - 1, "fn");
-	ctx->fif = intern(ctx, sizeof "if" - 1, "if");
-	ctx->flet = intern(ctx, sizeof "let" - 1, "let");
-	ctx->fset = intern(ctx, sizeof "set" - 1, "set");
-	ctx->fprogn = intern(ctx, sizeof "progn" - 1, "progn");
-	ctx->fquote = intern(ctx, sizeof "quote" - 1, "quote");
-	ctx->t = intern(ctx, 1, "t");
-	((struct Symbol *) UNTAG_OBJ(ctx->t))->value = ctx->t;
+	LispObject t =
+#ifdef LISP_GENERATED_FILE
+#define INTERN_CONST(ctx, s) intern((ctx), sizeof #s - 1, #s)
+#else
+#define INTERN_CONST(ctx, s) (ctx)->f ## s = intern((ctx), sizeof #s - 1, #s)
+		(ctx)->t =
+#endif
+		intern((ctx), 1, "t");
+	((struct Symbol *) UNTAG_OBJ(t))->value = t;
+	INTERN_CONST(ctx, fn);
+	INTERN_CONST(ctx, if);
+	INTERN_CONST(ctx, let);
+	INTERN_CONST(ctx, set);
+	INTERN_CONST(ctx, progn);
+	INTERN_CONST(ctx, quote);
 
 	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct LispCFunction *cfuns[]

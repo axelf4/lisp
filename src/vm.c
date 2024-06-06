@@ -442,9 +442,12 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		LispObject head = pop(lisp_ctx, &x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);
 
-		if (head == lisp_ctx->fprogn) return compile_progn(ctx, x, dst);
-		else if (head == lisp_ctx->fquote) emit_load_obj(ctx, pop(lisp_ctx, &x), dst);
-		else if (head == lisp_ctx->ffn) {
+		Lobj h = GC_COMPRESS(head);
+		if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fprogn).p)
+			return compile_progn(ctx, x, dst);
+		else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fquote).p)
+			emit_load_obj(ctx, pop(lisp_ctx, &x), dst);
+		else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, ffn).p) {
 			if (dst.discarded) break;
 			LispObject args = pop(lisp_ctx, &x);
 			struct FuncState fun = {
@@ -495,7 +498,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->fun = fun.prev;
 			ctx->num_regs = fun.prev_num_regs;
 			ctx->num_vars = fun.vars_start;
-		} else if (head == lisp_ctx->flet) {
+		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, flet).p) {
 			uint8_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
 			LispObject vars = pop(lisp_ctx, &x);
 			while (!NILP(vars)) {
@@ -510,7 +513,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			emit_close_upvalues(ctx, prev_num_vars, prev_num_regs);
 			ctx->num_regs = prev_num_regs;
 			ctx->num_vars = prev_num_vars;
-		} else if (head == lisp_ctx->fset) {
+		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fset).p) {
 			LispObject var = pop(lisp_ctx, &x), value = pop(lisp_ctx, &x);
 			if (lisp_type(var) != LISP_SYMBOL) throw(COMP_INVALID_VARIABLE);
 			struct VarRef v = lookup_var(ctx, var);
@@ -531,7 +534,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				break;
 			default: unreachable();
 			}
-		} else if (head == lisp_ctx->fif) {
+		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fif).p) {
 			// Emit condition
 			compile_form(ctx, pop(lisp_ctx, &x), (struct Destination) { .reg = dst.reg });
 			size_t jmp = ctx->count;

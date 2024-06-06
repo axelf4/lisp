@@ -14,9 +14,20 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
 	-Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
 endif()
 
-add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c)
+# TODO Only in case of compressed pointers
+add_executable(baker EXCLUDE_FROM_ALL src/baker.c)
+target_include_directories(baker PRIVATE xxHash::xxhash)
+target_link_libraries(baker xxHash::xxhash)
+add_custom_command(
+  OUTPUT ${PROJECT_BINARY_DIR}/lisp-generated.h
+  DEPENDS baker
+  COMMAND baker ${PROJECT_BINARY_DIR}/lisp-generated.h)
+
+add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c
+  $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp-generated.h>)
 target_include_directories(lisplib PRIVATE xxHash::xxhash)
 target_link_libraries(lisplib xxHash::xxhash)
+target_compile_definitions(lisplib PUBLIC $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp-generated.h">)
 
 add_executable(lisp src/main.c)
 target_link_libraries(lisp lisplib)

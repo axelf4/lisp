@@ -224,6 +224,15 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	return p;
 }
 
+void gc_pin(struct GcHeap *heap, void *p) {
+	struct GcObjectHeader *hdr = p;
+	// assert(!(hdr->flags & GC_FORWARDED));
+	hdr->flags = heap->mark_color | GC_UNLOGGED;
+	object_map_add(heap, p);
+	if (!vec_reserve(&heap->trace_stack, 1)) die("malloc failed");
+	vec_push(&heap->trace_stack, p);
+}
+
 /** Call @a fn with callee-saved registers pushed to the stack. */
 #ifndef __GNUC__
 volatile void *gc_nop_sink;
