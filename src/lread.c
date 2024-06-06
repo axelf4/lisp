@@ -84,7 +84,7 @@ val_beg_no_ws:
 		goto val_beg_no_ws;
 	} else if (**s == '\'') {
 		++*s;
-		*p++ = (union StackElement) { .value = ctx->fquote };
+		*p++ = (union StackElement) { .value = LISP_CONST(ctx, fquote) };
 		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_PREFIX };
 		len = 0;
 		goto val_beg;

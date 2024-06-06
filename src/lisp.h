@@ -73,13 +73,34 @@ struct Symbol {
 	LispObject value;
 };
 
+/** X-macro for the interned symbol constants. */
+#define FOR_SYMBOL_CONSTS(X) \
+	X(ffn, fn) \
+	X(fif, if) \
+	X(flet, let) \
+	X(fset, set) \
+	X(fprogn, progn) \
+	X(fquote, quote) \
+	X(t, t)
+
 struct LispCtx {
 	struct Table symbol_tbl;
-	// Common interned symbols
-	LispObject ffn, fif, flet, fset, fprogn, fquote, t;
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
+
+#ifndef LISP_GENERATED_FILE
+#define X(var, _) LispObject var;
+	FOR_SYMBOL_CONSTS(X)
+#undef X
+#endif
 };
+
+#ifdef LISP_GENERATED_FILE
+#include LISP_GENERATED_FILE
+#else
+#define LISP_CONST(ctx, name) (ctx)->name
+#define LISP_CONST_COMPRESSED(ctx, name) GC_COMPRESS(LISP_CONST((ctx), name))
+#endif
 
 struct LispCFunction {
 	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;

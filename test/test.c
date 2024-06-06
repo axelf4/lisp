@@ -80,7 +80,7 @@ static void test_reader_ignores_whitespace(void **state) {
 	struct LispCtx *ctx = *state;
 	assert_read_whole_equal(ctx, " ( x 0\n . ' y ) ",
 		cons(ctx, intern(ctx, 1, "x"), cons(ctx, 0,
-				cons(ctx, ctx->fquote, cons(ctx, intern(ctx, 1, "y"), NIL)))));
+				cons(ctx, LISP_CONST(ctx, fquote), cons(ctx, intern(ctx, 1, "y"), NIL)))));
 }
 
 static LispObject eval(struct LispCtx *ctx, const char *s) {
@@ -92,7 +92,7 @@ static LispObject eval(struct LispCtx *ctx, const char *s) {
 static void test_eval(void **state) {
 	struct LispCtx *ctx = *state;
 	// Test that closures capture the environment
-	assert_lisp_equal(ctx, eval(ctx, "((let ((x t)) (fn () x)))"), ctx->t);
+	assert_lisp_equal(ctx, eval(ctx, "((let ((x t)) (fn () x)))"), LISP_CONST(ctx, t));
 
 	// Test that macros work
 	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");

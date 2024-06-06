@@ -14,9 +14,20 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
 	-Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
 endif()
 
-add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c)
+add_executable(lisp-codegen EXCLUDE_FROM_ALL src/lisp-codegen.c)
+target_include_directories(lisp-codegen PRIVATE xxHash::xxhash)
+target_link_libraries(lisp-codegen xxHash::xxhash)
+add_custom_command(
+  OUTPUT ${PROJECT_BINARY_DIR}/lisp-generated.h
+  DEPENDS lisp-codegen
+  COMMAND lisp-codegen ${PROJECT_BINARY_DIR}/lisp-generated.h)
+
+add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c
+  $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp-generated.h>)
 target_include_directories(lisplib PRIVATE xxHash::xxhash)
 target_link_libraries(lisplib xxHash::xxhash)
+target_compile_definitions(lisplib
+  PUBLIC $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp-generated.h">)
 
 add_executable(lisp src/main.c)
 target_link_libraries(lisp lisplib)

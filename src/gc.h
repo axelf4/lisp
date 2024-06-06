@@ -85,6 +85,7 @@ static inline void gc_write_barrier(struct GcHeap *heap, struct GcObjectHeader *
  * @return The new address of @a p in case it moved.
  */
 [[nodiscard]] void *gc_trace(struct GcHeap *heap, void *p);
+void gc_pin(struct GcHeap *heap, void *p);
 
 /** Marks the lines containing the given pointee. */
 static inline void gc_mark(size_t len, const char p[static len]) {
