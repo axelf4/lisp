@@ -29,14 +29,6 @@
 #define USE_COMPRESSED_PTRS 1
 #endif
 
-#if USE_COMPRESSED_PTRS
-#define GC_COMPRESS(p) (struct GcRef) { (uintptr_t) (p) }
-#define GC_DECOMPRESS(base, ref) ((uintptr_t) (base) + (ref).p)
-#else
-#define GC_COMPRESS(p) (struct GcRef) { (p) }
-#define GC_DECOMPRESS(base, ref) (ref).p
-#endif
-
 struct GcRef {
 #ifdef USE_COMPRESSED_PTRS
 	uint32_t
@@ -45,6 +37,13 @@ struct GcRef {
 #endif
 	p;
 };
+
+#define GC_COMPRESS(p) (struct GcRef) { (uintptr_t) (p) }
+#if USE_COMPRESSED_PTRS
+#define GC_DECOMPRESS(base, ref) ((uintptr_t) __builtin_assume_aligned((base), 1ull << 32) + (ref).p)
+#else
+#define GC_DECOMPRESS(base, ref) ((void) (base), (ref).p)
+#endif
 
 #define GC_MIN_ALIGNMENT 4
 
@@ -85,7 +84,7 @@ static inline void gc_write_barrier(struct GcHeap *heap, struct GcObjectHeader *
  *
  * @return The new address of @a p in case it moved.
  */
-void *gc_trace(struct GcHeap *heap, void *p);
+[[nodiscard]] void *gc_trace(struct GcHeap *heap, void *p);
 
 /** Marks the lines containing the given pointee. */
 static inline void gc_mark(size_t len, const char p[static len]) {

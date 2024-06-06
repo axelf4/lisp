@@ -18,9 +18,9 @@ struct BumpPointer { char *cursor, *limit; };
 [[gnu::alloc_align (2), gnu::alloc_size (3)]]
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 	// Bump allocate downward to align with a single AND instruction
-	return (size_t) (ptr->cursor - ptr->limit) >= size
-		? ptr->cursor = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1))
-		: NULL;
+	if (ptr->cursor - size < ptr->limit) return NULL;
+	void *p = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1));
+	if (p) return ptr->cursor = p; else unreachable();
 }
 
 static_assert(GC_LINE_SIZE % alignof(max_align_t) == 0);
@@ -95,9 +95,9 @@ struct GcHeap *gc_new() {
 	// Align to multiple of 4 GiB
 	struct GcHeap *heap = (struct GcHeap *) (((uintptr_t) p + alignment - 1) & ~(alignment - 1));
 	if (heap != p) munmap(p, (char *) heap - (char *) p);
-	char *aligned_end = (char *) p + size + alignment - 1;
-	if (aligned_end != (char *) heap + size)
-		munmap((char *) heap + size, aligned_end - ((char *) heap + size));
+	char *end = (char *) p + size + alignment - 1;
+	if (end != (char *) heap + size)
+		munmap((char *) heap + size, end - ((char *) heap + size));
 	struct GcBlock *blocks = heap->blocks;
 
 	bool success = true;
@@ -164,6 +164,7 @@ enum {
 #define MIN_FREE (NUM_BLOCKS / (100 / 3))
 
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
+	if (UNLIKELY(size > GC_BLOCK_SIZE)) return NULL;
 	char *p;
 	struct BumpPointer *ptr = &heap->ptr;
 	if ((p = bump_alloc(ptr, alignment, size))) goto out;
@@ -175,13 +176,13 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 			*ptr = next_gap(*block = new_block, new_block->data + sizeof new_block->data, size);
 			goto out_bump;
 		}
-	} else if (size <= sizeof (*block)->data) { // Demand-driven overflow allocation
+	} else { // Demand-driven overflow allocation
 		block = &heap->overflow;
 		ptr = &heap->overflow_ptr;
 		if ((p = bump_alloc(ptr, alignment, size))) goto out;
-	} else return NULL;
+	}
 	// Acquire a free block
-	if (heap->free.length <= MIN_FREE && !heap->inhibit_gc) garbage_collect(heap);
+	if (heap->free.length <= MIN_FREE) garbage_collect(heap);
 	if (!(new_block = vec_pop(&heap->free))) return NULL;
 	*ptr = empty_block_ptr(*block = new_block);
 out_bump:
@@ -271,7 +272,7 @@ static enum BlockStatus {
 	FREE, ///< Unallocated.
 	RECYCLABLE, ///< Partly used with at least F=1 free lines.
 	UNAVAILABLE, ///< No unmarked lines.
-} sweep_block(struct GcBlock *block) {
+} sweep(struct GcBlock *block) {
 	unsigned unavailable_lines = 0;
 	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
 		if (block->line_marks[i]) ++unavailable_lines;
@@ -282,7 +283,7 @@ static enum BlockStatus {
 }
 
 void garbage_collect(struct GcHeap *heap) {
-	heap->inhibit_gc = true;
+	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
 	if (heap->is_major_gc) heap->trace_stack.length = 0; // Ignore remembered set
 	size_t remembered_set_len = heap->trace_stack.length;
 	with_callee_saves_pushed(collect_roots, heap); // Collect conservative roots
@@ -333,7 +334,7 @@ void garbage_collect(struct GcHeap *heap) {
 	heap->free.length = heap->recycled.length = 0;
 	for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block) {
 		block->flag = 0;
-		switch (sweep_block(block)) {
+		switch (sweep(block)) {
 		case UNAVAILABLE: break;
 		case RECYCLABLE: vec_push(&heap->recycled, block); break;
 		case FREE: vec_push(&heap->free, block); break;
