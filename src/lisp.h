@@ -84,7 +84,7 @@ struct LispCtx {
 struct LispCFunction {
 	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
 	unsigned char nargs;
-	LispObject (*f)(struct LispCtx *, const LispObject *args);
+	LispObject (*f)(struct LispCtx *, uint8_t n, const LispObject args[static n]);
 	const char *name;
 };
 
