@@ -154,10 +154,9 @@ op_call: op_tail_call:
 	switch (lisp_type(*vals)) {
 	case LISP_CFUNCTION:
 		struct LispCFunction *fun = UNTAG_OBJ(*vals);
-		if (ins.c != fun->nargs) die("Wrong number of arguments");
 		1[ctx->bp = vals] = (uintptr_t) pc; // Synchronize bp and link call-frames
-		*vals = fun->f(ctx, vals + 2);
-		if (ins.op == TAIL_CALL) { *bp = *vals; goto op_ret; }
+		*vals = fun->f(ctx, ins.c, vals + 2);
+		if (ins.op == TAIL_CALL) goto op_ret;
 		break;
 	case LISP_CLOSURE:
 		struct Closure *closure = UNTAG_OBJ(*vals);
@@ -243,8 +242,8 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	switch (lisp_type(function)) {
 	case LISP_CFUNCTION:
 		struct LispCFunction *fun = UNTAG_OBJ(function);
-		if (!(n != fun->nargs && NILP(args[n]))) die("TODO");
-		return fun->f(ctx, args);
+		if (!(n == fun->nargs && NILP(args[n]))) die("TODO");
+		return fun->f(ctx, n, args);
 	case LISP_CLOSURE: break;
 	default: throw(1);
 	}
