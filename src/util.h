@@ -40,7 +40,11 @@
 #define SAR(x, y) ((x) < 0 ? ~(~(x) >> (y)) : (x) >> (y))
 
 /** Returns true iff @a x == 2^k for some k. */
-#define IS_POWER_OF_TWO(x) ((x) && !(x & (x - 1)))
+#define IS_POWER_OF_TWO(x) ((x) && !((x) & ((x) - 1)))
+
+/** Iterates over the indices of set bits in @a x. */
+#define FOR_ONES(var, x) for (typeof(x) _i = (x), var; \
+		_i && (var = stdc_trailing_zeros(_i), true); _i &= _i - 1)
 
 /** Terminates the program with the specified error message. */
 [[noreturn, gnu::cold, gnu::format (printf, 1, 2)]] void die(const char *format, ...);
@@ -50,7 +54,7 @@ static inline uint64_t rotate_left(uint64_t x, unsigned n) {
 	return x << (n & mask) | x >> (-n & mask);
 }
 
-#define FX_SEED64 0x517cc1b727220a95
+#define FX_SEED64 0x517cc1b727220a95 ///< FxHash mixing constant.
 
 static inline uint64_t fxhash64(uint64_t a, uint64_t b) {
 	return (rotate_left(a, 5) ^ b) * FX_SEED64;
@@ -58,9 +62,9 @@ static inline uint64_t fxhash64(uint64_t a, uint64_t b) {
 
 static inline uint64_t moremur(uint64_t x) {
 	x ^= x >> 27;
-	x *= 0x3C79AC492BA7B653;
+	x *= 0x3c79ac492ba7b653;
 	x ^= x >> 33;
-	x *= 0x1C69B3F74AC4AE35;
+	x *= 0x1c69b3f74ac4ae35;
 	x ^= x >> 27;
 	return x;
 }

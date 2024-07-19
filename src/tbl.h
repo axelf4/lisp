@@ -32,10 +32,7 @@ static inline size_t capacity_to_buckets(size_t capacity) {
 typedef size_t Group;
 
 /** Return the integer with all bytes equal to @a x. */
-#define REPEAT(x) (~0ULL / 0xff * (x))
-
-#define FOR_SET_BITS(var, x) for (typeof(x) _i = (x), var; \
-		_i && (var = stdc_trailing_zeros(_i), true); _i &= _i - 1)
+#define REPEAT(x) (~0ull / 0xff * (x))
 
 static inline size_t match_byte(unsigned char x, size_t group) {
 	size_t cmp = group ^ REPEAT(x);
@@ -102,7 +99,7 @@ KEY *CAT(NAME, _tbl_find)(struct Table *table, KEY key) {
 	uint64_t h = CAT(NAME, _hash)(key);
 	PROBE(table, h, bucket, group) {
 		// Search the group for h2 of the key
-		FOR_SET_BITS(i, match_byte(h2(h), group)) {
+		FOR_ONES(i, match_byte(h2(h), group)) {
 			KEY *entry = buckets - ((bucket + i / CHAR_BIT) & table->bucket_mask) - 1;
 			if (LIKELY(CAT(NAME, _equal)(*entry, key))) return entry;
 		}

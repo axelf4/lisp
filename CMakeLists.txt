@@ -33,7 +33,7 @@ add_executable(lisp src/main.c)
 target_link_libraries(lisp lisplib)
 
 if(BUILD_TESTING)
-  add_executable(unittest test/test.c)
+  add_executable(unittest test/test.c src/phf.c)
   target_include_directories(unittest PRIVATE cmocka "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(unittest cmocka lisplib)
   add_test(unittest unittest)

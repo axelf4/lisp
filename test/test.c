@@ -5,6 +5,7 @@
 #include "gc.h"
 #include "lisp.h"
 #include "rope.h"
+#include "phf.h"
 #include "util.h"
 
 static_assert(SAR(-1, 1) == -1);
@@ -55,6 +56,23 @@ static void test_rope(void **) {
 	rope_replace(&rope, 1, 17, 0, "");
 	assert_int_equal(rope_size(&rope), 10);
 	rope_free(&rope);
+}
+
+/** Tests constructing a perfect hash function. */
+static void test_phf_is_bijective(void **) {
+	uint64_t keys[256];
+	for (size_t i = 0; i < LENGTH(keys); ++i) keys[i] = fxhash64(0, i);
+	struct Phf f;
+	struct PhfParameters params = { .c = 3, .alpha = 0.99 };
+	assert_int_equal(phf_build(&params, LENGTH(keys), keys, &f), PHF_OK);
+
+	bool seen[LENGTH(keys)] = {};
+	for (size_t i = 0; i < LENGTH(keys); ++i) { // Assert injectiveness
+		size_t pos = phf(&f, keys[i]);
+		assert_false(seen[pos]);
+		seen[pos] = true;
+	}
+	phf_free(&f);
 }
 
 static void assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b) {
@@ -119,6 +137,7 @@ int main() {
 		cmocka_unit_test(test_hash_table),
 		cmocka_unit_test(test_gc_traces_live_object),
 		cmocka_unit_test(test_rope),
+		cmocka_unit_test(test_phf_is_bijective),
 		cmocka_unit_test(test_reader),
 		cmocka_unit_test(test_reader_ignores_whitespace),
 		cmocka_unit_test(test_eval),
