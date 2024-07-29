@@ -22,6 +22,9 @@
  * increment has a 50% chance of flipping each key hash bit anyway)
  * meaning pilots tend to be small.
  *
+ * Similar to [PTRHash](https://curiouscoding.nl/posts/ptrhash-paper/)
+ * cuckoo hashing is used if no 8-bit pilot is found.
+ *
  * @see PIBIRI, Giulio Ermanno; TRANI, Roberto. PTHash: Revisiting FCH
  *      minimal perfect hashing. In: Proceedings of the 44th
  *      international ACM SIGIR conference on research and development
@@ -32,18 +35,6 @@
 #define PHF_H
 
 #include "util.h"
-
-struct CompactVec {
-	unsigned char width; ///< Number of bits each element occupies.
-	unsigned long *data;
-};
-
-static inline unsigned long compact_vec_get(struct CompactVec *v, size_t i) {
-	unsigned n = CHAR_BIT * sizeof *v->data, offset = v->width * i % n;
-	unsigned long *p = v->data + v->width * i / n;
-	return (offset + v->width > n ? *p >> offset | p[1] << (n - offset) : *p >> offset)
-		& ((1 << v->width) - 1);
-}
 
 /** Maps @a x to the range [0,@a p) fairly. */
 static inline uint64_t fastrange64(uint64_t x, uint64_t p) {
@@ -70,22 +61,21 @@ static inline uint64_t pthash_bucket(uint64_t hash, uint64_t m) {
  * @param k The bucket pilot.
  * @param n The codomain size (preferably not a power-of-2).
  */
-static inline size_t pthash_position(uint64_t hash, uint16_t k, size_t n) {
+static inline size_t pthash_position(uint64_t hash, unsigned char k, size_t n) {
 	uint64_t pilot_hash = fxhash64(0, k);
 	return (hash ^ pilot_hash) % n;
 }
 
 struct Phf {
 	size_t n, n_prime, m;
-	struct CompactVec pilots; ///< The bucket pilot table.
+	unsigned char *pilots; ///< The bucket pilot table.
 	size_t *remap; ///< #n_prime-#n indices of free positions.
 };
 
 /** Looks up the index for @a hash given the perfect hash function @a f. */
 static inline size_t phf(struct Phf *f, uint64_t hash) {
 	uint64_t bucket = pthash_bucket(hash, f->m),
-		pilot = compact_vec_get(&f->pilots, bucket),
-		pos = pthash_position(hash, pilot, f->n_prime);
+		pos = pthash_position(hash, f->pilots[bucket], f->n_prime);
 	return LIKELY(pos < f->n) ? pos : f->remap[pos - f->n];
 }
 

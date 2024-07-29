@@ -5,7 +5,6 @@
 
 #define BITSET_GET(x, i) ((x)[(i) / (CHAR_BIT * sizeof *(x))] \
 		& (typeof(*(x))) 1 << (i) % (CHAR_BIT * sizeof *(x)))
-#define MAX_TRIALS 4096
 
 static int key_cmp(const void *x, const void *y) {
 	uint64_t a = *(uint64_t *) x, b = *(uint64_t *) y;
@@ -14,25 +13,6 @@ static int key_cmp(const void *x, const void *y) {
 static int bucket_cmp(const void *x, const void *y) {
 	size_t a = *(size_t *) x, b = *(size_t *) y;
 	return (a < b) - (a > b);
-}
-
-/** Packs the @a width bit wide integers given in @a xs. */
-static unsigned long *compress_vec(size_t m, uint16_t xs[static m], unsigned char width) {
-	unsigned long *result, *p, acc = 0;
-	if (!(p = result = calloc((width * m + CHAR_BIT * sizeof *result - 1)
-				/ (CHAR_BIT * sizeof *result), sizeof *result))) return NULL;
-	unsigned j = 0;
-	for (size_t i = 0; i < m; ++i) {
-		unsigned n = MIN(CHAR_BIT * sizeof *p - j, width);
-		acc |= (unsigned long) xs[i] << j;
-		if ((j += n) == CHAR_BIT * sizeof *p) {
-			*p++ = acc;
-			acc = xs[i] >> n;
-			j = width - n;
-		}
-	}
-	if (j) *p = acc;
-	return result;
 }
 
 enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t keys[static n], struct Phf *result) {
@@ -47,10 +27,10 @@ enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t k
 	// Map keys into m buckets
 	uint64_t m = params->c * n / stdc_bit_width(n) + 0.5; // Total number of buckets
 	struct Bucket { size_t size, start, i; } *buckets;
+	size_t *slots;
 	unsigned long *taken;
 	size_t taken_size = ((n_prime + CHAR_BIT - 1) / CHAR_BIT + sizeof *taken - 1) & ~(sizeof *taken - 1);
-	uint16_t *pilots;
-	if (!(buckets = malloc(m * (sizeof *buckets + sizeof *pilots) + taken_size)))
+	if (!(buckets = malloc(m * sizeof *buckets + n_prime * sizeof *slots + taken_size)))
 		return PHF_NO_MEMORY;
 
 	// Find bucket start indices and sizes
@@ -68,28 +48,70 @@ enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t k
 
 	// Find bucket pilots
 	enum PhfError status = PHF_OK;
-	unsigned char pilot_width = 0;
-	memset(taken = (unsigned long *) (buckets + m), 0, taken_size);
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-	pilots = (uint16_t *) ((char *) taken + taken_size);
-#pragma GCC diagnostic pop
+	slots = (size_t *) (buckets + m);
+	memset(taken = (unsigned long *) (slots + n_prime), 0, taken_size);
 	size_t *positions;
-	if (!(positions = malloc(buckets[0].size * sizeof *positions))) die("malloc failed");
-	for (struct Bucket *bucket = buckets; bucket < buckets + m; ++bucket) {
-		uint16_t pilot = 0;
-		if (false) do_retry: if (++pilot >= MAX_TRIALS) { status = PHF_RESEED; goto err; }
+	unsigned char *pilots = NULL;
+	if (!(positions = malloc(buckets[0].size * sizeof *positions))
+		|| !(pilots = malloc(m * sizeof *pilots))) { status = PHF_NO_MEMORY; goto err; }
+	for (size_t b = 0, stack[64], stack_size = 0, recent[16] = {}, recent_idx = 0,
+				num_displacements = 0; b < m || stack_size;) {
+		struct Bucket *bucket = buckets + (recent[recent_idx++ % LENGTH(recent)]
+			= stack_size ? stack[--stack_size] : b++);
+		unsigned char pilot = 0;
+		if (false) do_retry: if (pilot++ >= UCHAR_MAX) {
+				// Search for pilot minimizing the number of collisions
+				unsigned char p0 = rand(), p = p0;
+				unsigned best_cost = UINT_MAX;
+				do {
+					unsigned cost = 0;
+					for (size_t i = 0; i < bucket->size; ++i) {
+						size_t pos = positions[i]
+							= pthash_position(keys[bucket->start + i], p, n_prime);
+						for (size_t j = 0; j < i; ++j)
+							if (UNLIKELY(pos == positions[j])) goto try_next_pilot; // Intra-bucket collision
+						if (!BITSET_GET(taken, pos)) continue; // No collision!
+						for (unsigned i = 0; i < LENGTH(recent); ++i)
+							if (slots[pos] == recent[i]) goto try_next_pilot;
+						size_t size = buckets[slots[pos]].size;
+						if ((cost += size * size) >= best_cost) goto try_next_pilot;
+					}
+					pilot = p;
+					if ((best_cost = cost) <= bucket->size * bucket->size) break;
+				try_next_pilot:
+				} while (++p != p0);
+				if (UNLIKELY(best_cost == UINT_MAX)) { status = PHF_RESEED; goto err; }
+
+				// Displace colliding buckets by pushing them onto the stack
+				for (size_t i = 0; i < bucket->size; ++i) {
+					size_t pos = positions[i]
+						= pthash_position(keys[bucket->start + i], pilot, n_prime);
+					if (!BITSET_GET(taken, pos)) continue;
+					if (UNLIKELY(stack_size >= LENGTH(stack) || ++num_displacements > 8 * n)) {
+						status = PHF_RESEED; goto err;
+					}
+					struct Bucket *b2 = buckets + (stack[stack_size++] = slots[pos]);
+					for (uint64_t *key = keys + b2->start, *end = key + b2->size; key < end; ++key) {
+						size_t pos2 = pthash_position(*key, pilots[b2->i], n_prime);
+						taken[pos2 / (CHAR_BIT * sizeof *taken)] ^= 1ul << pos2 % (CHAR_BIT * sizeof *taken);
+					}
+				}
+				goto found_pilot;
+		}
+		// Fast path in case of no collisions
 		for (size_t i = 0; i < bucket->size; ++i) {
 			size_t pos = pthash_position(keys[bucket->start + i], pilot, n_prime);
 			if (BITSET_GET(taken, pos)) goto do_retry;
 			for (size_t j = 0; j < i; ++j)
-				if (pos == positions[j]) goto do_retry; // Intra-bucket collision
+				if (UNLIKELY(pos == positions[j])) goto do_retry; // Intra-bucket collision
 			positions[i] = pos;
 		}
+	found_pilot:
 		pilots[bucket->i] = pilot;
-		pilot_width = MAX(pilot_width, stdc_bit_width(pilot));
-		for (size_t i = 0; i < bucket->size; ++i)
+		for (size_t i = 0; i < bucket->size; ++i) {
 			taken[positions[i] / (CHAR_BIT * sizeof *taken)] |= 1ul << positions[i] % (CHAR_BIT * sizeof *taken);
+			slots[positions[i]] = bucket - buckets;
+		}
 	}
 
 	size_t *remap;
@@ -100,24 +122,16 @@ enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t k
 			remap[p++] = offset + x;
 		}
 
-	unsigned long *compressed_pilots;
-	if (!(compressed_pilots = compress_vec(m, pilots, pilot_width))) {
-		free(remap);
-		status = PHF_NO_MEMORY;
-		goto err;
-	}
-
 	*result = (struct Phf) {
-		.n = n, .n_prime = n_prime, .m = m, .remap = remap,
-		.pilots = (struct CompactVec) { .width = pilot_width, .data = compressed_pilots },
+		.n = n, .n_prime = n_prime, .m = m, .pilots = pilots, .remap = remap,
 	};
-err:
+	if (false) err: free(pilots);
 	free(positions);
 	free(buckets);
 	return status;
 }
 
 void phf_free(struct Phf *x) {
-	free(x->pilots.data);
+	free(x->pilots);
 	free(x->remap);
 }
