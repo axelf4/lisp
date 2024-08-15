@@ -4,9 +4,17 @@ project(lisp C)
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+include(CheckCSourceRuns)
 include(CTest)
 find_package(cmocka 1.1.0 REQUIRED)
 find_package(xxHash REQUIRED)
+
+check_c_source_runs("#include <stdlib.h>
+int main(void) { void *ptr = &&foo; goto *ptr; return EXIT_FAILURE; foo: }"
+  HAVE_COMPUTED_GOTO)
+if(NOT HAVE_COMPUTED_GOTO)
+  message(FATAL_ERROR "Computed goto support is required")
+endif()
 
 add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
