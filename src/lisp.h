@@ -79,7 +79,6 @@ struct Symbol {
 	X(fif, if) \
 	X(flet, let) \
 	X(fset, set) \
-	X(fprogn, progn) \
 	X(fquote, quote) \
 	X(t, t)
 

@@ -443,9 +443,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		if (!listp(x)) throw(COMP_INVALID_FORM);
 
 		Lobj h = GC_COMPRESS(head);
-		if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fprogn).p)
-			return compile_progn(ctx, x, dst);
-		else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fquote).p)
+		if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fquote).p)
 			emit_load_obj(ctx, pop(lisp_ctx, &x), dst);
 		else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, ffn).p) {
 			if (dst.discarded) break;

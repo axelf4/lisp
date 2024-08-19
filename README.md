@@ -22,10 +22,6 @@ The language consists of the following special forms:
 * `(fn (ARG...) BODY...)`
 
   Returns a new closure.
-* `(progn BODY...)`
-
-  Evaluates the `BODY` forms in sequence and returns the value of the last one.
-  If `BODY` is empty, the value is nil.
 * `(let ([(SYM VAL)]...) BODY...)`
 
   Evaluates `(progn BODY...)`
