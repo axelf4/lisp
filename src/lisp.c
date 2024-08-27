@@ -293,8 +293,6 @@ bool lisp_init(struct LispCtx *ctx) {
 #endif
 	FOR_SYMBOL_CONSTS(X)
 #undef X
-	LispObject t = LISP_CONST(ctx, t);
-	((struct Symbol *) UNTAG_OBJ(t))->value = t;
 
 	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct LispCFunction *cfuns[]
