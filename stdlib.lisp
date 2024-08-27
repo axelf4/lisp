@@ -1,3 +1,4 @@
+(set t 't)
 (set list (fn xs xs))
 
 (set defmacro
