@@ -110,7 +110,7 @@ static LispObject eval(struct LispCtx *ctx, const char *s) {
 static void test_eval(void **state) {
 	struct LispCtx *ctx = *state;
 	// Test that closures capture the environment
-	assert_lisp_equal(ctx, eval(ctx, "((let (x t) (fn () x)))"), LISP_CONST(ctx, t));
+	assert_lisp_equal(ctx, eval(ctx, "((let (x 't) (fn () x)))"), LISP_CONST(ctx, t));
 
 	// Test that macros work
 	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");
