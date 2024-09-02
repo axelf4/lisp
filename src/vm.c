@@ -1,6 +1,5 @@
 /** Register-based bytecode virtual machine and single-pass compiler. */
 
-#include "vm.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -206,7 +205,7 @@ op_clos:
 	struct Prototype *proto = (struct Prototype *) pc;
 	struct Closure *closure = gc_alloc(heap, alignof(struct Closure),
 		sizeof *closure + proto->num_upvalues * sizeof *closure->upvalues);
-	*closure = (struct Closure) { { closure->hdr.hdr, LISP_CLOSURE }, .prototype = proto };
+	*closure = (struct Closure) { { closure->hdr.hdr, LISP_CLOSURE }, proto };
 	// Read upvalues
 	uint8_t *indices = (uint8_t *) (pc += ins.b) - proto->num_upvalues;
 	for (unsigned i = 0; i < proto->num_upvalues; ++i) {
@@ -289,15 +288,15 @@ struct Local {
 	bool is_captured;
 };
 
-struct FuncState {
-	struct FuncState *prev;
+struct FnState {
+	struct FnState *prev;
 	uint8_t prev_num_regs, vars_start, num_upvalues;
 	uint8_t upvalues[MAX_UPVALUES];
 };
 
 struct ByteCompCtx {
 	struct LispCtx *lisp_ctx;
-	struct FuncState *fun;
+	struct FnState *fn;
 	uint8_t num_regs,
 		num_vars;
 	struct Local vars[MAX_LOCAL_VARS];
@@ -316,7 +315,7 @@ enum CompileError {
 	COMP_TOO_MANY_CONSTS,
 };
 
-static uint8_t resolve_upvalue(struct ByteCompCtx *ctx, struct FuncState *fun, unsigned var) {
+static uint8_t resolve_upvalue(struct ByteCompCtx *ctx, struct FnState *fun, unsigned var) {
 	uint8_t upvalue = !fun->prev || var >= fun->prev->vars_start
 		? ctx->vars[var].is_captured = true, ctx->vars[var].slot | UPVALUE_LOCAL
 		: resolve_upvalue(ctx, fun->prev, var);
@@ -334,9 +333,9 @@ static struct VarRef {
 } lookup_var(struct ByteCompCtx *ctx, LispObject sym) {
 	for (size_t i = ctx->num_vars; i-- > 0;)
 		if (ctx->vars[i].symbol.p == GC_COMPRESS(sym).p)
-			return ctx->fun && i < ctx->fun->vars_start
+			return ctx->fn && i < ctx->fn->vars_start
 				// If not a local value, then resolve upvalue
-				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx, ctx->fun, i) }
+				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx, ctx->fn, i) }
 				: (struct VarRef) { VAR_LOCAL, ctx->vars[i].slot };
 	return (struct VarRef) { .type = VAR_GLOBAL };
 }
@@ -356,9 +355,9 @@ static void emit(struct ByteCompCtx *ctx, struct Instruction ins) {
 	ctx->ins[ctx->count++] = ins;
 }
 
-/** Emit instructions to move variables greater than or equal to @a var_limit to the heap. */
+/** Emits instructions to move variables greater than or equal to @a var_limit to the heap. */
 static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, uint16_t regs_start) {
-	for (size_t i = vars_start; i < ctx->num_vars; ++i)
+	for (unsigned i = vars_start; i < ctx->num_vars; ++i)
 		if (ctx->vars[i].is_captured) {
 			emit(ctx, (struct Instruction) { .op = CLOSE_UPVALS, .a = regs_start });
 			break;
@@ -380,7 +379,7 @@ static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
 struct Destination {
 	Register reg;
 	bool discarded : 1, ///< Whether anything but side-effects will be ignored.
-		is_return : 1; ///< Whether the form is in return position.
+		is_return : 1; ///< Whether the form is in tail position.
 };
 
 static void emit_load_obj(struct ByteCompCtx *ctx, LispObject x, struct Destination dst) {
@@ -408,7 +407,7 @@ static enum CompileResult compile_progn(struct ByteCompCtx *ctx, LispObject x, s
 		if (!listp(x)) throw(COMP_EXPECTED_LIST);
 		LispObject form = pop(ctx->lisp_ctx, &x);
 		struct Destination d = dst;
-		d.is_return &= NILP(x);
+		if (!NILP(x)) { d.discarded = true; d.is_return = false; }
 		res = compile_form(ctx, form, d);
 	} while (!NILP(x));
 	return res;
@@ -448,11 +447,11 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, ffn).p) {
 			if (dst.discarded) break;
 			LispObject args = pop(lisp_ctx, &x);
-			struct FuncState fun = {
-				.prev = ctx->fun,
+			struct FnState fun = {
+				.prev = ctx->fn,
 				.prev_num_regs = ctx->num_regs, .vars_start = ctx->num_vars,
 			};
-			ctx->fun = &fun;
+			ctx->fn = &fun;
 			ctx->num_regs = 2; // Reserve closure and PC registers
 
 			chunk_reserve(ctx, 1 + (alignof(struct Prototype) - 1 + sizeof(struct Prototype))
@@ -493,7 +492,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				fun.upvalues, fun.num_upvalues * sizeof *fun.upvalues); // Write upvalues
 			ctx->ins[proto_beg - 1].b = ctx->count - proto_beg; // Write prototype size
 
-			ctx->fun = fun.prev;
+			ctx->fn = fun.prev;
 			ctx->num_regs = fun.prev_num_regs;
 			ctx->num_vars = fun.vars_start;
 		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, flet).p) {
@@ -563,7 +562,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 			if (dst.is_return) {
 				// Close upvalues before tail-call, since there is no opportunity later
-				emit_close_upvalues(ctx, ctx->fun ? ctx->fun->vars_start : 0, 0);
+				emit_close_upvalues(ctx, ctx->fn ? ctx->fn->vars_start : 0, 0);
 				emit(ctx, (struct Instruction) { .op = TAIL_CALL, .a = reg, .c = num_args });
 				return COMP_NORETURN;
 			} else {

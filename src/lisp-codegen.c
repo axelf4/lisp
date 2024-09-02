@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
 		"static constexpr struct LispConstants lisp_consts = {" FOR_SYMBOL_CONSTS(Y) "};\n"
 
 		"#define LISP_CONST_COMPRESSED(ctx, name) "
-#ifdef USE_COMPRESSED_PTRS
+#if USE_COMPRESSED_PTRS
 		"lisp_consts.name"
 #define SUB_BASE
 #else

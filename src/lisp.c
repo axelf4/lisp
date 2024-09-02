@@ -5,7 +5,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <xxh3.h>
-#include "vm.h"
 #include "util.h"
 
 #define COMMA ,
@@ -63,7 +62,7 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 		name->s[len] = '\0';
 		*entry = gc_alloc(heap, alignof(struct Symbol), sizeof **entry);
 		**entry = (struct Symbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
-			.name = name->s, .len = len, };
+			.name = name->s, .len = len, .value = NIL, };
 	}
 	return TAG_OBJ(*entry);
 }
@@ -102,7 +101,7 @@ void lisp_print(struct LispCtx *ctx, LispObject x) {
 }
 
 bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b) {
-	if (a == b) return true;
+	if (GC_COMPRESS(a).p == GC_COMPRESS(b).p) return true;
 	enum LispObjectType ty = lisp_type(a);
 	if (lisp_type(b) != ty) return false;
 	switch (ty) {
@@ -274,9 +273,8 @@ bool lisp_init(struct LispCtx *ctx) {
 #define STACK_LEN 0x1000
 	size_t size = STACK_LEN * sizeof *stack,
 		guard_size = (0xff * sizeof *stack + page_size - 1) & (page_size - 1);
-	if ((ctx->bp = stack = mmap(NULL, size + guard_size,
-				PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
-		== MAP_FAILED) return NULL;
+	if ((ctx->bp = stack = mmap(NULL, size + guard_size, PROT_NONE,
+				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) return NULL;
 	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) {
 		munmap(stack, size + guard_size);
 		return false;
