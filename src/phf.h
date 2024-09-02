@@ -17,10 +17,10 @@
  *
  *     position(x, p) = (h(x, s) ^ h(p, s)) mod n
  *
- * where *p* is the bucket *pilot*. Due to pilots being hashed they
- * may be tried starting from zero instead of at random (every
- * increment has a 50% chance of flipping each key hash bit anyway)
- * meaning pilots tend to be small.
+ * where *p* is the bucket *pilot*. As pilots are hashed, they may be
+ * tried starting from zero instead of at random (every increment has
+ * a 50% chance of flipping each key hash bit anyway). Thus they tend
+ * to be small.
  *
  * Similar to [PTRHash](https://curiouscoding.nl/posts/ptrhash-paper/)
  * cuckoo hashing is used if no 8-bit pilot is found.

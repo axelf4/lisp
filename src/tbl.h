@@ -89,7 +89,7 @@ static inline size_t find_insert_slot(struct Table *table, uint64_t h) {
 }
 #endif
 
-#if defined(NAME) && defined(KEY)
+#if defined NAME && defined KEY
 void CAT(NAME, _tbl_free)(struct Table *table) {
 	if (table->bucket_mask) free(table->ctrl - CTRL_OFFSET(table->bucket_mask + 1));
 }

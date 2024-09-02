@@ -5,7 +5,7 @@
 
 static struct LispCtx *ctx;
 
-static void signal_handler(int sig, siginfo_t *info, void *ucontext) {
+[[gnu::cold]] static void signal_handler(int sig, siginfo_t *info, void *ucontext) {
 	if (lisp_signal_handler(sig, info, ucontext, ctx)) return;
 
 	signal(sig, SIG_DFL);

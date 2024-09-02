@@ -1,8 +1,12 @@
 /** @file
  * Generational conservative single-threaded immix garbage collector.
  *
+ * During minor GCs, sticky mark bits curb the retracing of mature
+ * objects. Hence, @ref gc_write_barrier() must be called upon
+ * potential old-to-young edges.
+ *
  * For disambiguating tagged pointers from SMIs the LSB is reserved,
- * and, on 64-bit platforms, pointer compression (inspired by V8, see
+ * and on 64-bit platforms pointer compression (inspired by V8, see
  * https://v8.dev/blog/pointer-compression) is used:
  *
  *                             32-bits      32-bits
@@ -25,12 +29,12 @@
 #define GC_BLOCK_SIZE 0x8000
 #define GC_LINE_COUNT (GC_BLOCK_SIZE / GC_LINE_SIZE - 1)
 
-#if !defined(USE_COMPRESSED_PTRS) && __LP64__
-#define USE_COMPRESSED_PTRS 1
+#ifndef USE_COMPRESSED_PTRS
+#define USE_COMPRESSED_PTRS __LP64__
 #endif
 
 struct GcRef {
-#ifdef USE_COMPRESSED_PTRS
+#if USE_COMPRESSED_PTRS
 	uint32_t
 #else
 	uintptr_t
@@ -66,8 +70,7 @@ void gc_free(struct GcHeap *heap);
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size);
 
 enum {
-	/// Object is not already remembered (nor in the nursery).
-	GC_UNLOGGED = 4,
+	GC_UNLOGGED = 4, ///< Object is not already remembered (nor in the nursery).
 };
 /** Remembers that a reference field of the object @a src was mutated.
  *
@@ -79,8 +82,7 @@ static inline void gc_write_barrier(struct GcHeap *heap, struct GcObjectHeader *
 	if (UNLIKELY(src->flags & GC_UNLOGGED)) gc_log_object(heap, src);
 }
 
-/**
- * Traces the GC object @a p.
+/** Traces the GC object @a p.
  *
  * @return The new address of @a p in case it moved.
  */
@@ -99,11 +101,13 @@ static inline void gc_mark(size_t len, const char p[static len]) {
 
 [[gnu::noinline]] void garbage_collect(struct GcHeap *heap);
 
-/* Embedder API */
+/** @name Embedder API */ ///@{
 
 void gc_object_visit(struct GcHeap *, void *);
 size_t gc_object_size(void *p, size_t *alignment);
 /** Traces all explicit GC roots. */
 void gc_trace_roots(struct GcHeap *heap);
+
+///@}
 
 #endif
