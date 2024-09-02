@@ -261,7 +261,7 @@ static Node *append_child(struct Internal *parent, Node *x) {
 	if (!parent->node.depth) unreachable();
 	struct Internal *new;
 	if (!(new = malloc(sizeof *new))) die("malloc failed");
-	last = remove_child(parent, MAX_CHILDREN - 1);
+	remove_child(parent, MAX_CHILDREN - 1);
 	*new = (struct Internal) { .node.depth = parent->node.depth };
 	insert_children_count(new, 0, 2, (Node *[]) { last, x });
 	count_child(parent, -1, &new->node);
@@ -273,10 +273,7 @@ static Node *prepend_child(struct Internal *parent, Node *x) {
 	Node *first = *parent->children;
 	if (x->depth + 1 < parent->node.depth) {
 		if (!(x = prepend_child((struct Internal *) first, x))) return NULL;
-	} else if (balance(x, first)) {
-		*parent->children = x;
-		return NULL;
-	}
+	} else if (balance(x, first)) { *parent->children = x; return NULL; }
 	if (parent->num_children < MAX_CHILDREN) {
 		insert_children(parent, 0, 1, &x);
 		return NULL;
@@ -284,7 +281,7 @@ static Node *prepend_child(struct Internal *parent, Node *x) {
 	if (!parent->node.depth) unreachable();
 	struct Internal *new;
 	if (!(new = malloc(sizeof *new))) die("malloc failed");
-	first = remove_child(parent, 0);
+	remove_child(parent, 0);
 	*new = *parent;
 	*parent = (struct Internal) { .node.depth = parent->node.depth };
 	insert_children_count(parent, 0, 2, (Node *[]) { x, first });
@@ -474,8 +471,8 @@ void rope_replace(struct Rope *rope, size_t beg, size_t end, size_t len, const c
 	struct NodeSlice extras = node_replace(&rope->root, beg, end, (struct Str) { len, s });
 	if (extras.len) {
 		struct NodeSlice xs[] = { { 1, &rope->root }, extras };
-		do { make_parents(LENGTH(xs), xs, xs->len + xs[1].len, xs + 1); xs->len = 0; }
-		while (xs[1].len > 1);
+		do make_parents(LENGTH(xs), xs, xs->len + xs[1].len, xs + 1);
+		while (xs->len = 0, xs[1].len > 1);
 		rope->root = *xs[1].xs;
 	}
 	free(extras.xs);

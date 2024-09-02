@@ -80,9 +80,9 @@ static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 			errcode = -1;
 		}
 
-		extern void pcall_landing_pad();
+		void pcall_landing_pad();
 		_Unwind_SetIP(context, (_Unwind_Ptr) pcall_landing_pad);
-		_Unwind_SetGR(context, 0, errcode); // Put error code into %rax
+		_Unwind_SetGR(context, /* %rax */ 0, errcode);
 		return _URC_INSTALL_CONTEXT;
 	}
 	return _URC_FATAL_PHASE1_ERROR;
