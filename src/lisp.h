@@ -80,6 +80,9 @@ struct Symbol {
 	X(flet, let) \
 	X(fset, set) \
 	X(fquote, quote) \
+	X(fquasiquote, quasiquote) \
+	X(funquote, unquote) \
+	X(funquoteSplicing, unquote-splicing) \
 	X(t, t)
 
 struct LispCtx {

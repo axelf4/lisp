@@ -18,11 +18,11 @@ static enum CharType : unsigned char {
 	/* ( */ 0x2,  /* ) */ 0x2, 0, 0, /* , */ 0x2, 0, /* . */ 0x2, 0,
 	/* 0 */ 0x8, 0x8, 0x8, 0x8, 0x8, 0x8, 0x8, 0x8,
 	0x8, 0x8, 0, /* ; */ 0x4, 0, 0, 0, 0,
-	/* @ */ 0x2, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
+	/* ` */ 0x2, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0,
 	0, 0, 0, 0, 0, 0, 0, 0
@@ -55,6 +55,15 @@ static bool read_integer(const char **s, LispObject *result) {
 	return !is_ident(**s);
 }
 
+static bool read_prefix(struct LispCtx *ctx, const char **s, LispObject *result) {
+	if (**s == '\'') { ++*s; *result = LISP_CONST(ctx, fquote); }
+	else if (**s == '`') { ++*s; *result = LISP_CONST(ctx, fquasiquote); }
+	else if (**s == ',') *result = *++*s == '@' ? (++*s, LISP_CONST(ctx, funquoteSplicing))
+				: LISP_CONST(ctx, funquote);
+	else return false;
+	return true;
+}
+
 #define TYPE_BITS 2
 
 union StackElement {
@@ -82,9 +91,8 @@ val_beg_no_ws:
 		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
 		len = 0;
 		goto val_beg_no_ws;
-	} else if (**s == '\'') {
-		++*s;
-		*p++ = (union StackElement) { .value = LISP_CONST(ctx, fquote) };
+	} else if (read_prefix(ctx, s, &p->value)) {
+		++p;
 		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_PREFIX };
 		len = 0;
 		goto val_beg;
