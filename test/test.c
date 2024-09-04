@@ -110,14 +110,14 @@ static LispObject eval(struct LispCtx *ctx, const char *s) {
 static void test_eval(void **state) {
 	struct LispCtx *ctx = *state;
 	// Test that closures capture the environment
-	assert_lisp_equal(ctx, eval(ctx, "((let ((x t)) (fn () x)))"), LISP_CONST(ctx, t));
+	assert_lisp_equal(ctx, eval(ctx, "((let (x t) (fn () x)))"), LISP_CONST(ctx, t));
 
 	// Test that macros work
 	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");
 	assert_lisp_equal(ctx, eval(ctx, "(mymacro)"), TAG_SMI(3));
 
 	assert_lisp_equal(ctx, eval(ctx, "\
-(let ((mult (fn (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x)))))) \
+(let (mult (fn (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x))))) \
   (mult 4 3 0))"), TAG_SMI(12));
 }
 

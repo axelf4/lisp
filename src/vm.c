@@ -498,13 +498,11 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->num_vars = fun.vars_start;
 		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, flet).p) {
 			uint8_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
-			LispObject vars = pop(lisp_ctx, &x);
-			while (!NILP(vars)) {
-				LispObject def = pop(lisp_ctx, &vars), sym, init;
-				if (consp(def)) { sym = pop(lisp_ctx, &def); init = pop(lisp_ctx, &def); }
-				else { sym = def; init = NIL; }
+			LispObject defs = pop(lisp_ctx, &x);
+			while (!NILP(defs)) {
+				LispObject var = pop(lisp_ctx, &defs), init = pop(lisp_ctx, &defs);
 				Register reg = ctx->num_regs++;
-				ctx->vars[ctx->num_vars++] = (struct Local) { .symbol = GC_COMPRESS(sym), .slot = reg };
+				ctx->vars[ctx->num_vars++] = (struct Local) { .symbol = GC_COMPRESS(var), .slot = reg };
 				compile_form(ctx, init, (struct Destination) { .reg = reg });
 			}
 			if (compile_progn(ctx, x, dst)) return COMP_NORETURN;
