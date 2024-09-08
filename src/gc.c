@@ -13,6 +13,10 @@
 #define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void) (addr), (void) (size))
 #endif
 
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
 struct BumpPointer { char *cursor, *limit; };
 
 [[gnu::alloc_align (2), gnu::alloc_size (3)]]
@@ -282,9 +286,22 @@ static enum BlockStatus {
 	UNAVAILABLE, ///< No unmarked lines.
 } sweep(struct GcBlock *block) {
 	unsigned unavailable_lines = 0;
+#if defined __SANITIZE_ADDRESS__ || !defined __AVX2__
 	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
 		if (block->line_marks[i]) ++unavailable_lines;
 		else ASAN_POISON_MEMORY_REGION(block->data + GC_LINE_SIZE * i, GC_LINE_SIZE);
+#else
+	__m256i sums = _mm256_add_epi8(
+		_mm256_add_epi8(_mm256_load_si256((const __m256i *) block->line_marks),
+			_mm256_load_si256((const __m256i *) block->line_marks + 1)),
+		_mm256_add_epi8(_mm256_load_si256((const __m256i *) block->line_marks + 2),
+			_mm256_load_si256((const __m256i *) block->line_marks + 3))
+	),
+		total = _mm256_sad_epu8(sums, _mm256_setzero_si256());
+	unavailable_lines = _mm256_extract_epi64(total, 0) + _mm256_extract_epi64(total, 1)
+		+ _mm256_extract_epi64(total, 2) + _mm256_extract_epi64(total, 3)
+		- GC_LINE_COUNT[(unsigned char *) block->data];
+#endif
 	return !unavailable_lines ? FREE
 		: unavailable_lines < GC_LINE_COUNT ? RECYCLABLE
 		: UNAVAILABLE;
