@@ -34,8 +34,7 @@ unsigned pcall(void *x, void (*f)(void *)) {
 	return result;
 }
 #else
-/*
- * Stack unwinding for exceptions.
+/* Stack unwinding for exceptions.
  *
  * See: LU, H. J., et al. System V application binary interface. AMD64
  *      Architecture Processor Supplement, 2018, 588-601.

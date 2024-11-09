@@ -11,7 +11,7 @@
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
 /** Number of elements in the array. */
-#define LENGTH(x) (sizeof (x) / sizeof *(x))
+#define LENGTH(...) (sizeof (__VA_ARGS__) / sizeof *(__VA_ARGS__))
 
 #define _CAT(a, b) a ## b
 #define CAT(a, b) _CAT(a, b)
