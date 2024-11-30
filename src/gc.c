@@ -124,13 +124,13 @@ void gc_free(struct GcHeap *heap) {
 
 /** Remembers @a x as a live allocated object location. */
 static void object_map_add(struct GcHeap *heap, char *x) {
-	unsigned i = (x - (char *) heap) / GC_MIN_ALIGNMENT;
+	size_t i = (x - (char *) heap) / GC_MIN_ALIGNMENT;
 	heap->object_map[i / CHAR_BIT] |= 1 << i % CHAR_BIT;
 }
 
 /** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
-	unsigned i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
+	size_t i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
 	if (x % GC_MIN_ALIGNMENT || x < (uintptr_t) heap
 		|| i / CHAR_BIT > OBJECT_MAP_SIZE) return false;
 	char *v = heap->object_map + i / CHAR_BIT, mask = 1 << i % CHAR_BIT;
@@ -228,8 +228,8 @@ volatile void *gc_nop_sink;
 #endif
 static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 	ucontext_t ctx;
-	if (getcontext(&ctx) < 0) {
-		puts("getcontext() failed");
+	if (UNLIKELY(getcontext(&ctx))) {
+		fputs("getcontext() failed\n", stderr);
 		__builtin_unwind_init();
 	}
 	fn(arg);
