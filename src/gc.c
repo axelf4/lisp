@@ -1,6 +1,7 @@
 #include "gc.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <assert.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <ucontext.h>
@@ -17,13 +18,15 @@
 #include <immintrin.h>
 #endif
 
+#define ALIGN_UP(x, a) (((uintptr_t) (x) + (a) - 1) & ~((a) - 1))
+
 struct BumpPointer { char *cursor, *limit; };
 
 [[gnu::alloc_align (2), gnu::alloc_size (3)]]
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 	// Bump allocate downward to align with a single AND instruction
-	if (ptr->cursor - size < ptr->limit) return NULL;
-	void *p = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1));
+	if ((uintptr_t) ptr->cursor - size < (uintptr_t) ptr->limit) return NULL;
+	char *p = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1));
 	if (p) return ptr->cursor = p; else unreachable();
 }
 
@@ -56,7 +59,7 @@ static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
 #ifndef GC_HEAP_SIZE
 #define GC_HEAP_SIZE 0x800000 ///< GC heap allocation size in bytes.
 #endif
-#define NUM_BLOCKS ((GC_HEAP_SIZE + sizeof(struct GcBlock) - 1) / sizeof(struct GcBlock) - 1)
+#define NUM_BLOCKS (GC_HEAP_SIZE / sizeof(struct GcBlock) - 1)
 #define MIN_FREE (NUM_BLOCKS / (100 / 3))
 #define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_MIN_ALIGNMENT * CHAR_BIT))
 
@@ -78,13 +81,12 @@ struct GcHeap {
 
 struct GcHeap *gc_new() {
 	struct GcHeap *heap;
-	size_t alignment = (size_t) 1 << 32;
+	size_t alignment = 1ull << 32;
 	void *p;
 	if ((p = mmap(NULL, sizeof *heap + alignment - 1, PROT_READ | PROT_WRITE,
 				MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0))
 		== MAP_FAILED) return NULL;
-	// Align to multiple of 4 GiB
-	heap = (struct GcHeap *) (((uintptr_t) p + alignment - 1) & ~(alignment - 1));
+	heap = (struct GcHeap *) ALIGN_UP(p, alignment); // Align to multiple of 4 GiB
 	if (heap != p) munmap(p, (char *) heap - (char *) p);
 	char *end = (char *) p + sizeof *heap + alignment - 1;
 	if (end != (char *) (heap + 1)) munmap(heap + 1, end - (char *) (heap + 1));
@@ -124,13 +126,13 @@ void gc_free(struct GcHeap *heap) {
 
 /** Remembers @a x as a live allocated object location. */
 static void object_map_add(struct GcHeap *heap, char *x) {
-	unsigned i = (x - (char *) heap) / GC_MIN_ALIGNMENT;
+	size_t i = (x - (char *) heap) / GC_MIN_ALIGNMENT;
 	heap->object_map[i / CHAR_BIT] |= 1 << i % CHAR_BIT;
 }
 
 /** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
-	unsigned i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
+	size_t i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
 	if (x % GC_MIN_ALIGNMENT || x < (uintptr_t) heap
 		|| i / CHAR_BIT > OBJECT_MAP_SIZE) return false;
 	char *v = heap->object_map + i / CHAR_BIT, mask = 1 << i % CHAR_BIT;
@@ -144,7 +146,6 @@ enum {
 };
 
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
-	if (UNLIKELY(size > GC_BLOCK_SIZE)) return NULL;
 	char *p;
 	struct BumpPointer *ptr = &heap->ptr;
 	if (LIKELY(p = bump_alloc(ptr, alignment, size))) goto out;
@@ -157,10 +158,10 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 			*ptr = next_gap(*block, (*block)->data + sizeof (*block)->data, size);
 			goto out_bump;
 		}
-	} else { // Demand-driven overflow allocation
+	} else if (LIKELY(size <= GC_BLOCK_SIZE)) { // Demand-driven overflow allocation
 		if ((p = bump_alloc(ptr = &heap->overflow_ptr, alignment, size))) goto out;
 		block = &heap->overflow;
-	}
+	} else return NULL;
 	// Acquire a free block
 	if (heap->free_len <= MIN_FREE) garbage_collect(heap);
 	if (!heap->free_len) return NULL;
@@ -194,8 +195,8 @@ void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
 
 void *gc_trace(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
-	struct GcRef *fwd = (struct GcRef *) (((uintptr_t) (hdr + 1) // Forwarding pointer
-			+ alignof(struct GcRef) - 1) & ~(alignof(struct GcRef) - 1));
+	// Forwarding pointer
+	struct GcRef *fwd = (struct GcRef *) ALIGN_UP(hdr + 1, alignof(struct GcRef));
 	if ((hdr->flags & GC_MARK) == heap->mark_color) // Already traced
 		return hdr->flags & GC_FORWARDED ? (void *) GC_DECOMPRESS(heap, *fwd) : p;
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
@@ -217,6 +218,7 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 
 void gc_pin(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
+	assert((hdr->flags & 1) ^ heap->mark_color && "Already traced");
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 	object_map_add(heap, p);
 	trace_stack_push(heap, p);
@@ -228,8 +230,8 @@ volatile void *gc_nop_sink;
 #endif
 static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 	ucontext_t ctx;
-	if (getcontext(&ctx) < 0) {
-		puts("getcontext() failed");
+	if (UNLIKELY(getcontext(&ctx))) {
+		fputs("getcontext() failed\n", stderr);
 		__builtin_unwind_init();
 	}
 	fn(arg);

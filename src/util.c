@@ -34,8 +34,7 @@ unsigned pcall(void *x, void (*f)(void *)) {
 	return result;
 }
 #else
-/*
- * Stack unwinding for exceptions.
+/* Stack unwinding for exceptions.
  *
  * See: LU, H. J., et al. System V application binary interface. AMD64
  *      Architecture Processor Supplement, 2018, 588-601.
@@ -61,7 +60,7 @@ void throw(unsigned errcode) {
 }
 
 /** Personality routine that identifies the frame handling the exception. */
-[[gnu::no_split_stack, gnu::flatten, gnu::used]]
+[[gnu::no_split_stack, gnu::used]]
 static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 	_Unwind_Exception_Class exception_class, struct _Unwind_Exception *exception_object,
 	struct _Unwind_Context *context) {

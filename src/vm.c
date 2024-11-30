@@ -219,10 +219,9 @@ op_clos:
 op_close_upvals:
 	while (upvalues && upvalues->location >= bp + ins.a) {
 		struct Upvalue *x = upvalues;
-		x->is_closed = true;
 		upvalues = x->next;
-		x->value = *x->location;
-		x->location = &x->value;
+		*x = (struct Upvalue)
+			{ x->hdr, .is_closed = true, .value = *x->location, .location = &x->value };
 	}
 	NEXT;
 #pragma GCC diagnostic pop

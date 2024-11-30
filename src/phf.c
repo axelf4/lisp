@@ -19,7 +19,7 @@ enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t k
 	assert(n);
 	// Sort by hashes as fastrange64 makes pthash_bucket() monotonic
 	qsort(keys, n, sizeof *keys, key_cmp);
-	// Check need to reseed due to hash collision
+	// Check for hash collision
 	for (size_t i = 1; i < n; ++i) if (keys[i - 1] == keys[i]) return PHF_RESEED;
 
 	size_t n_prime = n / params->alpha;
@@ -117,7 +117,7 @@ enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t k
 	size_t *remap;
 	if (!(remap = malloc((n_prime - n) * sizeof *remap))) { status = PHF_NO_MEMORY; goto err; }
 	for (size_t i = 0, p = 0, offset = 0; offset < n; ++i, offset += CHAR_BIT * sizeof *taken)
-		FOR_ONES(x, HTOL(~taken[i])) {
+		FOR_ONES(x, ~taken[i]) {
 			while (!BITSET_GET(taken, n + p)) ++p;
 			remap[p++] = offset + x;
 		}
