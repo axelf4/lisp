@@ -19,7 +19,7 @@ enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t k
 	assert(n);
 	// Sort by hashes as fastrange64 makes pthash_bucket() monotonic
 	qsort(keys, n, sizeof *keys, key_cmp);
-	// Check need to reseed due to hash collision
+	// Check for hash collision
 	for (size_t i = 1; i < n; ++i) if (keys[i - 1] == keys[i]) return PHF_RESEED;
 
 	size_t n_prime = n / params->alpha;

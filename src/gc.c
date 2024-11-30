@@ -22,8 +22,8 @@ struct BumpPointer { char *cursor, *limit; };
 [[gnu::alloc_align (2), gnu::alloc_size (3)]]
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 	// Bump allocate downward to align with a single AND instruction
-	if (ptr->cursor - size < ptr->limit) return NULL;
-	void *p = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1));
+	if ((uintptr_t) ptr->cursor - size < (uintptr_t) ptr->limit) return NULL;
+	char *p = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1));
 	if (p) return ptr->cursor = p; else unreachable();
 }
 
@@ -56,7 +56,7 @@ static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
 #ifndef GC_HEAP_SIZE
 #define GC_HEAP_SIZE 0x800000 ///< GC heap allocation size in bytes.
 #endif
-#define NUM_BLOCKS ((GC_HEAP_SIZE + sizeof(struct GcBlock) - 1) / sizeof(struct GcBlock) - 1)
+#define NUM_BLOCKS (GC_HEAP_SIZE / sizeof(struct GcBlock) - 1)
 #define MIN_FREE (NUM_BLOCKS / (100 / 3))
 #define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_MIN_ALIGNMENT * CHAR_BIT))
 
@@ -124,13 +124,13 @@ void gc_free(struct GcHeap *heap) {
 
 /** Remembers @a x as a live allocated object location. */
 static void object_map_add(struct GcHeap *heap, char *x) {
-	unsigned i = (x - (char *) heap) / GC_MIN_ALIGNMENT;
+	size_t i = (x - (char *) heap) / GC_MIN_ALIGNMENT;
 	heap->object_map[i / CHAR_BIT] |= 1 << i % CHAR_BIT;
 }
 
 /** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
-	unsigned i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
+	size_t i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
 	if (x % GC_MIN_ALIGNMENT || x < (uintptr_t) heap
 		|| i / CHAR_BIT > OBJECT_MAP_SIZE) return false;
 	char *v = heap->object_map + i / CHAR_BIT, mask = 1 << i % CHAR_BIT;
@@ -144,7 +144,6 @@ enum {
 };
 
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
-	if (UNLIKELY(size > GC_BLOCK_SIZE)) return NULL;
 	char *p;
 	struct BumpPointer *ptr = &heap->ptr;
 	if (LIKELY(p = bump_alloc(ptr, alignment, size))) goto out;
@@ -157,10 +156,10 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 			*ptr = next_gap(*block, (*block)->data + sizeof (*block)->data, size);
 			goto out_bump;
 		}
-	} else { // Demand-driven overflow allocation
+	} else if (LIKELY(size <= GC_BLOCK_SIZE)) { // Demand-driven overflow allocation
 		if ((p = bump_alloc(ptr = &heap->overflow_ptr, alignment, size))) goto out;
 		block = &heap->overflow;
-	}
+	} else return NULL;
 	// Acquire a free block
 	if (heap->free_len <= MIN_FREE) garbage_collect(heap);
 	if (!heap->free_len) return NULL;
@@ -228,8 +227,8 @@ volatile void *gc_nop_sink;
 #endif
 static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 	ucontext_t ctx;
-	if (getcontext(&ctx) < 0) {
-		puts("getcontext() failed");
+	if (UNLIKELY(getcontext(&ctx))) {
+		fputs("getcontext() failed\n", stderr);
 		__builtin_unwind_init();
 	}
 	fn(arg);
