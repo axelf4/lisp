@@ -8,8 +8,7 @@
 #include "util.h"
 
 #define PROTO_VARIADIC 0x80
-/// Flag signifying that the upvalue captures a local instead of an upvalue.
-#define UPVALUE_LOCAL 0x80
+#define UPVALUE_LOCAL 0x80 ///< The upvalue captures a local instead of an upvalue.
 
 static_assert(sizeof(LispObject) % alignof(struct Instruction) == 0);
 
@@ -290,8 +289,8 @@ struct Local {
 };
 
 struct FnState {
+	uint8_t vars_start, prev_num_regs, num_upvalues;
 	struct FnState *prev;
-	uint8_t prev_num_regs, vars_start, num_upvalues;
 	uint8_t upvalues[MAX_UPVALUES];
 };
 
@@ -323,7 +322,7 @@ static uint8_t resolve_upvalue(struct ByteCompCtx *ctx, struct FnState *fun, uns
 	// Check if this closure already has the upvalue
 	for (unsigned i = 0; i < fun->num_upvalues; ++i)
 		if (fun->upvalues[i] == upvalue) return i;
-	// Otherwise, create a new nonlocal upvalue
+	// Otherwise, create a new one
 	fun->upvalues[fun->num_upvalues] = upvalue;
 	return fun->num_upvalues++;
 }
@@ -334,8 +333,7 @@ static struct VarRef {
 } lookup_var(struct ByteCompCtx *ctx, LispObject sym) {
 	for (size_t i = ctx->num_vars; i-- > 0;)
 		if (ctx->vars[i].symbol.p == GC_COMPRESS(sym).p)
-			return ctx->fn && i < ctx->fn->vars_start
-				// If not a local value, then resolve upvalue
+			return i < ctx->fn->vars_start
 				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx, ctx->fn, i) }
 				: (struct VarRef) { VAR_LOCAL, ctx->vars[i].slot };
 	return (struct VarRef) { .type = VAR_GLOBAL };
@@ -563,7 +561,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 			if (dst.is_return) {
 				// Close upvalues before tail-call, since there is no opportunity later
-				emit_close_upvalues(ctx, ctx->fn ? ctx->fn->vars_start : 0, 0);
+				emit_close_upvalues(ctx, ctx->fn->vars_start, 0);
 				emit(ctx, (struct Instruction) { .op = TAIL_CALL, .a = reg, .c = num_args });
 				return COMP_NORETURN;
 			} else {
@@ -582,6 +580,8 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 	struct ByteCompCtx ctx = {
 		.lisp_ctx = lisp_ctx,
 		.num_regs = 3, // Reserve return, closure and PC registers
+		// Dummy top-level function context
+		.fn = (struct FnState *) &(alignas(struct FnState) uint8_t) { /* vars_start */ },
 	};
 	ctx.constants = tbl_new();
 	if (!compile_form(&ctx, form, (struct Destination) { .reg = 2, .is_return = true }))
