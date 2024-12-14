@@ -12,7 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include "util.h"
+#include "fxhash.h"
 
 #define MCODE_CAPACITY 0x10000
 
@@ -156,7 +156,7 @@ static inline bool asm_init(struct Assembler *ctx) {
 	// Force within range of relative jumps/CALLs to our code
 	uintptr_t target = (uintptr_t) asm_init & ~0xffff,
 		range = (1u << (JMP_RANGE - 1)) - (1u << 21),
-		hint = 0, state = FX_SEED64;
+		hint = 0, state = FXHASH_K;
 	for (unsigned i = 0; i < JMP_RANGE; ++i) {
 		if ((p = mmap((void *) hint, length, PROT_READ | PROT_WRITE,
 					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) return false;
@@ -166,7 +166,7 @@ static inline bool asm_init(struct Assembler *ctx) {
 		}
 		munmap(p, length);
 		// Probe random 64K-aligned addresses
-		hint = ((state = fxhash64(state, hint)) & (2 * range - 0x10000)) + target - range;
+		hint = ((state = fxhash(state, hint)) & (2 * range - 0x10000)) + target - range;
 	}
 	return false;
 }

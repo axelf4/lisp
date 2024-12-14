@@ -1,10 +1,12 @@
 /** Register-based bytecode virtual machine and single-pass compiler. */
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
 #include "lisp.h"
+#include "fxhash.h"
 
 #define UPVALUE_LOCAL 0x80 ///< The upvalue captures a local instead of an upvalue.
 
@@ -260,7 +262,9 @@ struct ConstantEntry {
 	uint16_t slot;
 };
 
-static uint64_t constant_hash(struct ConstantEntry x) { return moremur(x.obj); }
+static uint64_t constant_hash(struct ConstantEntry x) {
+	return fxhash_finish(fxhash(0, x.obj));
+}
 
 static bool constant_equal(struct ConstantEntry a, struct ConstantEntry b) {
 	return a.obj == b.obj;

@@ -1,10 +1,11 @@
 #include "lisp.h"
 #include <stdckdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <xxh3.h>
+#include "fxhash.h"
 #include "util.h"
 
 #define COMMA ,
@@ -26,7 +27,9 @@
 	};																	\
 	static LispObject __ ## cname args
 
-static uint64_t symbol_hash(struct Symbol *x) { return XXH3_64bits(x->name, x->len); }
+static uint64_t symbol_hash(struct Symbol *x) {
+	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
+}
 
 static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;

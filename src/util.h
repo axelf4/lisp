@@ -4,8 +4,6 @@
 #define UTIL_H
 
 #include <stdbit.h>
-#include <stdint.h>
-#include <limits.h>
 
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
@@ -50,26 +48,6 @@
 
 /** Terminates the program with the specified error message. */
 [[noreturn, gnu::cold, gnu::format (printf, 1, 2)]] void die(const char *format, ...);
-
-static inline uint64_t rotate_left(uint64_t x, unsigned n) {
-	unsigned mask = CHAR_BIT * sizeof x - 1;
-	return x << (n & mask) | x >> (-n & mask);
-}
-
-#define FX_SEED64 0x517cc1b727220a95 ///< FxHash mixing constant.
-
-static inline uint64_t fxhash64(uint64_t a, uint64_t b) {
-	return (rotate_left(a, 5) ^ b) * FX_SEED64;
-}
-
-static inline uint64_t moremur(uint64_t x) {
-	x ^= x >> 27;
-	x *= 0x3c79ac492ba7b653;
-	x ^= x >> 33;
-	x *= 0x1c69b3f74ac4ae35;
-	x ^= x >> 27;
-	return x;
-}
 
 /** Throws an exception with @a errcode. */
 [[noreturn, gnu::cold]] void throw(unsigned errcode);

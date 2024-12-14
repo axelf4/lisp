@@ -34,6 +34,7 @@
 #ifndef PHF_H
 #define PHF_H
 
+#include "fxhash.h"
 #include "util.h"
 
 /** Maps @a x to the range [0,@a p) fairly. */
@@ -62,7 +63,7 @@ static inline uint64_t pthash_bucket(uint64_t hash, uint64_t m) {
  * @param n The codomain size (preferably not a power-of-2).
  */
 static inline size_t pthash_position(uint64_t hash, unsigned char k, size_t n) {
-	uint64_t pilot_hash = fxhash64(0, k);
+	uint64_t pilot_hash = fxhash(0, k);
 	return (hash ^ pilot_hash) % n;
 }
 

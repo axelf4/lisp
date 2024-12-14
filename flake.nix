@@ -11,7 +11,6 @@
 
       strictDeps = true;
       nativeBuildInputs = [ pkgs.cmake ];
-      buildInputs = with pkgs; [ xxHash ];
       checkInputs = [ pkgs.cmocka ];
 
       doCheck = true;

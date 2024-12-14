@@ -10,6 +10,7 @@
 #define TBL_H
 
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include "util.h"
 

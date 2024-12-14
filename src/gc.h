@@ -22,7 +22,7 @@
 #ifndef GC_H
 #define GC_H
 
-#include <stddef.h>
+#include <stdint.h>
 #include "util.h"
 
 #define GC_LINE_SIZE 0x100

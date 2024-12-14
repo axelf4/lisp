@@ -5,6 +5,7 @@
 #include "gc.h"
 #include "lisp.h"
 #include "rope.h"
+#include "fxhash.h"
 #include "phf.h"
 #include "asm.h"
 #include "util.h"
@@ -62,7 +63,7 @@ static void test_rope(void **) {
 /** Tests constructing a perfect hash function. */
 static void test_phf_is_bijective(void **) {
 	uint64_t keys[256];
-	for (size_t i = 0; i < LENGTH(keys); ++i) keys[i] = fxhash64(0, i);
+	for (size_t i = 0; i < LENGTH(keys); ++i) keys[i] = fxhash(0, i);
 	struct Phf f;
 	struct PhfParameters params = { .c = 3, .alpha = 0.99 };
 	assert_int_equal(phf_build(&params, LENGTH(keys), keys, &f), PHF_OK);
