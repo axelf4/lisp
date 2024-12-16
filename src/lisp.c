@@ -125,14 +125,14 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 		// Check if fault was within the stack guard pages
 		if ((uintptr_t) ctx->bp <= (uintptr_t) info->si_addr
 			&& (uintptr_t) info->si_addr < ctx->guard_end)
-			// Safety: run is compiled with -fnon-call-exceptions and
-			// SIGSEGV is a synchronous signal.
+			// Safety: SIGSEGV is a synchronous signal and run is
+			// compiled with -fnon-call-exceptions.
 			throw(SIGSEGV); // Throw stack overflow exception
 	}
 	return false;
 }
 
-static size_t lisp_string_size(struct LispString *x) { return sizeof *x + x->len + 1; }
+static size_t string_size(struct LispString *x) { return sizeof *x + x->len + 1; }
 
 static size_t closure_size(struct Closure *x) {
 	return sizeof *x + x->prototype->num_upvalues * sizeof *x->upvalues;
@@ -168,7 +168,7 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 		sym->name = str->s;
 		lisp_trace(heap, &sym->value);
 		break;
-	case LISP_STRING: gc_mark(lisp_string_size(p), p); break;
+	case LISP_STRING: gc_mark(string_size(p), p); break;
 	case LISP_CFUNCTION: gc_mark(sizeof(struct LispCFunction), p); break;
 	case LISP_CLOSURE: {
 		struct Closure *x = p;
@@ -208,7 +208,7 @@ size_t gc_object_size(void *p, size_t *alignment) {
 		return sizeof(struct Symbol);
 	case LISP_STRING:
 		*alignment = alignof(struct LispString);
-		return lisp_string_size(p);
+		return string_size(p);
 	case LISP_CFUNCTION:
 		*alignment = alignof(struct LispCFunction);
 		return sizeof(struct LispCFunction);
@@ -326,6 +326,7 @@ err:
 void lisp_free(struct LispCtx *ctx) {
 #if ENABLE_JIT
 	jit_free(ctx->jit_state);
+	for (unsigned i = 0; i < LENGTH(*ctx->traces); ++i) free((*ctx->traces)[i]);
 	free(ctx->traces);
 #endif
 	symbol_tbl_free(&ctx->symbol_tbl);

@@ -827,7 +827,7 @@ static void do_record(void *userdata) {
 			state->num_slots = state->base_offset + x.a + 1; // CALL always uses highest register
 			state->need_snapshot = true; // Call may have side-effects
 			break;
-		case LISP_CLOSURE: {
+		case LISP_CLOSURE:
 			// Specialize to the function value in question
 			assert_value(state, (IrRef[]) { sload(state, x.a) }, fun_value);
 			struct Prototype *proto = ((struct Closure *) UNTAG_OBJ(fun_value))->prototype;
@@ -838,7 +838,6 @@ static void do_record(void *userdata) {
 			++state->num_slots;
 			++state->frame_depth;
 			break;
-		}
 		default: throw(1);
 		}
 		break;
