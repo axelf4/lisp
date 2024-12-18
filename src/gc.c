@@ -1,4 +1,5 @@
 #include "gc.h"
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
@@ -17,8 +18,6 @@
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
-
-#define ALIGN_UP(x, a) (((uintptr_t) (x) + (a) - 1) & ~((a) - 1))
 
 struct BumpPointer { char *cursor, *limit; };
 

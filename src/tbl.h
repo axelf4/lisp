@@ -47,9 +47,7 @@ static inline size_t match_empty_or_deleted(size_t group) { return group & REPEA
 			/* Triangular probing */									\
 			bucket = (bucket + ++_probe_distance * sizeof group) & (table)->bucket_mask)
 
-#define CTRL_OFFSET(n) (((n) * sizeof(KEY) + MAX(alignof(KEY), alignof(Group)) - 1) \
-		& ~(MAX(alignof(KEY), alignof(Group)) - 1))
-
+#define CTRL_OFFSET(n) ALIGN_UP((n) * sizeof(KEY), MAX(alignof(KEY), alignof(Group)))
 #define SET_CTRL(table, i, x) \
 	((table).ctrl[(((i) - sizeof(Group)) & (table).bucket_mask) + sizeof(Group)] \
 		= (table).ctrl[i] = (x))
@@ -128,10 +126,8 @@ static bool CAT(NAME, _tbl_reserve)(struct Table *table, size_t additional) {
 	if (LIKELY(additional <= table->growth_left)) return true;
 	size_t new_capacity
 		= MAX(table->len + additional, bucket_mask_to_capacity(table->bucket_mask) + 1),
-		n = capacity_to_buckets(new_capacity);
-
+		n = capacity_to_buckets(new_capacity), ctrl_offset = CTRL_OFFSET(n);
 	unsigned char *ctrl;
-	size_t ctrl_offset = CTRL_OFFSET(n);
 	if (!(ctrl = malloc(ctrl_offset + n + sizeof(Group)))) return false;
 	memset(ctrl += ctrl_offset, EMPTY, n + sizeof(Group));
 	struct Table new_table

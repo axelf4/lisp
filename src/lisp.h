@@ -38,7 +38,7 @@
 #define UNTAG_OBJ(x) ((void *) ((x) - 1))
 
 #define NIL TAG_OBJ(NULL)
-#define NILP(x) ((uint32_t) (x) == 1)
+#define NILP(x) (GC_COMPRESS(x).p == 1)
 
 enum LispObjectType : unsigned char {
 	LISP_PAIR,

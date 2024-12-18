@@ -41,6 +41,8 @@
 
 /** Returns true iff @a x == 2^k for some k. */
 #define IS_POWER_OF_TWO(x) ((x) && !((x) & ((x) - 1)))
+/** The smallest multiple of the power of 2 @a a greater than or equal to @a x. */
+#define ALIGN_UP(x, a) (((uintptr_t) (x) + (a) - 1) & ~((a) - 1))
 
 /** Iterates over the indices of set bits in @a x. */
 #define FOR_ONES(var, x) for (typeof(x) _i = (x), var; \
