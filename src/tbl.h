@@ -107,12 +107,11 @@ KEY *CAT(NAME, _tbl_find)(struct Table *table, KEY key) {
 	}
 }
 
-/**
- * Iterates over @a table entries.
+/** Iterates over @a table entries.
  *
- * @param i Auxilliary index that should be zero-initialized when starting iteration.
- * @param[out] entry Pointer to write the table entries to.
- * @return Whether @a entry holds the current entry and iteration is not yet done.
+ * @param[in,out] i Auxilliary zero-initialized index.
+ * @param[out] entry Location to store the next entry.
+ * @return False if iteration is done.
  */
 static bool CAT(NAME, _tbl_iter_next)(struct Table *table, size_t *i, KEY **entry) {
 	while (*i <= table->bucket_mask) if (IS_FULL(table->ctrl[(*i)++])) {
@@ -144,16 +143,15 @@ static bool CAT(NAME, _tbl_reserve)(struct Table *table, size_t additional) {
 	return true;
 }
 
-/**
- * Inserts @a key if it does not yet exist, and outputs the entry into @a entry.
+/** Inserts @a key if it does not yet exist, and gets its @a entry.
  *
+ * @param[out] entry The given key's corresponding entry.
  * @return Whether @a key was already present.
  */
 bool CAT(NAME, _tbl_entry)(struct Table *table, KEY key, KEY **entry) {
 	if ((*entry = CAT(NAME, _tbl_find)(table, key))) return true;
 
-	if (!(LIKELY(table->growth_left) || CAT(NAME, _tbl_reserve)(table, 1)))
-		return (*entry = NULL);
+	if (!CAT(NAME, _tbl_reserve)(table, 1)) return (*entry = NULL);
 	// Key is not present: Search for EMPTY/DELETED instead
 	uint64_t h = CAT(NAME, _hash)(key);
 	size_t i = find_insert_slot(table, h);

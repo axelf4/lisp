@@ -15,7 +15,8 @@ static int bucket_cmp(const void *x, const void *y) {
 	return (a < b) - (a > b);
 }
 
-enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t keys[static n], struct Phf *result) {
+enum PhfError phf_build(const struct PhfParameters *params,
+	size_t n, uint64_t keys[static n], struct Phf *result) {
 	assert(n);
 	// Sort by hashes as fastrange64 makes pthash_bucket() monotonic
 	qsort(keys, n, sizeof *keys, key_cmp);

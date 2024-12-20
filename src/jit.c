@@ -349,7 +349,7 @@ static void peel_loop(struct JitState *state) {
 				*end = e + snapshot->num_stack_entries; e < end; ++e) {
 		union SsaInstruction ins = instructions[e->ref - IR_BIAS + trace->num_consts];
 		ctx->bp[e->slot] = IS_VAR_REF(e->ref)
-			? regs[ins.spill_slot != SPILL_SLOT_NONE ? 1 + ins.spill_slot : -(1 + ins.reg)]
+			? regs[ins.spill_slot == SPILL_SLOT_NONE ? -ins.reg - 1 : 1 + ins.spill_slot]
 			: ins.v;
 		printf("Restoring stack slot %" PRIu8 " to value: ", e->slot);
 		lisp_print(ctx, ctx->bp[e->slot]);
@@ -370,7 +370,7 @@ __asm__ (
 	"mov " STR(REG_PC) ", rax\n\t"
 	"xor eax, eax\n\t"
 	"mov al, dh\n\t"
-	"lea rsp, [rsp+8*rax+(16+1)*8]\n\t" // Pop stack
+	"lea rsp, [rsp+8*(16+1+rax)]\n\t" // Pop stack
 	// Restore callee-saved registers
 	"bt rdx, 3+32; jnc 0f; pop rbx; 0:\n\t"
 	"bt rdx, 5+32; jnc 0f; pop rbp; 0:\n\t"

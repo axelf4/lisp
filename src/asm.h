@@ -17,7 +17,7 @@
 #define MCODE_CAPACITY 0x10000
 
 struct Assembler {
-	uint8_t *buf, *p;
+	uint8_t *p, *buf;
 };
 
 static void asm_write(struct Assembler *ctx, size_t n, unsigned char xs[static n]) {

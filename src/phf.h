@@ -101,7 +101,8 @@ struct PhfParameters {
  * @param[out] result Is set to the built PHF upon success.
  * @return Whether successful.
  */
-enum PhfError phf_build(const struct PhfParameters *params, size_t n, uint64_t keys[static n], struct Phf *result);
+enum PhfError phf_build(const struct PhfParameters *params,
+	size_t n, uint64_t keys[static n], struct Phf *result);
 
 void phf_free(struct Phf *);
 
