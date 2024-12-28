@@ -242,13 +242,13 @@ static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
 #endif
 }
 
-extern void *__libc_stack_end;
+extern void *__libc_stack_end; ///< Highest used stack address.
 [[gnu::no_sanitize_address]] static void collect_roots(void *x) {
 	struct GcHeap *heap = x;
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
-	sp = (void *) ((uintptr_t) sp & ~(alignof(void *) - 1));
-	for (uintptr_t *p = sp; (void *) p < base; ++p) {
-		uintptr_t x = *p & ~(uintptr_t) 1;
+	sp = (void *) ((uintptr_t) sp & ~(alignof(struct GcRef) - 1));
+	for (struct GcRef *p = sp; (void *) p <= base; ++p) {
+		uintptr_t x = GC_DECOMPRESS(heap, *p) & ~1ull;
 		if (object_map_remove(heap, x)) trace_stack_push(heap, (void *) x);
 	}
 }
