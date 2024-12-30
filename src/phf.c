@@ -130,6 +130,7 @@ enum PhfError phf_build(const struct PhfParameters *params,
 		}
 	}
 
+	taken[n_prime / (CHAR_BIT * sizeof *taken)] |= ~0ull << n_prime % (CHAR_BIT * sizeof *taken);
 	for (size_t i = 0, p = 0, offset = 0; offset < n; ++i, offset += CHAR_BIT * sizeof *taken)
 		FOR_ONES(x, ~taken[i]) {
 			while (!BITSET_GET(taken, n + p)) ++p;
