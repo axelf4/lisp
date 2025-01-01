@@ -23,8 +23,8 @@ struct BumpPointer { char *cursor, *limit; };
 
 [[gnu::alloc_align (2), gnu::alloc_size (3)]]
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
+	if (ptr->cursor - size < ptr->limit) return NULL;
 	// Bump allocate downward to align with a single AND instruction
-	if ((uintptr_t) ptr->cursor - size < (uintptr_t) ptr->limit) return NULL;
 	char *p = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1));
 	if (p) return ptr->cursor = p; else unreachable();
 }
@@ -93,7 +93,7 @@ struct GcHeap *gc_new() {
 	heap->mark_color = heap->inhibit_gc = heap->defrag = heap->is_major_gc = false;
 	heap->trace_stack = (struct TraceStack) {};
 	heap->free = NULL;
-	if (!((heap->object_map = calloc(OBJECT_MAP_SIZE, 1))
+	if (!((heap->object_map = calloc(1, OBJECT_MAP_SIZE))
 			&& (heap->free = malloc(2 * NUM_BLOCKS * sizeof *heap->free)))) {
 		gc_free(heap);
 		return NULL;
@@ -132,8 +132,8 @@ static void object_map_add(struct GcHeap *heap, char *x) {
 /** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
 	size_t i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
-	if (x % GC_MIN_ALIGNMENT || x < (uintptr_t) heap
-		|| i / CHAR_BIT > OBJECT_MAP_SIZE) return false;
+	if (x % GC_MIN_ALIGNMENT || x - (uintptr_t) heap->blocks >= sizeof heap->blocks)
+		return false;
 	char *v = heap->object_map + i / CHAR_BIT, mask = 1 << i % CHAR_BIT;
 	if (*v & mask) { *v &= ~mask; return true; }
 	return false;
@@ -144,10 +144,9 @@ enum {
 	GC_FORWARDED = 2,
 };
 
-void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
-	char *p;
+[[gnu::noinline]]
+static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size) {
 	struct BumpPointer *ptr = &heap->ptr;
-	if (LIKELY(p = bump_alloc(ptr, alignment, size))) goto out;
 	struct GcBlock **block = &heap->head;
 	if (size <= GC_LINE_SIZE) {
 		if ((*ptr = next_gap(*block, ptr->limit, size)).cursor) goto out_bump;
@@ -157,17 +156,24 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 			*ptr = next_gap(*block, (*block)->data + sizeof (*block)->data, size);
 			goto out_bump;
 		}
-	} else if (LIKELY(size <= GC_BLOCK_SIZE)) { // Demand-driven overflow allocation
-		if ((p = bump_alloc(ptr = &heap->overflow_ptr, alignment, size))) goto out;
+	} else { // Demand-driven overflow allocation
+		char *p;
+		if ((p = bump_alloc(ptr = &heap->overflow_ptr, alignment, size))) return p;
 		block = &heap->overflow;
-	} else return NULL;
+	}
 	// Acquire a free block
 	if (heap->free_len <= MIN_FREE) garbage_collect(heap);
 	if (!heap->free_len) return NULL;
 	*ptr = empty_block_ptr(*block = heap->free[--heap->free_len]);
 out_bump:
-	p = bump_alloc(ptr, alignment, size);
-out:
+	return bump_alloc(ptr, alignment, size);
+}
+
+void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
+	char *p;
+	if (UNLIKELY(size > GC_BLOCK_SIZE)
+		|| !(LIKELY(p = bump_alloc(&heap->ptr, alignment, size))
+			|| (p = alloc_slow_path(heap, alignment, size)))) return NULL;
 	ASAN_UNPOISON_MEMORY_REGION(p, size);
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) { .flags = heap->mark_color };
 	object_map_add(heap, p);
@@ -188,7 +194,7 @@ static void trace_stack_push(struct GcHeap *heap, void *x) {
 }
 
 void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
-	src->flags = (src->flags & ~GC_UNLOGGED) ^ heap->mark_color;
+	src->flags = (src->flags & ~GC_UNLOGGED) ^ (heap->is_major_gc ? 0 : GC_MARK);
 	trace_stack_push(heap, src); // Add to remembered set
 }
 
