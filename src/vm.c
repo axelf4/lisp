@@ -73,6 +73,8 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 	struct Upvalue *upvalues = NULL;
 #if ENABLE_JIT
 	unsigned char hotcounts[64] = {};
+#define JIT_THRESHOLD 4
+	memset(hotcounts, JIT_THRESHOLD, sizeof hotcounts);
 #endif
 
 #pragma GCC diagnostic push
@@ -147,9 +149,8 @@ op_call: op_tail_call:
 		// Increment hotcount
 		unsigned char hash = ((uintptr_t) pc ^ (uintptr_t) to) / sizeof *to,
 			*hotcount = hotcounts + hash % LENGTH(hotcounts);
-#define JIT_THRESHOLD 4
-		if ((*hotcount += 1 + (ins.op == TAIL_CALL)) >= JIT_THRESHOLD) {
-			*hotcount = 0;
+		if ((*hotcount -= 1 + (ins.op == TAIL_CALL)) <= 0) {
+			*hotcount = JIT_THRESHOLD;
 			if (dispatch_table != recording_dispatch_table
 				&& jit_init(ctx->jit_state, closure))
 				dispatch_table = recording_dispatch_table; // Start recording trace
