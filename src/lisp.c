@@ -16,7 +16,7 @@
 
 #define DEFUN(lname, cname, args, ...)									\
 	static LispObject __ ## cname args;									\
-	static LispObject F ## cname(struct LispCtx *ctx, uint8_t n, const LispObject __args[static n]) { \
+	static LispObject F ## cname(struct LispCtx *ctx, size_t n, const LispObject __args[static n]) { \
 		if (n != NUM_ARGS args) throw(2);								\
 		return __ ## cname(ctx, MAP_ARGS args);							\
 	}																	\
@@ -40,9 +40,10 @@ static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
 #include "tbl.h"
 
 LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
-	struct GcHeap *heap = (struct GcHeap *) ctx;
-	struct LispPair *cell = gc_alloc(heap, alignof(struct LispPair), sizeof *cell);
-	*cell = (struct LispPair) { { cell->hdr.hdr, LISP_PAIR }, GC_COMPRESS(car), GC_COMPRESS(cdr) };
+	struct LispPair *cell
+		= gc_alloc((struct GcHeap *) ctx, alignof(struct LispPair), sizeof *cell);
+	*cell = (struct LispPair)
+		{ { cell->hdr.hdr, LISP_PAIR }, GC_COMPRESS(car), GC_COMPRESS(cdr) };
 	return TAG_OBJ(cell);
 }
 
@@ -72,23 +73,13 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 
 void lisp_print(struct LispCtx *ctx, LispObject x) {
 	switch (lisp_type(x)) {
-	case LISP_NIL: printf("nil"); break;
 	case LISP_INTEGER: printf("%i", UNTAG_SMI(x)); break;
+	case LISP_NIL: fputs("nil", stdout); break;
 	case LISP_PAIR:
-		struct LispPair *cell = UNTAG_OBJ(x);
 		putchar('(');
-	print_next_cell:
-		LispObject car = GC_DECOMPRESS(ctx, cell->car),
-			cdr = GC_DECOMPRESS(ctx, cell->cdr);
-		lisp_print(ctx, car);
-		if (consp(cdr)) {
-			putchar(' ');
-			cell = UNTAG_OBJ(cdr);
-			goto print_next_cell;
-		} else if (!NILP(cdr)) {
-			printf(" . ");
-			lisp_print(ctx, cdr);
-		}
+		do lisp_print(ctx, car(ctx, x));
+		while (consp(x = cdr(ctx, x)) && (putchar(' '), true));
+		if (!NILP(x)) { fputs(" . ", stdout); lisp_print(ctx, x); }
 		putchar(')');
 		break;
 	case LISP_SYMBOL:
@@ -154,6 +145,7 @@ static void lisp_trace_compressed(struct GcHeap *heap, Lobj *p) {
 void gc_object_visit(struct GcHeap *heap, void *p) {
 	struct LispObjectHeader *hdr = p;
 	switch (hdr->tag) {
+	case LISP_INTEGER: case LISP_NIL: unreachable();
 	case LISP_PAIR:
 		struct LispPair *pair = p;
 		gc_mark(sizeof *pair, p);
@@ -193,7 +185,6 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 		for (LispObject *x = chunk_constants(chunk), *end = x + chunk->num_consts;
 				x < end; ++x) lisp_trace(heap, x);
 		break;
-	case LISP_NIL: case LISP_INTEGER: unreachable();
 	}
 }
 
@@ -221,7 +212,7 @@ size_t gc_object_size(void *p, size_t *alignment) {
 	case LISP_BYTECODE_CHUNK:
 		*alignment = alignof(struct Chunk);
 		return chunk_size(p);
-	case LISP_NIL: case LISP_INTEGER:
+	case LISP_INTEGER: case LISP_NIL:
 	}
 	unreachable();
 }

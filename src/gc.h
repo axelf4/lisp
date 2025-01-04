@@ -49,7 +49,7 @@ struct GcRef {
 #define GC_DECOMPRESS(base, ref) ((void) (base), (ref).p)
 #endif
 
-#define GC_MIN_ALIGNMENT 4
+#define GC_MIN_ALIGNMENT (sizeof(struct GcRef))
 
 struct GcObjectHeader { unsigned char flags; /**< GC flags. */ };
 
@@ -92,8 +92,8 @@ void gc_pin(struct GcHeap *heap, void *p);
 /** Marks the lines containing the given pointee. */
 static inline void gc_mark(size_t len, const char p[static len]) {
 	const char *end = p + len;
-	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) p & ~(GC_BLOCK_SIZE - 1));
-	unsigned line = (p - (char *) block) / GC_LINE_SIZE;
+	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) p & ~(sizeof *block - 1));
+	unsigned line = (p - block->data) / GC_LINE_SIZE;
 	// The end of the object may extend into another line implicitly
 	// due to conservative marking.
 	do block->line_marks[line++] = 1; while ((p += GC_LINE_SIZE) < end);
@@ -103,7 +103,7 @@ static inline void gc_mark(size_t len, const char p[static len]) {
 
 /** @name Embedder API */ ///@{
 
-void gc_object_visit(struct GcHeap *, void *);
+void gc_object_visit(struct GcHeap *heap, void *p);
 size_t gc_object_size(void *p, size_t *alignment);
 /** Traces all explicit GC roots. */
 void gc_trace_roots(struct GcHeap *heap);

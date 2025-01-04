@@ -1,4 +1,4 @@
-/** Register-based bytecode virtual machine and single-pass compiler. */
+/** Register-based bytecode virtual machine. */
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -200,13 +200,13 @@ op_tail_jit_call:
 	ctx->bp = bp; // Synchronize bp
 	register struct LispCtx *ctx2 __asm__ (STR(REG_LISP_CTX)) = ctx;
 	register struct Instruction *pc2 __asm__ (STR(REG_PC));
-	uint8_t frame_offset;
+	uint8_t base_offset;
 	__asm__ volatile ("call %[f]"
-		: "=r" (pc2), "=d" (frame_offset)
+		: "=r" (pc2), "=d" (base_offset)
 		: "r" (ctx2), [f] "rm" (*(void (**)()) trace)
 		: "rax", "rcx", "rdi", "r8", "r9", "r10", "r11", "cc", "memory");
 	pc = pc2;
-	bp += frame_offset;
+	bp += base_offset;
 	NEXT;
 do_record:
 	ctx->bp = bp;
@@ -335,7 +335,7 @@ static struct VarRef {
 	enum VarRefType { VAR_LOCAL, VAR_UPVALUE, VAR_GLOBAL } type;
 	unsigned slot;
 } lookup_var(struct ByteCompCtx *ctx, LispObject sym) {
-	for (size_t i = ctx->num_vars; i-- > 0;)
+	for (size_t i = ctx->num_vars; i--;)
 		if (ctx->vars[i].symbol.p == GC_COMPRESS(sym).p)
 			return i < ctx->fn->vars_start
 				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx, ctx->fn, i) }

@@ -22,6 +22,16 @@
  * - Pushing or popping an exception handler.
  * - Entering a native function, which may recursively call
  *   lisp_eval().
+ *
+ * Closures are implemented using *upvalues*, obviating complex
+ * control-flow analysis:
+ *
+ *             | pending vars.   |
+ *     *-*     v         *--v    |
+ *     |_|  *-*-*  close | *-*-* |
+ *     |_|<-| | |   ==>  *-|x| | |
+ *     | |  *-*-*          *-*-* |
+ *     stack   v                 v
  */
 
 #ifndef LISP_H
@@ -66,6 +76,7 @@ static inline enum LispObjectType lisp_type(LispObject p) {
 		: ((struct LispObjectHeader *) UNTAG_OBJ(p))->tag;
 }
 
+/** Interned string with a value slot. */
 struct Symbol {
 	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
 	size_t len; ///< Name length (excluding NULL terminator).
@@ -129,7 +140,7 @@ struct LispCtx {
 struct LispCFunction {
 	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
 	unsigned char nargs;
-	LispObject (*f)(struct LispCtx *, uint8_t n, const LispObject args[static n]);
+	LispObject (*f)(struct LispCtx *, size_t n, const LispObject args[static n]);
 	const char *name;
 };
 
@@ -189,35 +200,33 @@ static inline LispObject cdr(struct LispCtx *ctx, LispObject x) {
 }
 
 static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
-	if (!consp(*x)) return NIL;
-	struct LispPair *cell = UNTAG_OBJ(*x);
-	*x = GC_DECOMPRESS(ctx, cell->cdr);
-	return GC_DECOMPRESS(ctx, cell->car);
+	LispObject cell = *x;
+	*x = cdr(ctx, cell);
+	return car(ctx, cell);
 }
 
 /** Bytecode operation code. */
 enum Op : uint8_t {
-	RET,
-	LOAD_NIL, ///< R(A) <- NULL
+	RET, ///< Return R(A)
+	LOAD_NIL, ///< R(A) <- NIL
 	LOAD_OBJ, ///< R(A) <- K(B)
-	LOAD_SHORT, ///< R(A) <- (int16_t) B
-	GETGLOBAL,
-	SETGLOBAL,
-	GETUPVALUE,
-	SETUPVALUE,
-	/// R(A) <- R(A)(R(A+1), ..., R(A+C))
-	CALL,
+	LOAD_SHORT, ///< R(A) <- sB
+	GETGLOBAL, ///< R(A) <- G[K[PC, B]]
+	SETGLOBAL, ///< G[K[PC, B]] <- R(A)
+	GETUPVALUE, ///< R(A) <- U[C]
+	SETUPVALUE, ///< U[C] <- R(A)
+	CALL, ///< R(A) <- R(A)(R(A+2), ..., R(A+2+C-1))
 	TAIL_CALL,
 	TAIL_JIT_CALL,
 	MOV, ///< R(A) <- R(C)
-	JMP,
-	JNIL, ///< Conditional jump.
+	JMP, ///< PC += sB
+	JNIL, ///< If NILP(R(A)) then PC += sB
 	CLOS,
 	CLOSE_UPVALS, ///< Close stack variables up to R(A).
 	BC_NUM_OPS,
 };
 
-/** Byte-code instruction. */
+/** Bytecode instruction. */
 struct Instruction {
 	enum Op op;
 	uint8_t a; ///< Operand 1.
@@ -227,7 +236,7 @@ struct Instruction {
 	};
 };
 
-/** Block of bytecode instructions. */
+/** Array of bytecode instructions. */
 struct Chunk {
 	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
 	uint16_t num_consts;

@@ -34,7 +34,7 @@ static_assert(GC_LINE_SIZE % alignof(max_align_t) == 0);
 static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size) {
 	unsigned required_lines = (size + GC_LINE_SIZE - 1) / GC_LINE_SIZE, count = 0,
 		end = (top - (char *) block) / GC_LINE_SIZE;
-	for (unsigned i = end; i-- > 0;)
+	for (unsigned i = end; i--;)
 		if (block->line_marks[i]) {
 			if (count > required_lines)
 				// At least 2 preceeding lines were unmarked. Consider
@@ -207,7 +207,7 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
 	// Opportunistic evacuation if block is a defragmentation candidate
-	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) hdr & ~(GC_BLOCK_SIZE - 1));
+	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) hdr & ~(sizeof *block - 1));
 	size_t alignment, size;
 	void *q;
 	if (block->flag && (size = gc_object_size(p, &alignment),

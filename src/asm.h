@@ -32,7 +32,7 @@ static inline void asm_write64(struct Assembler *ctx, uint64_t x) {
 	asm_write(ctx, sizeof x, (unsigned char *) &x);
 }
 
-static int32_t rel32(uintptr_t p, uintptr_t target) {
+static inline int32_t rel32(uintptr_t p, uintptr_t target) {
 	ptrdiff_t dt = target - p;
 	assert((int32_t) dt == dt && "Out of range jump target");
 	return dt;
@@ -79,7 +79,6 @@ enum {
 	XI_MOVrm = 0x8b,
 	XI_MOVri = 0xb8,
 	XI_RET = 0xc3,
-	XI_CALL = 0xe8,
 	XI_GRP5 = 0xff,
 };
 
@@ -140,11 +139,6 @@ enum Cc : unsigned char {
 static inline enum Cc cc_negate(enum Cc x) { return x ^ 1; }
 
 static inline void asm_ret(struct Assembler *ctx) { *--ctx->p = XI_RET; }
-
-static inline void asm_call(struct Assembler *ctx, uintptr_t target) {
-	asm_write32(ctx, rel32((uintptr_t) ctx->p, target));
-	*--ctx->p = XI_CALL;
-}
 #else
 #error Unknown architecture
 #endif
@@ -159,7 +153,7 @@ static inline bool asm_init(struct Assembler *ctx) {
 		hint = 0, state = FXHASH_K;
 	for (unsigned i = 0; i < JMP_RANGE; ++i) {
 		if ((p = mmap((void *) hint, length, PROT_READ | PROT_WRITE,
-					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) return false;
+					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) break;
 		if ((uintptr_t) p - target < range || target - (uintptr_t) p < range + length) {
 			*ctx = (struct Assembler) { .buf = p, .p = p + length };
 			return true;
