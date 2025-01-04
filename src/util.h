@@ -38,7 +38,6 @@
 
 /** Arithmetic right shift of @a x by @a y bits. */
 #define SAR(x, y) ((x) < 0 ? ~(~(x) >> (y)) : (x) >> (y))
-
 /** Returns true iff @a x == 2^k for some k. */
 #define IS_POWER_OF_TWO(x) ((x) && !((x) & ((x) - 1)))
 /** The smallest multiple of the power of 2 @a a greater than or equal to @a x. */

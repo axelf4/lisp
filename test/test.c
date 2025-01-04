@@ -15,7 +15,7 @@ static_assert(IS_POWER_OF_TWO(16));
 static_assert(!IS_POWER_OF_TWO(10));
 
 static void test_rotate_left(void **) {
-	assert_int_equal(rotate_left(UINT64_C(1) << 63 | 2, 65), 0b101);
+	assert_int_equal(rol64(UINT64_C(1) << 63 | 2, 65), 0b101);
 }
 
 static void do_nothing(void *) {}

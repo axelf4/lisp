@@ -159,7 +159,7 @@ static inline bool asm_init(struct Assembler *ctx) {
 		hint = 0, state = FXHASH_K;
 	for (unsigned i = 0; i < JMP_RANGE; ++i) {
 		if ((p = mmap((void *) hint, length, PROT_READ | PROT_WRITE,
-					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) return false;
+					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) break;
 		if ((uintptr_t) p - target < range || target - (uintptr_t) p < range + length) {
 			*ctx = (struct Assembler) { .buf = p, .p = p + length };
 			return true;

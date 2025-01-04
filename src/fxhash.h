@@ -12,7 +12,8 @@
 #include <limits.h>
 #include <string.h>
 
-static inline uint64_t rotate_left(uint64_t x, unsigned n) {
+/** Rotates 64 bits @a x left @a n times. */
+static inline uint64_t rol64(uint64_t x, unsigned n) {
 	unsigned mask = CHAR_BIT * sizeof x - 1;
 	return x << (n & mask) | x >> (-n & mask);
 }
@@ -44,7 +45,7 @@ static inline uint64_t fxhash_finish(uint64_t s) {
 	// Due to multiplication the top bits have the most entropy, but
 	// hash table implementation computes bucket index from the bottom
 	// bits: Move bits from top to bottom.
-	return rotate_left(s, 20);
+	return rol64(s, 20);
 }
 
 static inline uint64_t fxhash_mul_mix(uint64_t x, uint64_t y) {
@@ -67,15 +68,14 @@ static inline uint64_t fxhash_load64(const char p[static 8]) {
 
 /** wyhash-inspired non-collision-resistant hash for strings. */
 static inline uint64_t fxhash_str(size_t n, const char p[static n]) {
-	uint64_t s0 = 0x243f6a8885a308d3, s1 = 0x13198a2e03707344; // Digits of pi
+	uint64_t s0 = 0x243f6a8885a308d3, s1 = 0x13198a2e03707344, // Digits of pi
+		prevent_trivial_zero_collapse = 0xa4093822299f31d0;
 	if (n > 16) { // Handle bulk
 		for (size_t off = 0; off < n - 16; off += 16) {
-#define PREVENT_TRIVIAL_ZERO_COLLAPSE 0xa4093822299f31d0
-
 			// Replace s1 with mix of s0, x and y, and s0 with s1,
 			// ensuring loop is unrollable to 2 independent streams.
 			uint64_t x = fxhash_load64(p + off), y = fxhash_load64(p + off + 8),
-				t = fxhash_mul_mix(s0 ^ x, PREVENT_TRIVIAL_ZERO_COLLAPSE ^ y);
+				t = fxhash_mul_mix(s0 ^ x, prevent_trivial_zero_collapse ^ y);
 			s0 = s1;
 			s1 = t;
 		}

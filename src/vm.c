@@ -335,7 +335,7 @@ static struct VarRef {
 	enum VarRefType { VAR_LOCAL, VAR_UPVALUE, VAR_GLOBAL } type;
 	unsigned slot;
 } lookup_var(struct ByteCompCtx *ctx, LispObject sym) {
-	for (size_t i = ctx->num_vars; i-- > 0;)
+	for (size_t i = ctx->num_vars; i--;)
 		if (ctx->vars[i].symbol.p == GC_COMPRESS(sym).p)
 			return i < ctx->fn->vars_start
 				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx, ctx->fn, i) }
