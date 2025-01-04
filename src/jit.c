@@ -277,14 +277,11 @@ static void peel_loop(struct JitState *state) {
 	for (unsigned i = 0; i < preamble_len; ++i) {
 		if (i >= snap->ir_start) { // Copy-substitute the next snapshot
 			struct Snapshot *s = state->snapshots + state->num_snapshots;
-			unsigned offset = state->num_stack_entries;
-			if (s[-1].ir_start < state->len) ++state->num_snapshots;
-			else offset = (--s)->offset; // Overwrite previous snapshot
-			*s = (struct Snapshot)
-				{ .ir_start = state->len, .offset = offset,
-				  .frame_offset = snap->frame_offset, .pc = snap->pc };
+			unsigned offset = s[-1].ir_start < state->len
+				? ++state->num_snapshots, state->num_stack_entries
+				: (--s)->offset; // Overwrite previous snapshot
 			struct SnapshotEntry
-				*o = state->stack_entries + snap->offset, *oend = o + snap++->num_stack_entries,
+				*o = state->stack_entries + snap->offset, *oend = o + snap->num_stack_entries,
 				*l = state->stack_entries + loopsnap->offset, *lend = l + loopsnap->num_stack_entries,
 				*n = state->stack_entries + offset;
 			while (o < oend) {
@@ -297,8 +294,12 @@ static void peel_loop(struct JitState *state) {
 				*n++ = x;
 			}
 			while (l < lend) *n++ = *l++;
-			s->num_stack_entries = n - (state->stack_entries + offset);
+			*s = (struct Snapshot)
+				{ .ir_start = state->len, .offset = offset,
+				  .num_stack_entries = n - (state->stack_entries + offset),
+				  .frame_offset = snap->frame_offset, .pc = snap->pc };
 			state->num_stack_entries = offset + s->num_stack_entries;
+			++snap;
 		}
 
 		union SsaInstruction ins = state->trace[MAX_CONSTS + i];
@@ -343,7 +344,7 @@ static void peel_loop(struct JitState *state) {
 	printf("Side exit %" PRIu8 "\n", exit_num);
 	for (struct SnapshotEntry *e = snapshot_entries + snapshot->offset,
 				*end = e + snapshot->num_stack_entries; e < end; ++e) {
-		union SsaInstruction ins = instructions[e->ref - IR_BIAS + trace->num_consts];
+		union SsaInstruction ins = instructions[trace->num_consts + e->ref - IR_BIAS];
 		ctx->bp[e->slot] = IS_VAR_REF(e->ref)
 			? regs[ins.spill_slot == SPILL_SLOT_NONE ? -ins.reg - 1 : 1 + ins.spill_slot]
 			: ins.v;
@@ -352,7 +353,8 @@ static void peel_loop(struct JitState *state) {
 		puts(".");
 	}
 	struct Instruction *pc = (struct Instruction *) GC_DECOMPRESS(ctx, snapshot->pc);
-	return (struct SideExitResult) { pc, snapshot->frame_offset, trace->num_spill_slots, trace->clobbers };
+	return (struct SideExitResult) { pc, snapshot->frame_offset,
+		trace->num_spill_slots, trace->clobbers };
 }
 
 __asm__ (
@@ -364,8 +366,7 @@ __asm__ (
 	"push r8; push r9; push r10; push r11; push r12; push r13; push r14; push r15\n\t"
 	"call side_exit_handler_inner\n\t"
 	"mov " STR(REG_PC) ", rax\n\t"
-	"xor eax, eax\n\t"
-	"mov al, dh\n\t"
+	"movzx eax, dh\n\t"
 	"lea rsp, [rsp+8*(16+1+rax)]\n\t" // Pop stack
 	// Restore callee-saved registers
 	"bt rdx, 3+32; jnc 0f; pop rbx; 0:\n\t"
@@ -388,8 +389,8 @@ struct RegAlloc {
 	struct Assembler assembler;
 	struct JitState *trace;
 	RegSet available, clobbers, phi_regs;
-	union SsaInstruction bp_ins; ///< Dummy virtual representing the BP.
 	uint8_t num_spill_slots, snapshot_idx;
+	union SsaInstruction bp_ins; ///< Dummy virtual representing the BP.
 	/** The LuaJIT register cost model. */
 	alignas(32) uint16_t reg_costs[NUM_REGS];
 	Ref phis_refs[NUM_REGS]; ///< For each #phi_regs bit, its corresponding "in".
@@ -516,7 +517,7 @@ static void asm_loop(struct RegAlloc *ctx, uint8_t *asm_end) {
 	}
 
 	int32_t jmp_disp = rel32((uintptr_t) asm_end, (uintptr_t) ctx->assembler.p);
-	memcpy((int32_t *) asm_end - 1, &jmp_disp, sizeof jmp_disp);
+	memcpy(asm_end - sizeof jmp_disp, &jmp_disp, sizeof jmp_disp);
 }
 
 static struct LispTrace *assemble_trace(struct JitState *trace) {
