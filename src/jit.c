@@ -19,9 +19,6 @@
 #define REG_NONE 0x80 ///< Register flag for spilled or unallocated.
 #define SPILL_SLOT_NONE 0xff
 
-/** Superset of @ref LispObjectType. */
-typedef uint8_t IrType;
-
 enum {
 	TY_ANY = LISP_INTEGER + 1,
 	TY_RET_ADDR,
@@ -47,7 +44,7 @@ typedef uint32_t IrRef;
 union SsaInstruction {
 	struct {
 		enum SsaOp op;
-		IrType ty; ///< The type of the instruction result.
+		uint8_t ty; ///< Type of the result (superset of @ref LispObjectType).
 		Ref a, ///< Operand 1.
 			b; ///< Operand 2.
 		union {
@@ -77,7 +74,7 @@ struct SnapshotEntry {
 struct Snapshot {
 	/// Number of instructions executed before this snapshot was taken.
 	uint16_t ir_start,
-		offset; ///< Offset into @ref JitState::snap_entries.
+		offset; ///< Offset into @ref JitState::stack_entries.
 	uint8_t num_stack_entries, frame_offset;
 	struct GcRef pc; ///< Instruction pointer after this point.
 };
@@ -106,10 +103,10 @@ uint8_t trace_arity(struct LispTrace *trace) { return trace->arity; }
 struct JitState {
 	uint16_t len, num_consts;
 	uint8_t num_snapshots, num_stack_entries,
-		base_offset, num_slots, frame_depth;
+		base_offset, max_slot, frame_depth;
 	bool need_snapshot;
 	IrRef slots[0xff], ///< Array of IR references for each VM register.
-		*bp; ///< Pointer into #slots at the current frame offset.
+		*bp; ///< Pointer into @ref #slots at the current frame offset.
 	Ref chain[IR_NUM_OPS];
 
 	struct Instruction *pc;
@@ -126,21 +123,22 @@ struct JitState {
 
 static void take_snapshot(struct JitState *state) {
 	if (!state->need_snapshot) return;
+	uint8_t max_slot = state->base_offset + state->max_slot;
 	if (state->num_snapshots >= MAX_SNAPSHOTS / 2
-		|| state->num_stack_entries + state->num_slots >= MAX_SNAPSHOT_ENTRIES / 2)
+		|| state->num_stack_entries + max_slot >= MAX_SNAPSHOT_ENTRIES / 2)
 		throw(1); // Too many snapshots
 	struct Snapshot *snap = state->snapshots + state->num_snapshots++;
 	*snap = (struct Snapshot) {
 		.ir_start = state->len, .offset = state->num_stack_entries,
 		.frame_offset = state->base_offset, .pc = GC_COMPRESS(state->pc - 1),
 	};
-	for (unsigned i = 0; i < state->num_slots; ++i) {
+	for (uint8_t i = 0; i <= max_slot; ++i) {
 		IrRef ref = state->slots[i];
 		if (!ref) continue;
 		union SsaInstruction x = IR_GET(state, ref);
 		// Skip unmodified SLOADs
 		if (IS_VAR_REF(ref) && x.op == IR_SLOAD && x.a == i
-			// Do not skip closure/ret-addr in nested frames
+			// Do not skip closure in nested frames
 			&& state->slots[i + 1] >> IR_REF_TYPE_SHIFT != TY_RET_ADDR) continue;
 		state->stack_entries[state->num_stack_entries++] = (struct SnapshotEntry)
 			{ .slot = i, .ref = ref, .ty = ref >> IR_REF_TYPE_SHIFT };
@@ -163,10 +161,9 @@ static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
 	case IR_NOP: return 0;
 	case IR_SLOAD: return state->slots[x.a];
 	case IR_EQ: case IR_NEQ:
-		if (!IS_VAR_REF(x.a) && !IS_VAR_REF(x.b)) {
-			if ((x.a == x.b) ^ (x.op == IR_NEQ)) return 0;
-			else throw(1);
-		}
+		if (IS_VAR_REF(x.a) || IS_VAR_REF(x.b)) break;
+		if ((x.a == x.b) == (x.op == IR_EQ)) return 0;
+		throw(1);
 		break;
 	case IR_ULOAD: case IR_GLOAD: break; // TODO Check if set since last load
 	default: goto no_cse;
@@ -180,7 +177,7 @@ static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
 no_cse: return emit(state, x);
 }
 
-static IrRef emit_const(struct JitState *state, IrType ty, uintptr_t x) {
+static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
 	Ref i;
 	for (i = IR_BIAS; i-- > IR_BIAS - state->num_consts;)
 		if (GC_COMPRESS(IR_GET(state, i).v).p == GC_COMPRESS(x).p) goto out;
@@ -194,8 +191,7 @@ static IrRef sload(struct JitState *state, int slot) {
 	IrRef ref = state->bp[slot];
 	if (LIKELY(ref)) return ref; // Already loaded
 	take_snapshot(state); // Type guard may be added
-	unsigned min_num_slots = state->base_offset + slot + 1;
-	if (state->num_slots < min_num_slots) state->num_slots = min_num_slots;
+	state->max_slot = MAX(state->max_slot, slot);
 	return state->bp[slot] = emit(state, (union SsaInstruction)
 		{ .op = IR_SLOAD, .ty = TY_ANY, .a = state->base_offset + slot });
 }
@@ -214,7 +210,7 @@ static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
 			.ty = TY_ANY, .a = sload(state, /* this closure */ 0), .b = idx });
 }
 
-static void assert_type(struct JitState *state, IrRef *ref, IrType ty) {
+static void assert_type(struct JitState *state, IrRef *ref, uint8_t ty) {
 	if (*ref >> IR_REF_TYPE_SHIFT == ty || !LIKELY(IS_VAR_REF(*ref))) return;
 	// If ty </: ref->ty, then type error is imminent
 	*ref = (IR_GET(state, *ref).ty = ty) << IR_REF_TYPE_SHIFT | (Ref) *ref;
@@ -685,7 +681,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 }
 
 #ifdef DEBUG
-static void print_ir_ref(struct JitState *state, IrType ty, Ref ref) {
+static void print_ir_ref(struct JitState *state, uint8_t ty, Ref ref) {
 	if (IS_VAR_REF(ref)) { printf("%.4u", ref - IR_BIAS); return; }
 	union SsaInstruction x = IR_GET(state, ref);
 	switch (ty & ~IR_MARK) {
@@ -824,7 +820,7 @@ static void do_record(void *userdata) {
 				emit(state, (union SsaInstruction)
 					{ .op = IR_CALLARG, .ty = arg >> IR_REF_TYPE_SHIFT, .a = arg });
 			}
-			state->num_slots = state->base_offset + x.a + 1; // CALL always uses highest register
+			state->max_slot = x.a; // CALL always uses highest register
 			state->need_snapshot = true; // Call may have side-effects
 			break;
 		case LISP_CLOSURE:
@@ -835,21 +831,21 @@ static void do_record(void *userdata) {
 				|| fun_value == TAG_OBJ(state->origin)) /* NYI */ throw(1);
 			(state->bp += x.a)[1] = emit_const(state, TY_RET_ADDR, (uintptr_t) pc);
 			state->base_offset += x.a;
-			++state->num_slots;
+			state->max_slot = 2 + x.c - 1;
 			++state->frame_depth;
 			break;
-		default: throw(1);
+		default:
 		}
 		break;
 	case TAIL_CALL:
 		fun_value = bp[x.a];
 		// Specialize to the function value in question
 		// TODO Guard on prototype only
-		IrRef ref = sload(state, x.a), cur = *state->bp;
+		IrRef cur = *state->bp, ref = *state->bp = sload(state, x.a);
 		assert_value(state, &ref, fun_value);
-		// Move args down to current frame
-		memmove(state->bp, state->bp + x.a, (2 + x.c) * sizeof *state->bp);
-		state->num_slots = state->base_offset + 2 + x.c;
+		// Move arguments down to current frame
+		memmove(state->bp + 2, state->bp + x.a + 2, x.c * sizeof *state->bp);
+		state->max_slot = 2 + x.c - 1;
 		if (fun_value == TAG_OBJ(state->origin)) {
 			*state->bp = cur; // Avoid reloading closure
 			dce(state);
@@ -870,7 +866,7 @@ static void do_record(void *userdata) {
 	case JMP: break;
 	case JNIL:
 		ref = sload(state, x.a);
-		IrType ty = ref >> IR_REF_TYPE_SHIFT;
+		uint8_t ty = ref >> IR_REF_TYPE_SHIFT;
 		if (ty != TY_ANY) break; // Constant NIL comparison is a no-op
 		IrRef nil = emit_const(state, LISP_NIL, NIL);
 		take_snapshot(state);
@@ -883,6 +879,7 @@ static void do_record(void *userdata) {
 			uint8_t offset = x.a = ((struct Instruction *) bp[1])[-1].a;
 			state->bp -= offset;
 			state->base_offset -= offset;
+			state->max_slot = x.a;
 			break;
 		}
 		[[fallthrough]];
@@ -893,7 +890,7 @@ static void do_record(void *userdata) {
 	}
 
 	if (result) {
-		state->num_slots = MAX(state->num_slots, state->base_offset + x.a + 1);
+		state->max_slot = MAX(state->max_slot, x.a);
 		state->bp[x.a] = result;
 	}
 }
