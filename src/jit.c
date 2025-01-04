@@ -786,6 +786,22 @@ bool jit_init(struct JitState *state, struct Closure *f) {
 	return true;
 }
 
+static IrRef record_cfun_call(struct JitState *state, struct Instruction x) {
+	IrRef ref = sload(state, x.a);
+	assert_type(state, &ref, LISP_CFUNCTION);
+	take_snapshot(state); // Type guard may get added to return value
+	IrRef result = emit(state, (union SsaInstruction)
+		{ .op = IR_CALL, .ty = TY_ANY, .a = ref, .b = x.c });
+	for (unsigned i = 0; i < x.c; ++i) {
+		IrRef arg = sload(state, x.a + 2 + i);
+		emit(state, (union SsaInstruction)
+			{ .op = IR_CALLARG, .ty = arg >> IR_REF_TYPE_SHIFT, .a = arg });
+	}
+	state->max_slot = x.a; // CALL always uses highest register
+	state->need_snapshot = true; // Call may have side-effects
+	return result;
+}
+
 static void do_record(void *userdata) {
 	struct JitState *state = userdata;
 	uintptr_t *bp = state->lisp_ctx->bp;
@@ -810,19 +826,7 @@ static void do_record(void *userdata) {
 	case CALL:
 		LispObject fun_value = bp[x.a];
 		switch (lisp_type(fun_value)) {
-		case LISP_CFUNCTION:
-			IrRef ref = sload(state, x.a);
-			assert_type(state, &ref, LISP_CFUNCTION);
-			take_snapshot(state); // Type guard may get added to return value
-			result = emit(state, (union SsaInstruction) { .op = IR_CALL, .ty = TY_ANY, .a = ref, .b = x.c });
-			for (unsigned i = 0; i < x.c; ++i) {
-				IrRef arg = sload(state, x.a + 2 + i);
-				emit(state, (union SsaInstruction)
-					{ .op = IR_CALLARG, .ty = arg >> IR_REF_TYPE_SHIFT, .a = arg });
-			}
-			state->max_slot = x.a; // CALL always uses highest register
-			state->need_snapshot = true; // Call may have side-effects
-			break;
+		case LISP_CFUNCTION: result = record_cfun_call(state, x); break;
 		case LISP_CLOSURE:
 			// Specialize to the function value in question
 			assert_value(state, (IrRef[]) { sload(state, x.a) }, fun_value);
@@ -839,6 +843,8 @@ static void do_record(void *userdata) {
 		break;
 	case TAIL_CALL:
 		fun_value = bp[x.a];
+		bool is_cfun = lisp_type(fun_value) == LISP_CFUNCTION;
+		if (is_cfun) { state->bp[x.a] = record_cfun_call(state, x); goto do_ret; }
 		// Specialize to the function value in question
 		// TODO Guard on prototype only
 		IrRef cur = *state->bp, ref = *state->bp = sload(state, x.a);
@@ -860,8 +866,7 @@ static void do_record(void *userdata) {
 			pc[-1] = (struct Instruction) { .op = TAIL_JIT_CALL, .a = pc[-1].a, .b = trace_num };
 			throw(1);
 		}
-		puts("Tail calls not yet implemented, aborting trace...");
-		throw(1);
+		break;
 	case MOV: result = sload(state, x.c); break;
 	case JMP: break;
 	case JNIL:
@@ -873,7 +878,7 @@ static void do_record(void *userdata) {
 		emit_folded(state, (union SsaInstruction)
 			{ .op = IR_EQ ^ !NILP(bp[x.a]), .ty = ty, .a = ref, .b = nil });
 		break;
-	case RET:
+	case RET: do_ret:
 		if (state->frame_depth--) {
 			result = state->bp[x.a];
 			uint8_t offset = x.a = ((struct Instruction *) bp[1])[-1].a;
