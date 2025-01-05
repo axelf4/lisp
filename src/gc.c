@@ -194,7 +194,7 @@ static void trace_stack_push(struct GcHeap *heap, void *x) {
 }
 
 void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
-	src->flags = (src->flags & ~GC_UNLOGGED) ^ (heap->is_major_gc ? 0 : GC_MARK);
+	src->flags &= ~GC_UNLOGGED;
 	trace_stack_push(heap, src); // Add to remembered set
 }
 
@@ -223,7 +223,7 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 
 void gc_pin(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
-	assert((hdr->flags & 1) ^ heap->mark_color && "Already traced");
+	assert(!(hdr->flags & GC_FORWARDED) && "Already forwarded");
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 	object_map_add(heap, p);
 	trace_stack_push(heap, p);
@@ -255,7 +255,8 @@ extern void *__libc_stack_end; ///< Highest used stack address.
 	sp = (void *) ((uintptr_t) sp & ~(alignof(struct GcRef) - 1));
 	for (struct GcRef *p = sp; (void *) p <= base; ++p) {
 		uintptr_t x = GC_DECOMPRESS(heap, *p) & ~1ull;
-		if (object_map_remove(heap, x)) trace_stack_push(heap, (void *) x);
+		// Pin to not "forward" a false positive root
+		if (object_map_remove(heap, x)) gc_pin(heap, (void *) x);
 	}
 }
 
@@ -300,10 +301,6 @@ static enum BlockStatus {
 
 void garbage_collect(struct GcHeap *heap) {
 	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
-	if (heap->is_major_gc) heap->trace_stack.length = 0; // Ignore remembered set
-	size_t remembered_len = heap->trace_stack.length;
-	with_callee_saves_pushed(collect_roots, heap); // Collect conservative roots
-
 	if (heap->defrag) {
 #define MAX_HOLES ((GC_LINE_COUNT + 2) / 3)
 		unsigned mark_histogram[MAX_HOLES] = {};
@@ -332,15 +329,14 @@ void garbage_collect(struct GcHeap *heap) {
 		// Unmark blocks
 		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
 			memset(block->line_marks, 0, sizeof block->line_marks);
+		heap->trace_stack.length = 0; // Ignore remembered set
 	}
+	// Unlog remembered set
+	for (size_t i = 0; i < heap->trace_stack.length; ++i)
+		((struct GcObjectHeader *) heap->trace_stack.items[i])->flags |= GC_UNLOGGED;
 	// Alternate liveness color to skip zeroing object marks
 	heap->mark_color = !heap->mark_color;
-	for (size_t i = remembered_len; i < heap->trace_stack.length; ++i) {
-		// Pin to not "evacuate" a false positive root
-		char *p = heap->trace_stack.items[i];
-		((struct GcObjectHeader *) p)->flags = heap->mark_color | GC_UNLOGGED;
-		object_map_add(heap, p);
-	}
+	with_callee_saves_pushed(collect_roots, heap); // Collect conservative roots
 	gc_trace_roots(heap);
 	while (heap->trace_stack.length) // Trace live objects
 		gc_object_visit(heap, heap->trace_stack.items[--heap->trace_stack.length]);
