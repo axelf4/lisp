@@ -84,6 +84,22 @@ struct Symbol {
 	X(funquote, unquote) \
 	X(funquoteSplicing, unquote-splicing) \
 	X(t, t)
+/** X-macro for Lisp "keywords". */
+#define FOR_KEYWORDS(X) \
+	X(QUOTE, fquote) \
+	X(FN, ffn) \
+	X(IF, fif) \
+	X(LET, flet) \
+	X(SET, fset)
+
+/** Lisp special form or common function. */
+enum LispKeyword {
+#define X(name, _) LISP_KW_ ## name,
+	FOR_KEYWORDS(X)
+#undef X
+	LISP_NUM_KEYWORDS,
+	LISP_NO_KEYWORD = LISP_NUM_KEYWORDS
+};
 
 struct LispCtx {
 	struct Table symbol_tbl;
@@ -103,6 +119,7 @@ struct LispCtx {
 };
 
 #ifdef LISP_GENERATED_FILE
+#include "phf.h"
 #include LISP_GENERATED_FILE
 #else
 #define LISP_CONST(ctx, name) (ctx)->name

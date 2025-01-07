@@ -258,6 +258,15 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 #define MAX_LOCAL_VARS 192
 #define MAX_UPVALUES 64
 
+#ifndef LISP_GENERATED_FILE
+static enum LispKeyword lisp_symbol_to_keyword(struct LispCtx *ctx, LispObject sym) {
+	Lobj x = GC_COMPRESS(sym);
+#define X(kw, var) else if (x.p == LISP_CONST_COMPRESSED(ctx, var).p) return LISP_KW_ ## kw;
+	if (false) ; FOR_KEYWORDS(X) else return LISP_NO_KEYWORD;
+#undef X
+}
+#endif
+
 struct ConstantEntry {
 	LispObject obj;
 	uint16_t slot;
@@ -434,11 +443,9 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 	case LISP_PAIR:
 		LispObject head = pop(lisp_ctx, &x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);
-
-		Lobj h = GC_COMPRESS(head);
-		if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fquote).p)
-			emit_load_obj(ctx, pop(lisp_ctx, &x), dst);
-		else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, ffn).p) {
+		switch (lisp_symbol_to_keyword(lisp_ctx, head)) {
+		case LISP_KW_QUOTE: emit_load_obj(ctx, pop(lisp_ctx, &x), dst); break;
+		case LISP_KW_FN: {
 			if (dst.discarded) break;
 			LispObject args = pop(lisp_ctx, &x);
 			struct FnState fun = {
@@ -489,7 +496,9 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->fn = fun.prev;
 			ctx->num_regs = fun.prev_num_regs;
 			ctx->num_vars = fun.vars_start;
-		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, flet).p) {
+			break;
+		}
+		case LISP_KW_LET: {
 			uint8_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
 			LispObject defs = pop(lisp_ctx, &x);
 			while (!NILP(defs)) {
@@ -502,7 +511,9 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			emit_close_upvalues(ctx, prev_num_vars, prev_num_regs);
 			ctx->num_regs = prev_num_regs;
 			ctx->num_vars = prev_num_vars;
-		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fset).p) {
+			break;
+		}
+		case LISP_KW_SET: {
 			LispObject var = pop(lisp_ctx, &x), value = pop(lisp_ctx, &x);
 			if (lisp_type(var) != LISP_SYMBOL) throw(COMP_INVALID_VARIABLE);
 			struct VarRef v = lookup_var(ctx, var);
@@ -523,7 +534,9 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				break;
 			default: unreachable();
 			}
-		} else if (h.p == LISP_CONST_COMPRESSED(lisp_ctx, fif).p) {
+			break;
+		}
+		case LISP_KW_IF: {
 			// Emit condition
 			compile_form(ctx, pop(lisp_ctx, &x), (struct Destination) { .reg = dst.reg });
 			size_t jmp = ctx->count;
@@ -538,11 +551,16 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			} else noreturn = false;
 			ctx->ins[jmp].b = ctx->count - (jmp + 1);
 			if (noreturn) return COMP_NORETURN;
-		} else if (lisp_type(head) == LISP_SYMBOL
-			&& consp(((struct Symbol *) UNTAG_OBJ(head))->value)) {
-			LispObject macro = car(lisp_ctx, ((struct Symbol *) UNTAG_OBJ(head))->value);
-			return compile_form(ctx, apply(ctx->lisp_ctx, macro, 0, &x), dst);
-		} else { // Function call
+			break;
+		}
+		default:
+			if (lisp_type(head) == LISP_SYMBOL
+				&& consp(((struct Symbol *) UNTAG_OBJ(head))->value)) {
+				LispObject macro = car(lisp_ctx, ((struct Symbol *) UNTAG_OBJ(head))->value);
+				return compile_form(ctx, apply(ctx->lisp_ctx, macro, 0, &x), dst);
+			}
+
+			// Function call
 			uint8_t prev_num_regs = ctx->num_regs, num_args = 0;
 			Register reg = dst.reg == ctx->num_regs - 1 ? dst.reg : ctx->num_regs++;
 			++ctx->num_regs; // Reserve register for PC
@@ -564,6 +582,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				if (reg != dst.reg && !dst.discarded)
 					emit(ctx, (struct Instruction) { .op = MOV, .a = dst.reg, .c = reg });
 			}
+			break;
 		}
 		break;
 	default: unreachable();
