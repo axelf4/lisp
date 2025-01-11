@@ -25,16 +25,16 @@ enum {
 };
 
 enum SsaOp : uint8_t {
-	IR_NOP,
+	// Comparisons are ordered such that flipping the LSB inverts them
+	IR_EQ, IR_NEQ,
 	IR_SLOAD, ///< Load stack slot.
 	IR_GLOAD, ///< Load global.
 	IR_ULOAD, ///< Load upvalue.
-	// Comparisons are ordered such that flipping the LSB inverts them
-	IR_EQ, IR_NEQ,
 	IR_CALL, ///< Call C function.
 	IR_CALLARG, ///< Argument for C function call.
 	IR_LOOP,
 	IR_PHI,
+	IR_NOP,
 	IR_NUM_OPS
 };
 
@@ -105,7 +105,7 @@ struct JitState {
 	uint8_t num_snapshots, num_stack_entries,
 		base_offset, max_slot;
 	bool need_snapshot;
-	IrRef slots[0xff], ///< Array of IR references for each VM register.
+	IrRef slots[0x100], ///< Array of IR references for each VM register.
 		*bp; ///< Pointer into @ref #slots at the current frame offset.
 	Ref chain[IR_NUM_OPS];
 
@@ -182,7 +182,7 @@ static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
 	for (i = IR_BIAS; i-- > IR_BIAS - state->num_consts;)
 		if (GC_COMPRESS(IR_GET(state, i).v).p == GC_COMPRESS(x).p) goto out;
 	if (state->num_consts >= MAX_CONSTS) throw(1);
-	IR_GET(state, i = IR_BIAS - ++state->num_consts) = (union SsaInstruction) { .v = x };
+	IR_GET(state, i = IR_BIAS - ++state->num_consts).v = x;
 out: return ty << IR_REF_TYPE_SHIFT | i;
 }
 
@@ -307,7 +307,7 @@ static void peel_loop(struct JitState *state) {
 		if (IS_VAR_REF(ins.b)) ins.b = subst[ins.b - IR_BIAS];
 
 		IrRef ref = emit_folded(state, ins);
-		uint16_t j = (subst[i] = ref) - IR_BIAS;
+		uint16_t j = (subst[i] = ref) % IR_BIAS;
 		if (j != i && j < preamble_len) { // Loop-carried dependency
 			if (IS_VAR_REF(ref)) {
 				// SLOAD:s of arguments varied in tail call give rise to φ:s
@@ -330,7 +330,7 @@ static void peel_loop(struct JitState *state) {
 
 [[gnu::used]] static struct SideExitResult {
 	struct Instruction *pc;
-	uint8_t base_offset, spill_slots;
+	uint8_t base_offset, num_spill_slots;
 	uint32_t clobbers;
 } side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
 	struct LispTrace *trace = ctx->current_trace;
@@ -511,7 +511,7 @@ static void asm_loop(struct RegAlloc *ctx, uint8_t *asm_end) {
 		if (LIKELY(in->spill_slot == SPILL_SLOT_NONE)) continue;
 		// Resave spill slot of "in" on each iteration
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrr, reg, rsp, in->spill_slot * sizeof in->v);
-		in->ty &= ~IR_MARK; // Remember that spill slot is handled by loop
+		in->ty |= IR_MARK; // Remember that spilling is handled by loop
 		// Allocate (now free) register for correct save on 1st iteration too
 		reg_use(ctx, lref, 1 << reg);
 	}
@@ -548,8 +548,8 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	asm_write32(&ctx.assembler, 0);
 	*--ctx.assembler.p = /* JMP */ 0xe9;
 
-	for (unsigned i = trace->len; i-- > 0;) {
-		if (ctx.snapshot_idx && i < trace->snapshots[ctx.snapshot_idx].ir_start)
+	for (unsigned i = trace->len; i--;) {
+		if (i < trace->snapshots[ctx.snapshot_idx].ir_start && ctx.snapshot_idx)
 			--ctx.snapshot_idx;
 
 		Ref ref = IR_BIAS + i;
@@ -633,7 +633,6 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 				asm_mov_reg_reg(&ctx.assembler, dst, out->reg);
 			}
 			in->reg = dst | REG_NONE; // Add hint
-			in->ty |= IR_MARK;
 			ctx.phi_regs |= 1 << dst;
 			ctx.phis_refs[dst] = x.a;
 			break;
@@ -644,7 +643,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 
 	FOR_ONES(reg, ctx.phi_regs) {
 		union SsaInstruction in = IR_GET(ctx.trace, ctx.phis_refs[reg]);
-		if (in.spill_slot != SPILL_SLOT_NONE && in.ty & IR_MARK)
+		if (in.spill_slot != SPILL_SLOT_NONE && !(in.ty & IR_MARK))
 			throw(1); // Spilled outside loop
 	}
 	reload(&ctx, REF_BP);
@@ -741,7 +740,7 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			printf("  (");
 			for (Ref j = 0; j < x.b; ++j) {
 				union SsaInstruction arg = state->trace[MAX_CONSTS + ++i];
-				if (j > 0) printf(" ");
+				if (j) printf(" ");
 				print_ir_ref(state, arg.ty, arg.a);
 			}
 			puts(")");
@@ -881,10 +880,9 @@ static void do_record(void *userdata) {
 	case RET: do_ret:
 		if (state->base_offset) {
 			result = state->bp[x.a];
-			uint8_t offset = x.a = ((struct Instruction *) bp[1])[-1].a;
+			uint8_t offset = state->max_slot = x.a = ((struct Instruction *) bp[1])[-1].a;
 			state->bp -= offset;
 			state->base_offset -= offset;
-			state->max_slot = x.a;
 			break;
 		}
 		[[fallthrough]];
