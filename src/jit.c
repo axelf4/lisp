@@ -75,7 +75,7 @@ struct Snapshot {
 	/// Number of instructions executed before this snapshot was taken.
 	uint16_t ir_start,
 		offset; ///< Offset into @ref JitState::stack_entries.
-	uint8_t num_stack_entries, frame_offset;
+	uint8_t num_stack_entries, base_offset;
 	struct GcRef pc; ///< Instruction pointer after this point.
 };
 
@@ -130,7 +130,7 @@ static void take_snapshot(struct JitState *state) {
 	struct Snapshot *snap = state->snapshots + state->num_snapshots++;
 	*snap = (struct Snapshot) {
 		.ir_start = state->len, .offset = state->num_stack_entries,
-		.frame_offset = state->base_offset, .pc = GC_COMPRESS(state->pc - 1),
+		.base_offset = state->base_offset, .pc = GC_COMPRESS(state->pc - 1),
 	};
 	for (uint8_t i = 0; i <= max_slot; ++i) {
 		IrRef ref = state->slots[i];
@@ -297,7 +297,7 @@ static void peel_loop(struct JitState *state) {
 			*s = (struct Snapshot)
 				{ .ir_start = state->len, .offset = offset,
 				  .num_stack_entries = n - (state->stack_entries + offset),
-				  .frame_offset = snap->frame_offset, .pc = snap->pc };
+				  .base_offset = snap->base_offset, .pc = snap->pc };
 			state->num_stack_entries = offset + s->num_stack_entries;
 			++snap;
 		}
@@ -353,7 +353,7 @@ static void peel_loop(struct JitState *state) {
 		puts(".");
 	}
 	struct Instruction *pc = (struct Instruction *) GC_DECOMPRESS(ctx, snapshot->pc);
-	return (struct SideExitResult) { pc, snapshot->frame_offset,
+	return (struct SideExitResult) { pc, snapshot->base_offset,
 		trace->num_spill_slots, trace->clobbers };
 }
 
