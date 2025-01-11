@@ -103,7 +103,7 @@ uint8_t trace_arity(struct LispTrace *trace) { return trace->arity; }
 struct JitState {
 	uint16_t len, num_consts;
 	uint8_t num_snapshots, num_stack_entries,
-		base_offset, max_slot, frame_depth;
+		base_offset, max_slot;
 	bool need_snapshot;
 	IrRef slots[0xff], ///< Array of IR references for each VM register.
 		*bp; ///< Pointer into @ref #slots at the current frame offset.
@@ -837,7 +837,6 @@ static void do_record(void *userdata) {
 			(state->bp += x.a)[1] = emit_const(state, TY_RET_ADDR, (uintptr_t) pc);
 			state->base_offset += x.a;
 			state->max_slot = 2 + x.c - 1;
-			++state->frame_depth;
 			break;
 		default:
 		}
@@ -880,7 +879,7 @@ static void do_record(void *userdata) {
 			{ .op = IR_EQ ^ !NILP(bp[x.a]), .ty = ty, .a = ref, .b = nil });
 		break;
 	case RET: do_ret:
-		if (state->frame_depth--) {
+		if (state->base_offset) {
 			result = state->bp[x.a];
 			uint8_t offset = x.a = ((struct Instruction *) bp[1])[-1].a;
 			state->bp -= offset;
