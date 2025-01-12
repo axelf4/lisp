@@ -32,7 +32,7 @@ static inline void asm_write64(struct Assembler *ctx, uint64_t x) {
 	asm_write(ctx, sizeof x, (unsigned char *) &x);
 }
 
-static int32_t rel32(uintptr_t p, uintptr_t target) {
+static inline int32_t rel32(uintptr_t p, uintptr_t target) {
 	ptrdiff_t dt = target - p;
 	assert((int32_t) dt == dt && "Out of range jump target");
 	return dt;
@@ -78,10 +78,9 @@ enum {
 	XI_MOVrr = 0x89,
 	XI_MOVrm = 0x8b,
 	XI_MOVri = 0xb8,
-	XI_RET = 0xc3,
-	XI_CALL = 0xe8,
-	XI_GRP5 = 0xff,
 	XI_LEA = 0x8d,
+	XI_RET = 0xc3,
+	XI_GRP5 = 0xff,
 };
 
 /** Emits @a op with operands @a reg and `[%base+disp]`.
@@ -141,11 +140,6 @@ enum Cc : unsigned char {
 static inline enum Cc cc_negate(enum Cc x) { return x ^ 1; }
 
 static inline void asm_ret(struct Assembler *ctx) { *--ctx->p = XI_RET; }
-
-static inline void asm_call(struct Assembler *ctx, uintptr_t target) {
-	asm_write32(ctx, rel32((uintptr_t) ctx->p, target));
-	*--ctx->p = XI_CALL;
-}
 #else
 #error Unknown architecture
 #endif
