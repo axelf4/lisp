@@ -592,31 +592,31 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			// Evict caller-saved registers
 			FOR_ONES(reg, REG_ALL & ~ctx.available & ~CALLEE_SAVED_REGS)
 				reload(&ctx, ctx.reg_costs[reg]);
-			asm_grp1_imm(&ctx.assembler, 1, /* ADD */ 0, rsp, x.b * sizeof x.v);
 
 			reg_alloc(&ctx, ref, 1 << rax);
 			enum Register f_reg = reg_use(&ctx, x.a, CALLEE_SAVED_REGS);
-			asm_rmrd(&ctx.assembler, 0, XI_GRP5, /* CALL */ 2, f_reg, offsetof(struct LispCFunction, f) - 1);
+			asm_rmrd(&ctx.assembler, 0, XI_GRP5, /* CALL */ 2,
+				f_reg, offsetof(struct LispCFunction, f) - 1);
 
 			uint32_t arg_regs = rdi | rsi << 4 | rdx << 8 | rcx << 12 | r8 << 16 | r9 << 20;
 			asm_mov_reg_reg(&ctx.assembler, arg_regs & 0xf, REG_LISP_CTX);
-			asm_loadu64(&ctx.assembler, arg_regs >> 4 & 0xf, x.b);
-			asm_mov_reg_reg(&ctx.assembler, arg_regs >> 2 * 4 & 0xf, rsp);
-			for (unsigned j = 0; j <  x.b; ++j) {
+			asm_loadu64(&ctx.assembler, (arg_regs >>= 4) & 0xf, x.b);
+			enum Register args_reg = (arg_regs >>= 4) & 0xf;
+			for (unsigned j = x.b; j--;) {
 				Ref arg_ref = trace->trace[MAX_CONSTS + i + 1 + j].a;
 				union SsaInstruction arg = IR_GET(trace, arg_ref);
-				if (!IS_VAR_REF(arg_ref) && (int8_t) arg.v == (intptr_t) arg.v) {
-					*--ctx.assembler.p = arg.v;
-					*--ctx.assembler.p = /* PUSH */ 0x6a;
+				if (!IS_VAR_REF(arg_ref) && (int32_t) arg.v == (intptr_t) arg.v) {
+					asm_write32(&ctx.assembler, (int32_t) arg.v);
+					asm_rmrd(&ctx.assembler, 1, /* MOV */ 0xc7, 0, args_reg, j * sizeof arg.v);
 					continue;
 				}
-				// TODO Fuse memory loads into PUSH
-				enum Register arg_reg
-					= IS_VAR_REF(arg_ref) ? reg_use(&ctx, arg_ref, -1) : rax;
-				*--ctx.assembler.p = /* PUSH */ 0x50 + (arg_reg & 7);
-				EMIT_REX(&ctx.assembler, 0, 0, 0, arg_reg);
+				enum Register arg_reg = IS_VAR_REF(arg_ref)
+					? reg_use(&ctx, arg_ref, ~(1 << args_reg)) : rax;
+				asm_rmrd(&ctx.assembler, 1, XI_MOVrr, arg_reg, args_reg, j * sizeof arg.v);
 				if (!IS_VAR_REF(arg_ref)) asm_loadu64(&ctx.assembler, arg_reg, arg.v);
 			}
+			bp = reg_use(&ctx, REF_BP, -1);
+			asm_rmrd(&ctx.assembler, 1, XI_LEA, args_reg, bp, 0x100 * sizeof x.v);
 			break;
 		case IR_CALLARG: break;
 
@@ -648,10 +648,12 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	}
 	reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
-	// TODO Align stack to 16-byte boundary
+	ctx.clobbers &= CALLEE_SAVED_REGS;
+	if ((stdc_count_ones(ctx.clobbers) + ctx.num_spill_slots) % 2 == 0)
+		++ctx.num_spill_slots; // Align stack to 16-byte boundary
 	asm_grp1_imm(&ctx.assembler, 1, /* SUB */ 5, rsp, ctx.num_spill_slots * sizeof(void *));
 	// Save callee-saved registers
-	FOR_ONES(reg, ctx.clobbers &= CALLEE_SAVED_REGS) {
+	FOR_ONES(reg, ctx.clobbers) {
 		*--ctx.assembler.p = /* PUSH */ 0x50 + (reg & 7);
 		EMIT_REX(&ctx.assembler, 0, 0, 0, reg);
 	}
