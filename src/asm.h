@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include "fxhash.h"
+#include "util.h"
 
 #define MCODE_CAPACITY 0x10000
 
@@ -80,6 +81,7 @@ enum {
 	XI_MOVri = 0xb8,
 	XI_RET = 0xc3,
 	XI_GRP5 = 0xff,
+	XI_LEA = 0x8d,
 };
 
 /** Emits @a op with operands @a reg and `[%base+disp]`.

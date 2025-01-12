@@ -113,9 +113,9 @@ enum LispKeyword {
 };
 
 struct LispCtx {
-	struct Table symbol_tbl;
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
+	struct Table symbol_tbl;
 
 #if ENABLE_JIT
 	struct JitState *jit_state;
