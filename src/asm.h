@@ -81,6 +81,7 @@ enum {
 	XI_RET = 0xc3,
 	XI_CALL = 0xe8,
 	XI_GRP5 = 0xff,
+	XI_LEA = 0x8d,
 };
 
 /** Emits @a op with operands @a reg and `[%base+disp]`.
