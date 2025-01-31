@@ -299,32 +299,34 @@ static enum BlockStatus {
 		: UNAVAILABLE;
 }
 
+[[gnu::noinline]] static void select_defrag_candidates(struct GcHeap *heap) {
+#define MAX_HOLES ((GC_LINE_COUNT + 2) / 3)
+	unsigned mark_histogram[MAX_HOLES] = {};
+	for (size_t i = 0; i < heap->recycled_len; ++i) {
+		struct GcBlock *block = heap->recycled[i];
+		struct BlockStats stats = block_stats(block);
+		mark_histogram[block->flag = stats.num_holes] += stats.num_marks;
+	}
+
+	ssize_t available_space = GC_LINE_SIZE * GC_LINE_COUNT * heap->free_len;
+	unsigned bin = MAX_HOLES;
+	do available_space -= GC_LINE_SIZE * mark_histogram[--bin];
+	while (available_space > 0 && bin);
+
+	for (size_t i = 0; i < heap->recycled_len;) {
+		struct GcBlock *block = heap->recycled[i];
+		bool is_defrag_candidate = (block->flag = block->flag > bin);
+		if (is_defrag_candidate)
+			// Remove from recycled list to not evacuate into itself
+			heap->recycled[i] = heap->recycled[--heap->recycled_len];
+		else ++i;
+	}
+}
+
 void garbage_collect(struct GcHeap *heap) {
 	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
-	if (heap->defrag) {
-#define MAX_HOLES ((GC_LINE_COUNT + 2) / 3)
-		unsigned mark_histogram[MAX_HOLES] = {};
-		for (size_t i = 0; i < heap->recycled_len; ++i) {
-			struct GcBlock *block = heap->recycled[i];
-			struct BlockStats stats = block_stats(block);
-			mark_histogram[block->flag = stats.num_holes] += stats.num_marks;
-		}
-
-		ssize_t available_space = GC_LINE_SIZE * GC_LINE_COUNT * heap->free_len;
-		unsigned bin = MAX_HOLES;
-		do available_space -= GC_LINE_SIZE * mark_histogram[--bin];
-		while (available_space > 0 && bin);
-
-		for (size_t i = 0; i < heap->recycled_len;) {
-			struct GcBlock *block = heap->recycled[i];
-			bool is_defrag_candidate = (block->flag = block->flag > bin);
-			if (is_defrag_candidate)
-				// Remove from recycled list to not evacuate into itself
-				heap->recycled[i] = heap->recycled[--heap->recycled_len];
-			else ++i;
-		}
-	}
 	if (heap->is_major_gc) {
+		if (heap->defrag) select_defrag_candidates(heap);
 		memset(heap->object_map, 0, OBJECT_MAP_SIZE); // Clear object map
 		// Unmark blocks
 		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
