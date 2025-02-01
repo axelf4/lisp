@@ -229,28 +229,8 @@ void gc_pin(struct GcHeap *heap, void *p) {
 	trace_stack_push(heap, p);
 }
 
-/** Call @a fn with callee-saved registers pushed to the stack. */
-#ifndef __GNUC__
-volatile void *gc_nop_sink;
-#endif
-static void with_callee_saves_pushed(void (*fn)(void *), void *arg) {
-	ucontext_t ctx;
-	if (UNLIKELY(getcontext(&ctx))) {
-		fputs("getcontext() failed\n", stderr);
-		__builtin_unwind_init();
-	}
-	fn(arg);
-	// Inhibit tail-call which would pop register contents prematurely
-#ifdef __GNUC__
-	__asm__ volatile ("" : : "X" (&ctx) : "memory");
-#else
-	gc_nop_sink = &ctx;
-#endif
-}
-
 extern void *__libc_stack_end; ///< Highest used stack address.
-[[gnu::no_sanitize_address]] static void collect_roots(void *x) {
-	struct GcHeap *heap = x;
+[[gnu::no_sanitize_address]] static void scan_stack(struct GcHeap *heap) {
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
 	sp = (void *) ((uintptr_t) sp & ~(alignof(struct GcRef) - 1));
 	for (struct GcRef *p = sp; (void *) p <= base; ++p) {
@@ -323,6 +303,10 @@ static enum BlockStatus {
 	}
 }
 
+#ifndef __GNUC__
+volatile void *gc_nop_sink;
+#endif
+
 void garbage_collect(struct GcHeap *heap) {
 	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
 	if (heap->is_major_gc) {
@@ -336,9 +320,23 @@ void garbage_collect(struct GcHeap *heap) {
 	// Unlog remembered set
 	for (size_t i = 0; i < heap->trace_stack.length; ++i)
 		((struct GcObjectHeader *) heap->trace_stack.items[i])->flags |= GC_UNLOGGED;
+
+	// Push callee-saved register onto the stack
+	ucontext_t ctx;
+	if (UNLIKELY(getcontext(&ctx))) {
+		fputs("getcontext() failed\n", stderr);
+		__builtin_unwind_init();
+	}
+	scan_stack(heap); // Collect conservative roots
+	// Prevent register contents being popped prematurely
+#ifdef __GNUC__
+	__asm__ volatile ("" : : "X" (&ctx) : "memory");
+#else
+	gc_nop_sink = &ctx;
+#endif
+
 	// Alternate liveness color to skip zeroing object marks
 	heap->mark_color = !heap->mark_color;
-	with_callee_saves_pushed(collect_roots, heap); // Collect conservative roots
 	gc_trace_roots(heap);
 	while (heap->trace_stack.length) // Trace live objects
 		gc_object_visit(heap, heap->trace_stack.items[--heap->trace_stack.length]);
