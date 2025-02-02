@@ -44,6 +44,10 @@ if(BUILD_TESTING)
   target_include_directories(unittest PRIVATE cmocka "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(unittest cmocka lisplib)
   add_test(unittest unittest)
+
+  add_executable(heap_fuzz test/heap_fuzz.c)
+  target_include_directories(heap_fuzz PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  add_test(heap_fuzz heap_fuzz)
 endif()
 
 install(TARGETS lisp)
