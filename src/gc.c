@@ -264,13 +264,10 @@ static enum BlockStatus {
 		else ASAN_POISON_MEMORY_REGION(block->data + GC_LINE_SIZE * i, GC_LINE_SIZE);
 #else
 	static_assert(GC_LINE_COUNT == 127);
-	__m256i sums = _mm256_add_epi8(
-		_mm256_add_epi8(_mm256_load_si256((const __m256i *) block->line_marks),
-			_mm256_load_si256((const __m256i *) block->line_marks + 1)),
-		_mm256_add_epi8(_mm256_load_si256((const __m256i *) block->line_marks + 2),
-			_mm256_load_si256((const __m256i *) block->line_marks + 3))
-	),
-		total = _mm256_sad_epu8(sums, _mm256_setzero_si256());
+	__m256i *xs = (__m256i *) block->line_marks, sums = _mm256_add_epi8(
+		_mm256_add_epi8(_mm256_load_si256(xs), _mm256_load_si256(xs + 1)),
+		_mm256_add_epi8(_mm256_load_si256(xs + 2), _mm256_load_si256(xs + 3))
+	), total = _mm256_sad_epu8(sums, _mm256_setzero_si256());
 	unavailable_lines = _mm256_extract_epi64(total, 0) + _mm256_extract_epi64(total, 1)
 		+ _mm256_extract_epi64(total, 2) + _mm256_extract_epi64(total, 3);
 #endif
@@ -328,7 +325,7 @@ void garbage_collect(struct GcHeap *heap) {
 		__builtin_unwind_init();
 	}
 	scan_stack(heap); // Collect conservative roots
-	// Prevent register contents being popped prematurely
+	// Prevent prematurely popping register contents
 #ifdef __GNUC__
 	__asm__ volatile ("" : : "X" (&ctx) : "memory");
 #else
