@@ -249,7 +249,7 @@ static struct BlockStats {
 	return result;
 }
 
-static enum BlockStatus {
+[[gnu::no_sanitize_address]] static enum BlockStatus {
 	FREE, ///< Unallocated.
 	RECYCLABLE, ///< Partly used with at least F=1 free lines.
 	UNAVAILABLE, ///< No unmarked lines.
@@ -258,18 +258,23 @@ static enum BlockStatus {
 	unsigned unavailable_lines = 0;
 #ifdef __AVX2__
 	static_assert(GC_LINE_COUNT == 127);
-	__m256i sums = _mm256_add_epi8(
-		_mm256_add_epi8(_mm256_load_si256((const __m256i *) block->line_marks),
-			_mm256_load_si256((const __m256i *) block->line_marks + 1)),
-		_mm256_add_epi8(_mm256_load_si256((const __m256i *) block->line_marks + 2),
-			_mm256_load_si256((const __m256i *) block->line_marks + 3))
-	),
-		total = _mm256_sad_epu8(sums, _mm256_setzero_si256());
-	unavailable_lines = _mm256_extract_epi64(total, 0) + _mm256_extract_epi64(total, 1)
-		+ _mm256_extract_epi64(total, 2) + _mm256_extract_epi64(total, 3);
+	__m256i_u *ys = (__m256i_u *) (block->line_marks - 1);
+	__m256i *xs = (__m256i *) block->line_marks, as[] = {
+		_mm256_or_si256(_mm256_load_si256(xs),
+			_mm256_andnot_si256( // Mask block->line_marks[-1]
+				_mm256_set_epi64x(0, 0, 0, 0xff), _mm256_loadu_si256(ys))),
+		_mm256_or_si256(_mm256_load_si256(xs + 1), _mm256_loadu_si256(ys + 1)),
+		_mm256_or_si256(_mm256_load_si256(xs + 2), _mm256_loadu_si256(ys + 2)),
+		_mm256_or_si256(_mm256_load_si256(xs + 3), _mm256_loadu_si256(ys + 3)),
+	}, sums = _mm256_sad_epu8(
+		_mm256_add_epi8(_mm256_add_epi8(as[0], as[1]), _mm256_add_epi8(as[2], as[3])),
+		_mm256_setzero_si256());
+	unavailable_lines = _mm256_extract_epi64(sums, 0) + _mm256_extract_epi64(sums, 1)
+		+ _mm256_extract_epi64(sums, 2) + _mm256_extract_epi64(sums, 3);
 #else
-	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
-		if (block->line_marks[i]) ++unavailable_lines;
+	for (unsigned i = 0, prev_was_marked = false; i < GC_LINE_COUNT;
+			prev_was_marked = block->line_marks[i], ++i)
+		if (block->line_marks[i] || prev_was_marked) ++unavailable_lines;
 #endif
 	return !unavailable_lines ? FREE
 		: unavailable_lines < GC_LINE_COUNT ? RECYCLABLE
