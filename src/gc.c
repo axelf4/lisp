@@ -161,6 +161,9 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 	if (!heap->free_len) return NULL;
 	*ptr = block_bump_ptr(heap->free[--heap->free_len]);
 out_bump:
+	ASAN_POISON_MEMORY_REGION(ptr->limit, ptr->cursor - ptr->limit);
+	memset(heap->object_map + (ptr->limit - (char *) heap) / (GC_MIN_ALIGNMENT * CHAR_BIT),
+		0, (ptr->cursor - ptr->limit) / (GC_MIN_ALIGNMENT * CHAR_BIT));
 	return bump_alloc(ptr, alignment, size);
 }
 
@@ -253,11 +256,7 @@ static enum BlockStatus {
 } sweep(struct GcBlock *block) {
 	block->flag = 0;
 	unsigned unavailable_lines = 0;
-#if defined __SANITIZE_ADDRESS__ || !defined __AVX2__
-	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
-		if (block->line_marks[i]) ++unavailable_lines;
-		else ASAN_POISON_MEMORY_REGION(block->data + GC_LINE_SIZE * i, GC_LINE_SIZE);
-#else
+#ifdef __AVX2__
 	static_assert(GC_LINE_COUNT == 127);
 	__m256i sums = _mm256_add_epi8(
 		_mm256_add_epi8(_mm256_load_si256((const __m256i *) block->line_marks),
@@ -268,6 +267,9 @@ static enum BlockStatus {
 		total = _mm256_sad_epu8(sums, _mm256_setzero_si256());
 	unavailable_lines = _mm256_extract_epi64(total, 0) + _mm256_extract_epi64(total, 1)
 		+ _mm256_extract_epi64(total, 2) + _mm256_extract_epi64(total, 3);
+#else
+	for (unsigned i = 0; i < GC_LINE_COUNT; ++i)
+		if (block->line_marks[i]) ++unavailable_lines;
 #endif
 	return !unavailable_lines ? FREE
 		: unavailable_lines < GC_LINE_COUNT ? RECYCLABLE
