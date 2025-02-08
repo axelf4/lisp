@@ -99,7 +99,7 @@ static inline void gc_mark(size_t len, const char p[static len]) {
 	do block->line_marks[line++] = 1; while ((p += GC_LINE_SIZE) < end);
 }
 
-[[gnu::noinline]] void garbage_collect(struct GcHeap *heap);
+void garbage_collect(struct GcHeap *heap);
 
 /** @name Embedder API */ ///@{
 

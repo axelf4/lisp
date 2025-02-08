@@ -19,6 +19,8 @@
 #include <immintrin.h>
 #endif
 
+#define NULL_BUMP_PTR(block) (struct BumpPointer) { (block)->data, (block)->data }
+
 struct BumpPointer { char *cursor, *limit; };
 
 [[gnu::alloc_align (2), gnu::alloc_size (3)]]
@@ -30,46 +32,40 @@ static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 }
 
 static_assert(GC_LINE_SIZE % alignof(max_align_t) == 0);
-/** Locates the next gap of unmarked lines of sufficient size. */
-static struct BumpPointer next_gap(struct GcBlock *block, char *top, size_t size) {
-	unsigned required_lines = (size + GC_LINE_SIZE - 1) / GC_LINE_SIZE, count = 0,
-		end = (top - (char *) block) / GC_LINE_SIZE;
+/** Locates the next gap of unmarked lines. */
+static struct BumpPointer next_gap(struct GcBlock *block, char *top) {
+	unsigned count = 0, end = (top - block->data) / GC_LINE_SIZE;
+	char *limit = block->data;
 	for (unsigned i = end; i--;)
 		if (block->line_marks[i]) {
-			if (count > required_lines)
-				// At least 2 preceeding lines were unmarked. Consider
-				// the previous line as conservatively marked.
-				return (struct BumpPointer) {
-					block->data + GC_LINE_SIZE * end,
-					block->data + GC_LINE_SIZE * (i + 2),
-				};
+			// If at least 2 preceeding lines were unmarked then
+			// consider the previous line as conservatively marked.
+			if (count > 1) { limit += GC_LINE_SIZE * (i + 2); break; }
 			count = 0;
 			end = i;
 		} else ++count;
-	return count >= required_lines
-		? (struct BumpPointer) { block->data + GC_LINE_SIZE * end, block->data }
+	return count
+		? (struct BumpPointer) { block->data + GC_LINE_SIZE * end, limit }
 		: (struct BumpPointer) {};
 }
 
-static struct BumpPointer empty_block_ptr(struct GcBlock *block) {
-	return (struct BumpPointer) { block->data + sizeof block->data, block->data };
+static struct BumpPointer block_bump_ptr(struct GcBlock *block) {
+	return (struct BumpPointer) { (&block->data)[1], block->data };
 }
 
 #ifndef GC_HEAP_SIZE
 #define GC_HEAP_SIZE 0x800000 ///< GC heap allocation size in bytes.
 #endif
 #define NUM_BLOCKS (GC_HEAP_SIZE / sizeof(struct GcBlock) - 1)
-#define MIN_FREE (NUM_BLOCKS / (100 / 3))
+#define MIN_FREE (NUM_BLOCKS * 3 / 100)
 #define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_MIN_ALIGNMENT * CHAR_BIT))
 
 struct GcHeap {
 	// Store at same offset to use a single pointer for both
 	struct LispCtx lisp_ctx;
 
-	struct BumpPointer ptr, overflow_ptr;
-	struct GcBlock *head, ///< The current block being allocated into.
-		*overflow, ///< Block kept for writing medium objects.
-		**free, **recycled;
+	struct BumpPointer ptr, overflow_ptr; ///< Bump pointer for medium objects.
+	struct GcBlock **free, **recycled;
 	size_t free_len, recycled_len;
 
 	bool mark_color, inhibit_gc, defrag, is_major_gc;
@@ -80,12 +76,12 @@ struct GcHeap {
 
 struct GcHeap *gc_new() {
 	struct GcHeap *heap;
-	size_t alignment = 1ull << 32;
+	size_t alignment = /* 4 GiB */ 1ull << 32;
 	void *p;
 	if ((p = mmap(NULL, sizeof *heap + alignment - 1, PROT_READ | PROT_WRITE,
 				MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0))
 		== MAP_FAILED) return NULL;
-	heap = (struct GcHeap *) ALIGN_UP(p, alignment); // Align to multiple of 4 GiB
+	heap = (struct GcHeap *) ALIGN_UP(p, alignment);
 	if (heap != p) munmap(p, (char *) heap - (char *) p);
 	char *end = (char *) p + sizeof *heap + alignment - 1;
 	if (end != (char *) (heap + 1)) munmap(heap + 1, end - (char *) (heap + 1));
@@ -103,8 +99,8 @@ struct GcHeap *gc_new() {
 	heap->recycled = heap->free + NUM_BLOCKS;
 
 	struct GcBlock *blocks = heap->blocks;
-	heap->ptr = empty_block_ptr(heap->head = blocks);
-	heap->overflow_ptr = (struct BumpPointer) { blocks->data, blocks->data }; // Lazily init
+	heap->ptr = block_bump_ptr(blocks);
+	heap->overflow_ptr = NULL_BUMP_PTR(blocks);
 	for (struct GcBlock *block = blocks; block < blocks + NUM_BLOCKS; ++block) {
 		ASAN_POISON_MEMORY_REGION(block->data, sizeof block->data);
 #ifndef __linux__
@@ -147,31 +143,30 @@ enum {
 [[gnu::noinline]]
 static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size) {
 	struct BumpPointer *ptr = &heap->ptr;
-	struct GcBlock **block = &heap->head;
+	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) ptr->limit & ~(sizeof *block - 1));
 	if (size <= GC_LINE_SIZE) {
-		if ((*ptr = next_gap(*block, ptr->limit, size)).cursor) goto out_bump;
+		if ((*ptr = next_gap(block, ptr->limit)).cursor) goto out_bump;
 		if (heap->recycled_len) {
-			*block = heap->recycled[--heap->recycled_len];
+			block = heap->recycled[--heap->recycled_len];
 			// Recycled blocks have gaps of >=1 line; enough for small objects
-			*ptr = next_gap(*block, (*block)->data + sizeof (*block)->data, size);
+			*ptr = next_gap(block, (&block->data)[1]);
 			goto out_bump;
 		}
 	} else { // Demand-driven overflow allocation
 		char *p;
 		if ((p = bump_alloc(ptr = &heap->overflow_ptr, alignment, size))) return p;
-		block = &heap->overflow;
 	}
 	// Acquire a free block
 	if (heap->free_len <= MIN_FREE) garbage_collect(heap);
 	if (!heap->free_len) return NULL;
-	*ptr = empty_block_ptr(*block = heap->free[--heap->free_len]);
+	*ptr = block_bump_ptr(heap->free[--heap->free_len]);
 out_bump:
 	return bump_alloc(ptr, alignment, size);
 }
 
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 	char *p;
-	if (UNLIKELY(size > GC_BLOCK_SIZE)
+	if (UNLIKELY(size > sizeof (struct GcBlock) {}.data)
 		|| !(LIKELY(p = bump_alloc(&heap->ptr, alignment, size))
 			|| (p = alloc_slow_path(heap, alignment, size)))) return NULL;
 	ASAN_UNPOISON_MEMORY_REGION(p, size);
@@ -230,7 +225,7 @@ void gc_pin(struct GcHeap *heap, void *p) {
 }
 
 extern void *__libc_stack_end; ///< Highest used stack address.
-[[gnu::no_sanitize_address]] static void scan_stack(struct GcHeap *heap) {
+static void scan_stack(struct GcHeap *heap) {
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
 	sp = (void *) ((uintptr_t) sp & ~(alignof(struct GcRef) - 1));
 	for (struct GcRef *p = sp; (void *) p <= base; ++p) {
@@ -295,7 +290,8 @@ static enum BlockStatus {
 
 	for (size_t i = 0; i < heap->recycled_len;) {
 		struct GcBlock *block = heap->recycled[i];
-		bool is_defrag_candidate = (block->flag = block->flag > bin);
+		bool is_defrag_candidate = block->flag > bin;
+		block->flag = is_defrag_candidate ? 1 : 2;
 		if (is_defrag_candidate)
 			// Remove from recycled list to not evacuate into itself
 			heap->recycled[i] = heap->recycled[--heap->recycled_len];
@@ -311,15 +307,18 @@ void garbage_collect(struct GcHeap *heap) {
 	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
 	if (heap->is_major_gc) {
 		if (heap->defrag) select_defrag_candidates(heap);
-		memset(heap->object_map, 0, OBJECT_MAP_SIZE); // Clear object map
+		struct GcBlock *head = (struct GcBlock *) ((uintptr_t) heap->ptr.cursor & ~(sizeof *head - 1));
 		// Unmark blocks
 		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
-			memset(block->line_marks, 0, sizeof block->line_marks);
+			if (block->flag == 2 || block == head) block->flag = 0;
+			else memset(block->line_marks, 0, sizeof block->line_marks);
 		heap->trace_stack.length = 0; // Ignore remembered set
 	}
 	// Unlog remembered set
 	for (size_t i = 0; i < heap->trace_stack.length; ++i)
 		((struct GcObjectHeader *) heap->trace_stack.items[i])->flags |= GC_UNLOGGED;
+	// Alternate liveness color to skip zeroing object marks
+	heap->mark_color = !heap->mark_color;
 
 	// Push callee-saved register onto the stack
 	ucontext_t ctx;
@@ -328,19 +327,19 @@ void garbage_collect(struct GcHeap *heap) {
 		__builtin_unwind_init();
 	}
 	scan_stack(heap); // Collect conservative roots
-	// Prevent register contents being popped prematurely
+	// Prevent prematurely popping register contents
 #ifdef __GNUC__
 	__asm__ volatile ("" : : "X" (&ctx) : "memory");
 #else
 	gc_nop_sink = &ctx;
 #endif
 
-	// Alternate liveness color to skip zeroing object marks
-	heap->mark_color = !heap->mark_color;
+	if (heap->is_major_gc) memset(heap->object_map, 0, OBJECT_MAP_SIZE);
 	gc_trace_roots(heap);
 	while (heap->trace_stack.length) // Trace live objects
 		gc_object_visit(heap, heap->trace_stack.items[--heap->trace_stack.length]);
 
+	heap->ptr = heap->overflow_ptr = NULL_BUMP_PTR(heap->blocks);
 	heap->free_len = heap->recycled_len = 0;
 	for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
 		switch (sweep(block)) {
