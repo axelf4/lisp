@@ -76,15 +76,19 @@ struct GcHeap {
 
 struct GcHeap *gc_new() {
 	struct GcHeap *heap;
-	size_t alignment = /* 4 GiB */ 1ull << 32;
-	void *p;
+	size_t alignment =
+#if USE_COMPRESSED_PTRS
+		/* 4 GiB */ 1ull << 32;
+#else
+		alignof(struct GcHeap);
+#endif
+	char *p;
 	if ((p = mmap(NULL, sizeof *heap + alignment - 1, PROT_READ | PROT_WRITE,
 				MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0))
 		== MAP_FAILED) return NULL;
 	heap = (struct GcHeap *) ALIGN_UP(p, alignment);
-	if (heap != p) munmap(p, (char *) heap - (char *) p);
-	char *end = (char *) p + sizeof *heap + alignment - 1;
-	if (end != (char *) (heap + 1)) munmap(heap + 1, end - (char *) (heap + 1));
+	munmap(p, (char *) heap - p);
+	munmap(heap + 1, p + sizeof *heap + alignment - 1 - (char *) (heap + 1));
 
 	heap->mark_color = heap->inhibit_gc = heap->defrag = heap->is_major_gc = false;
 	heap->trace_stack = (struct TraceStack) {};
@@ -205,7 +209,7 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
 	// Opportunistic evacuation if block is a defragmentation candidate
-	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) hdr & ~(sizeof *block - 1));
+	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) p & ~(sizeof *block - 1));
 	size_t alignment, size;
 	void *q;
 	if (block->flag && (size = gc_object_size(p, &alignment),
