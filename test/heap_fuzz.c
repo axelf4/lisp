@@ -21,6 +21,7 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/time.h>
+#include "fxhash.h"
 #include "gc.c"
 #include "util.c"
 
@@ -29,10 +30,6 @@
 #endif
 
 #define MAX_EVENTS 1024 ///< Number of events limit per scenario.
-
-static uint64_t rng(unsigned _BitInt(128) *state) {
-	return (*state *= 0xda942042e4dd58b5) >> 64; // 64-bit Lehmer's generator
-}
 
 /** Approximates Gaussian sampling using POPCNT.
  *
@@ -123,11 +120,10 @@ static size_t gen_obj_data_size(uint64_t u) {
 	return (x + (max << CHAR_BIT * sizeof max / 2)) % max;
 }
 
-static volatile unsigned _BitInt(128) this_seed;
+static volatile uint64_t this_seed;
 
 static void death_callback() {
-	fprintf(stderr, "Failure! seed: %" PRIx64 ":%" PRIx64 "\n",
-		(uint64_t) (this_seed >> 64), (uint64_t) this_seed);
+	fprintf(stderr, "Failure! seed: %" PRIx64 "\n", this_seed);
 }
 
 static volatile sig_atomic_t should_stop;
@@ -154,7 +150,7 @@ int main() {
 	if (!(objects = malloc(sizeof *objects))) goto err; // malloc to avoid rooting
 
 	struct GcHeap *heap;
-	unsigned _BitInt(128) state = time(NULL);
+	uint64_t state = time(NULL);
 	unsigned int scenario_count = 0;
 	do {
 		this_seed = state;
@@ -163,7 +159,7 @@ int main() {
 		*ctx = (struct Ctx) { .objects = objects };
 
 		for (unsigned i = MAX_EVENTS; i--;) {
-			uint64_t b = rng(&state);
+			uint64_t b = state = fxhash(state, 0);
 			switch (gen_event_type(b)) {
 			case EVENT_ALLOC: {
 				size_t data_size = gen_obj_data_size(b);

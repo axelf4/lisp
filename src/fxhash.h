@@ -18,7 +18,9 @@ static inline uint64_t rol64(uint64_t x, unsigned n) {
 	return x << (n & mask) | x >> (-n & mask);
 }
 
-/* The polynomial hash
+/** FxHash multiplier.
+ *
+ * The polynomial hash
  *
  *     m[0]*k    + m[1]*k^2  + m[2]*k^3  + ...
  *
@@ -29,12 +31,12 @@ static inline uint64_t rol64(uint64_t x, unsigned n) {
  * where k was generated using a multiplicative congruential random
  * number generator (MCG). Hence, a known-good MCG constant is used.
  *
- * See: STEELE JR, Guy L.; VIGNA, Sebastiano. Computationally easy,
+ * @see STEELE JR, Guy L.; VIGNA, Sebastiano. Computationally easy,
  *      spectrally good multipliers for congruential pseudorandom
  *      number generators. Software: Practice and Experience, 2022,
  *      52.2: 443-458.
  */
-#define FXHASH_K 0xf1357aea2e62a9c5 ///< FxHash constant.
+#define FXHASH_K 0xf1357aea2e62a9c5
 
 /** Appends @a x to the FxHash @a s. */
 static inline uint64_t fxhash(uint64_t s, uint64_t x) {
