@@ -44,7 +44,7 @@ struct GcRef {
 
 #define GC_COMPRESS(p) (struct GcRef) { (uintptr_t) (p) }
 #if USE_COMPRESSED_PTRS
-#define GC_DECOMPRESS(base, ref) ((uintptr_t) __builtin_assume_aligned((base), 1ull << 32) + (ref).p)
+#define GC_DECOMPRESS(base, ref) ((uintptr_t) ASSUME_ALIGNED((base), 1ull << 32) + (ref).p)
 #else
 #define GC_DECOMPRESS(base, ref) ((void) (base), (ref).p)
 #endif

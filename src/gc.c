@@ -27,7 +27,8 @@ struct BumpPointer { char *cursor, *limit; };
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 	if (ptr->cursor - size < ptr->limit) return NULL;
 	// Bump allocate downward to align with a single AND instruction
-	char *p = (char *) ((uintptr_t) (ptr->cursor - size) & ~(align - 1));
+	char *p = (char *) (((uintptr_t) ASSUME_ALIGNED(ptr->cursor, GC_MIN_ALIGNMENT)
+			- size) & ~(align - 1));
 	if (p) return ptr->cursor = p; else unreachable();
 }
 

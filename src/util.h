@@ -24,6 +24,12 @@
 #define UNLIKELY(x) (x)
 #endif
 
+#if defined __has_builtin && __has_builtin(__builtin_assume_aligned)
+#define ASSUME_ALIGNED(x, align) __builtin_assume_aligned((x), (align))
+#else
+#define ASSUME_ALIGNED(x, align) ((void *) (x))
+#endif
+
 /** Converts @a x to little endian from the target's endianness. */
 #if __STDC_ENDIAN_NATIVE__ == __STDC_ENDIAN_LITTLE__
 #define HTOL(x) (x)
