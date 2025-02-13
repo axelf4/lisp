@@ -29,12 +29,16 @@ enum SsaOp : uint8_t {
 	IR_EQ, IR_NEQ,
 	IR_SLOAD, ///< Load stack slot.
 	IR_GLOAD, ///< Load global.
+	IR_GSTORE, ///< Store global.
 	IR_ULOAD, ///< Load upvalue.
 	IR_CALL, ///< Call C function.
 	IR_CALLARG, ///< Argument for C function call.
 	IR_LOOP,
 	IR_PHI,
 	IR_NOP,
+
+	IR_ADD,
+
 	IR_NUM_OPS
 };
 
@@ -75,7 +79,8 @@ struct Snapshot {
 	/// Number of instructions executed before this snapshot was taken.
 	uint16_t ir_start,
 		offset; ///< Offset into @ref JitState::stack_entries.
-	uint8_t num_entries, base_offset;
+	uint8_t num_entries;
+	int8_t base_offset;
 	struct GcRef pc; ///< Instruction pointer after this point.
 };
 
@@ -102,8 +107,8 @@ uint8_t trace_arity(struct LispTrace *trace) { return trace->arity; }
 /** In-progress trace recording. */
 struct JitState {
 	uint16_t len, num_consts;
-	uint8_t num_snapshots, num_stack_entries,
-		base_offset, max_slot;
+	uint8_t num_snapshots, num_stack_entries, max_slot;
+	int8_t base_offset;
 	bool need_snapshot;
 	IrRef slots[0x100], ///< Array of IR references for each VM register.
 		*bp; ///< Pointer into @ref #slots at the current frame offset.
@@ -123,16 +128,16 @@ struct JitState {
 
 static void take_snapshot(struct JitState *state) {
 	if (!state->need_snapshot) return;
-	uint8_t max_slot = state->base_offset + state->max_slot;
+	int8_t max_slot = state->base_offset + state->max_slot;
 	if (state->num_snapshots >= MAX_SNAPSHOTS / 2
-		|| state->num_stack_entries + max_slot >= MAX_SNAPSHOT_ENTRIES / 2)
+		|| state->num_stack_entries + max_slot >= MAX_SNAPSHOT_ENTRIES / 2) // TODO
 		throw(1); // Too many snapshots
 	struct Snapshot *snap = state->snapshots + state->num_snapshots++;
 	*snap = (struct Snapshot) {
 		.ir_start = state->len, .offset = state->num_stack_entries,
 		.base_offset = state->base_offset, .pc = GC_COMPRESS(state->pc - 1),
 	};
-	for (uint8_t i = 0; i <= max_slot; ++i) {
+	for (int8_t i = 0; i <= max_slot; ++i) { // TODO need a min_base_offset
 		IrRef ref = state->slots[i];
 		if (!ref) continue;
 		union SsaInstruction x = IR_GET(state, ref);
@@ -157,6 +162,7 @@ static IrRef emit(struct JitState *state, union SsaInstruction x) {
 
 /** Emits @a x after peephole optimizations and CSE. */
 static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
+	union SsaInstruction o;
 	switch (x.op) {
 	case IR_NOP: return 0;
 	case IR_SLOAD: return state->slots[x.a];
@@ -164,17 +170,25 @@ static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
 		if (IS_VAR_REF(x.a) || IS_VAR_REF(x.b)) break;
 		if ((x.a == x.b) == (x.op == IR_EQ)) return 0;
 		throw(1);
+	case IR_GLOAD: // Forward loads/stores of globals
+		for (Ref ref = state->chain[IR_GSTORE]; ref; ref = o.prev)
+			if ((o = IR_GET(state, ref)).a == x.a) return o.b;
 		break;
-	case IR_ULOAD: case IR_GLOAD: break; // TODO Check if set since last load
-	default: goto no_cse;
+	case IR_ULOAD: break; // TODO Check if set since last load
+	default: goto out_no_cse;
+
+	case IR_ADD:
+		// Normalize by shifting constant to the left operand
+		if (!IS_VAR_REF(x.a)) { Ref tmp = x.a; x.a = x.b; x.b = tmp; }
+		if (!IS_VAR_REF(x.a)) die("TODO fold constant arith");
+		break;
 	}
 	// Common Subexpression Elimination (CSE)
-	for (Ref ref = state->chain[x.op]; ref;) {
-		union SsaInstruction o = IR_GET(state, ref);
+	for (Ref ref = state->chain[x.op]; ref; ref = o.prev) {
+		o = IR_GET(state, ref);
 		if (o.a == x.a && o.b == x.b) return o.ty << IR_REF_TYPE_SHIFT | ref;
-		ref = o.prev;
 	}
-no_cse: return emit(state, x);
+out_no_cse: return emit(state, x);
 }
 
 static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
@@ -199,6 +213,7 @@ static IrRef sload(struct JitState *state, int slot) {
 /** Emits an instruction to load the given upvalue. */
 static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
 	struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx];
+	return emit_const(state, lisp_type(upvalue->value), upvalue->value);
 	// TODO Track whether the upvalue is immutable and inlinable
 	if (!upvalue->is_closed) {
 		// In a nested frame the upvalue may be available on the stack
@@ -226,7 +241,7 @@ static void assert_value(struct JitState *state, IrRef *ref, LispObject value) {
 }
 
 static bool has_side_effects(enum SsaOp x) {
-	return x == IR_EQ || x == IR_NEQ || x == IR_CALL || x == IR_CALLARG;
+	return x == IR_EQ || x == IR_NEQ || x == IR_CALL || x == IR_CALLARG || x == IR_LOOP;
 }
 
 #define IR_MARK 0x80
@@ -270,6 +285,8 @@ static void peel_loop(struct JitState *state) {
 	state->need_snapshot = true;
 	struct Snapshot *snap = state->snapshots,
 		*loopsnap = (take_snapshot(state), snap + state->num_snapshots - 1);
+
+	dce(state);
 
 	// Map of variables in the preamble onto variables of the peeled loop
 	Ref subst[MAX_TRACE_LEN], phis[12];
@@ -330,7 +347,8 @@ static void peel_loop(struct JitState *state) {
 
 [[gnu::used]] static struct SideExitResult {
 	struct Instruction *pc;
-	uint8_t base_offset, num_spill_slots;
+	int8_t base_offset;
+	uint8_t num_spill_slots;
 	uint32_t clobbers;
 } side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
 	struct LispTrace *trace = ctx->current_trace;
@@ -416,14 +434,15 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 		assert(ref == REF_BP);
 		reg = ctx->bp_ins.reg;
 		ctx->bp_ins.reg = -1;
-		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, offsetof(struct LispCtx, bp));
+		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg,
+			REG_LISP_CTX, offsetof(struct LispCtx, bp));
 	}
 	ctx->available |= 1 << reg;
 	return reg;
 }
 
 /** Spills one of the registers in @a mask. */
-static enum Register evict(struct RegAlloc *ctx, RegSet mask) {
+[[gnu::cold]] static enum Register evict(struct RegAlloc *ctx, RegSet mask) {
 	assert(!(ctx->available & mask) && "Redundant eviction");
 	mask &= ~ctx->available & REG_ALL;
 	uint16_t min_cost = UINT16_MAX;
@@ -433,18 +452,23 @@ static enum Register evict(struct RegAlloc *ctx, RegSet mask) {
 	return reload(ctx, min_cost);
 }
 
+static enum Register reg_alloc(struct RegAlloc *ctx, RegSet mask) {
+	if (!(ctx->available & mask)) return evict(ctx, mask);
+	enum Register r = stdc_trailing_zeros(ctx->available & mask);
+	ctx->clobbers |= 1 << r;
+	return r;
+}
+
 /** Allocates a register for the definition of @a ref.
  *
  * @param mask Allowed registers, for fixed allocations.
  */
-static enum Register reg_alloc(struct RegAlloc *ctx, Ref ref, RegSet mask) {
+static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	assert(IS_VAR_REF(ref));
 	union SsaInstruction *x = &IR_GET(ctx->trace, ref);
-	RegSet available = ctx->available & mask;
 	enum Register reg
 		= has_reg(*x) && 1 << x->reg & mask ? x->reg // Already allocated
-		: available ? stdc_trailing_zeros(available) : evict(ctx, mask);
-	ctx->clobbers |= 1 << reg;
+		: reg_alloc(ctx, mask);
 	if (has_reg(*x)) {
 		if (reg != x->reg) // Existing allocation was masked
 			asm_mov_reg_reg(&ctx->assembler, x->reg, reg);
@@ -463,24 +487,30 @@ static enum Register reg_alloc(struct RegAlloc *ctx, Ref ref, RegSet mask) {
  * ref has a prior masked register, then a move is needed.
  */
 static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
-	union SsaInstruction *x = ref == REF_BP ? &ctx->bp_ins
-		: IS_VAR_REF(ref) ? &IR_GET(ctx->trace, ref) : NULL;
-	if (x && has_reg(*x) && 1 << x->reg & mask) return x->reg; // Already allocated
+	union SsaInstruction *x = IS_VAR_REF(ref) ? &IR_GET(ctx->trace, ref)
+		: ref == REF_BP ? &ctx->bp_ins : NULL;
+	if (!x) return reg_alloc(ctx, mask);
+	if (has_reg(*x) && 1 << x->reg & mask) return x->reg; // Already allocated
 	RegSet available = ctx->available & mask;
-	enum Register reg;
-	if (!(x && 1 << (reg = x->reg % stdc_bit_ceil_uc(NUM_REGS)) & available)) // Use hint
+	enum Register reg = x->reg % stdc_bit_ceil_uc(NUM_REGS); // Use hint
+	if (!(1 << reg & available))
 		// Prefer callee-saved registers
-		reg = available ? stdc_trailing_zeros(available & CALLEE_SAVED_REGS
-			? available & CALLEE_SAVED_REGS : available)
-			: evict(ctx, mask);
-	ctx->clobbers |= 1 << reg;
-	assert(!(x && has_reg(*x)) && "TODO Need to move");
-	if (x && !has_reg(*x)) {
+		reg = reg_alloc(ctx, available & CALLEE_SAVED_REGS
+			? available & CALLEE_SAVED_REGS : mask);
+	assert(!has_reg(*x) && "TODO Need to move");
+	if (!has_reg(*x)) {
 		ctx->available &= ~(1 << reg);
 		ctx->reg_costs[x->reg = reg] = ref;
 	}
 	return reg;
 }
+
+/* static void reg_use_finalize(struct RegAlloc *ctx, enum Register reg, Ref ref) { */
+/* 	// TODO REF_BP */
+/* 	union SsaInstruction x = IR_GET(ctx->trace, ref); */
+/* 	if (!IS_VAR_REF(ref)) asm_loadu64(&ctx->assembler, reg, x.v); */
+/* 	else if (x.reg != reg) asm_mov_reg_reg(&ctx->assembler, reg, x.reg); */
+/* } */
 
 static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
 	// Emit conditional jump to side exit trampoline
@@ -520,6 +550,31 @@ static void asm_loop(struct RegAlloc *ctx, uint8_t *asm_end) {
 	memcpy(asm_end - sizeof jmp_disp, &jmp_disp, sizeof jmp_disp);
 }
 
+static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
+	union SsaInstruction x = IR_GET(ctx->trace, ref),
+		a = IR_GET(ctx->trace, x.a), b = IR_GET(ctx->trace, x.b);
+	assert(IS_VAR_REF(x.a) && "non-folded constant arithmetic op");
+
+	asm_guard(ctx, CC_O);
+
+	RegSet mask = ~(IS_VAR_REF(x.b) && has_reg(b)
+		? /* Avoid aliasing live operand */ 1 << b.reg : 0);
+	enum Register dst = reg_def(ctx, ref, mask), src = 0;
+	if (IS_VAR_REF(x.b)) {
+	do_add_reg:
+		src = reg_use(ctx, x.b, -1);
+		*--ctx->assembler.p = MODRM(MOD_REG, src, dst);
+		*--ctx->assembler.p = (op << 3) + 1;
+		EMIT_REX(&ctx->assembler, 1, src, 0, dst);
+	} else if ((int32_t) b.v == (int64_t) b.v)
+		asm_grp1_imm(&ctx->assembler, 1, op, dst, b.v);
+	else { src = reg_alloc(ctx, ~(1 << dst)); goto do_add_reg; }
+
+	// Fixup 2-operand instruction by moving left operand to destination
+	if (has_reg(a)) asm_mov_reg_reg(&ctx->assembler, dst, a.reg);
+	else reg_use(ctx, x.a, 1 << dst);
+}
+
 static struct LispTrace *assemble_trace(struct JitState *trace) {
 	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_ins.reg = -1,
 		.snapshot_idx = trace->num_snapshots - 1, };
@@ -556,16 +611,16 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 		union SsaInstruction x = IR_GET(trace, ref);
 		switch (x.op) {
 		case IR_SLOAD:
-			enum Register reg = reg_alloc(&ctx, ref, -1), bp = reg_use(&ctx, REF_BP, -1);
+			enum Register reg = reg_def(&ctx, ref, -1), bp = reg_use(&ctx, REF_BP, -1);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, bp, x.a * sizeof x.v);
 			break;
 		case IR_GLOAD:
-			reg = reg_alloc(&ctx, ref, -1);
+			reg = reg_def(&ctx, ref, -1);
 			int32_t p = GC_COMPRESS(UNTAG_OBJ(IR_GET(trace, x.a).v)).p + offsetof(struct Symbol, value);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, p);
 			break;
 		case IR_ULOAD: {
-			enum Register reg = reg_alloc(&ctx, ref, -1), fn = reg_use(&ctx, x.a, -1);
+			enum Register reg = reg_def(&ctx, ref, -1), fn = reg_use(&ctx, x.a, -1);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, reg, 0);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, reg,
 				offsetof(struct Upvalue, location));
@@ -584,7 +639,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 				*--ctx.assembler.p = MODRM(MOD_REG, reg2, reg1);
 				*--ctx.assembler.p = XI_CMP;
 				EMIT_REX(&ctx.assembler, 0, reg2, 0, reg1);
-			} else asm_grp1_imm(&ctx.assembler, 0, /* CMP */ 7,
+			} else asm_grp1_imm(&ctx.assembler, 0, XG_CMP,
 				reg1, (uint32_t) IR_GET(trace, x.b).v);
 			break;
 
@@ -593,7 +648,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			FOR_ONES(reg, REG_ALL & ~ctx.available & ~CALLEE_SAVED_REGS)
 				reload(&ctx, ctx.reg_costs[reg]);
 
-			reg_alloc(&ctx, ref, 1 << rax);
+			reg_def(&ctx, ref, 1 << rax);
 			enum Register f_reg = reg_use(&ctx, x.a, CALLEE_SAVED_REGS);
 			asm_rmrd(&ctx.assembler, 0, XI_GRP5, /* CALL */ 2,
 				f_reg, offsetof(struct LispCFunction, f) - 1);
@@ -632,11 +687,14 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 				ctx.clobbers |= 1 << dst;
 				asm_mov_reg_reg(&ctx.assembler, dst, out->reg);
 			}
-			in->reg = dst | REG_NONE; // Add hint
+			in->reg = REG_NONE | dst; // Add hint
 			ctx.phi_regs |= 1 << dst;
 			ctx.phis_refs[dst] = x.a;
 			break;
 		case IR_NOP: break;
+
+		case IR_ADD: asm_arith(&ctx, XG_ADD, ref); break;
+
 		default: unreachable();
 		}
 	}
@@ -651,7 +709,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	ctx.clobbers &= CALLEE_SAVED_REGS;
 	if ((stdc_count_ones(ctx.clobbers) + ctx.num_spill_slots) % 2 == 0)
 		++ctx.num_spill_slots; // Align stack to 16-byte boundary
-	asm_grp1_imm(&ctx.assembler, 1, /* SUB */ 5, rsp, ctx.num_spill_slots * sizeof(void *));
+	asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, ctx.num_spill_slots * sizeof(void *));
 	// Save callee-saved registers
 	FOR_ONES(reg, ctx.clobbers) {
 		*--ctx.assembler.p = /* PUSH */ 0x50 + (reg & 7);
@@ -732,6 +790,7 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		case IR_SLOAD: printf("SLOAD #%" PRIu16 "\n", x.a); break;
 		case IR_GLOAD:
 			printf("GLOAD "); print_ir_ref(state, LISP_SYMBOL, x.a); putchar('\n'); break;
+		case IR_GSTORE: printf("GSTORE\n"); break;
 		case IR_ULOAD:
 			printf("ULOAD #%" PRIu16 " from ", x.b);
 			print_ir_ref(state, LISP_CLOSURE, x.a);
@@ -756,7 +815,15 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			print_ir_ref(state, x.ty, x.b);
 			putchar('\n');
 			break;
-		case IR_NOP: break;
+		case IR_NOP: puts("NOP"); break;
+
+		case IR_ADD:
+			printf("ADD   ");
+			print_ir_ref(state, x.ty, x.a);
+			printf("  ");
+			print_ir_ref(state, x.ty, x.b);
+			putchar('\n');
+			break;
 		}
 	}
 	switch (link) {
@@ -788,8 +855,20 @@ bool jit_init(struct JitState *state, struct Closure *f) {
 	return true;
 }
 
-static IrRef record_cfun_call(struct JitState *state, struct Instruction x) {
+static IrRef record_c_call(struct JitState *state, struct Instruction x) {
 	IrRef ref = sload(state, x.a);
+
+	LispObject f_value = state->lisp_ctx->bp[x.a];
+	struct LispCFunction *f = UNTAG_OBJ(f_value);
+	if (x.c == 2 && !strcmp(f->name, "+")) {
+		assert_value(state, &ref, f_value);
+		IrRef a = sload(state, x.a + 2), b = sload(state, x.a + 2 + 1);
+		assert_type(state, &a, LISP_INTEGER);
+		assert_type(state, &b, LISP_INTEGER);
+		return emit_folded(state, (union SsaInstruction)
+			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
+	}
+
 	assert_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
 	IrRef result = emit(state, (union SsaInstruction)
@@ -828,7 +907,7 @@ static void do_record(void *userdata) {
 	case CALL:
 		LispObject fun_value = bp[x.a];
 		switch (lisp_type(fun_value)) {
-		case LISP_CFUNCTION: result = record_cfun_call(state, x); break;
+		case LISP_CFUNCTION: result = record_c_call(state, x); break;
 		case LISP_CLOSURE:
 			// Specialize to the function value in question
 			assert_value(state, (IrRef[]) { sload(state, x.a) }, fun_value);
@@ -845,7 +924,7 @@ static void do_record(void *userdata) {
 	case TAIL_CALL:
 		fun_value = bp[x.a];
 		bool is_cfun = lisp_type(fun_value) == LISP_CFUNCTION;
-		if (is_cfun) { state->bp[x.a] = record_cfun_call(state, x); goto do_ret; }
+		if (is_cfun) { state->bp[x.a] = record_c_call(state, x); goto do_ret; }
 		// Specialize to the function value in question
 		// TODO Guard on prototype only
 		IrRef cur = *state->bp, ref = *state->bp = sload(state, x.a);
@@ -855,7 +934,6 @@ static void do_record(void *userdata) {
 		state->max_slot = 2 + x.c - 1;
 		if (fun_value == TAG_OBJ(state->origin)) {
 			*state->bp = cur; // Avoid reloading closure
-			dce(state);
 			peel_loop(state);
 			struct LispTrace *trace = assemble_trace(state);
 #ifdef DEBUG
