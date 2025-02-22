@@ -68,4 +68,8 @@
  */
 unsigned pcall(void *x, void (*f)(void *));
 
+void checkpoint();
+
+[[noreturn]] void restore();
+
 #endif

@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 include(CheckCSourceRuns)
+include(GNUInstallDirs)
 include(CTest)
 find_package(cmocka 1.1.0 REQUIRED)
 
@@ -16,11 +17,21 @@ if(NOT HAVE_COMPUTED_GOTO)
 endif()
 
 option(WITH_JIT "Enable just-in-time compilation." ON)
+option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore.")
 
 add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-masm=intel -Wall -Wextra -Wpedantic
 	-Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
+endif()
+
+if(WITH_CHECKPOINT_RESTORE)
+  add_library(restore MODULE src/criu.c)
+  target_compile_definitions(restore PRIVATE IS_RESTORER_DSO)
+  target_compile_options(restore PRIVATE
+	-ffreestanding -fno-stack-protector -nostdlib -fno-sanitize=all)
+
+  install(TARGETS restore LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} NAMELINK_SKIP)
 endif()
 
 add_executable(lisp-codegen EXCLUDE_FROM_ALL src/lisp-codegen.c)
@@ -31,10 +42,13 @@ add_custom_command(
 
 add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c
   $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp-generated.h>
-  $<$<BOOL:${WITH_JIT}>:src/jit.c>)
+  $<$<BOOL:${WITH_JIT}>:src/jit.c>
+  $<$<BOOL:${WITH_CHECKPOINT_RESTORE}>:src/criu.c>)
 target_compile_definitions(lisplib PUBLIC
   $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp-generated.h">
   ENABLE_JIT=$<BOOL:${WITH_JIT}>)
+target_compile_definitions(lisplib PRIVATE
+  LIBRESTORE_SO="${CMAKE_INSTALL_FULL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}restore${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
 add_executable(lisp src/main.c)
 target_link_libraries(lisp lisplib)
