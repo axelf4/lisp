@@ -86,7 +86,8 @@ val_beg_no_ws:
 		goto val_beg;
 	} else if (!read_integer(s, &value)) {
 		while (is_ident(**s)) ++*s;
-		if (UNLIKELY(*s == start)) return LISP_READ_EOF;
+		if (UNLIKELY(*s == start))
+			return p > stack ? LISP_READ_EOF : LISP_READ_EMPTY;
 		value = intern(ctx, *s - start, start); // Read a symbol
 	}
 val_end:
@@ -113,8 +114,8 @@ val_end:
 }
 
 enum LispReadError lisp_read_whole(struct LispCtx *ctx, const char *s, LispObject *result) {
-	enum LispReadError error;
-	if ((error = lisp_read(ctx, &s, result))) return error;
-	skip_whitespace(&s);
-	return *s == '\0' ? LISP_READ_OK : LISP_READ_TRAILING;
+	enum LispReadError err;
+	return (err = lisp_read(ctx, &s, result)) ? err
+		: lisp_read(ctx, &s, &(LispObject) {}) == LISP_READ_EMPTY ? LISP_READ_OK
+		: LISP_READ_TRAILING;
 }
