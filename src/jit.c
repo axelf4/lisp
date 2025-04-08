@@ -416,14 +416,15 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 		assert(ref == REF_BP);
 		reg = ctx->bp_ins.reg;
 		ctx->bp_ins.reg = -1;
-		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, offsetof(struct LispCtx, bp));
+		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg,
+			REG_LISP_CTX, offsetof(struct LispCtx, bp));
 	}
 	ctx->available |= 1 << reg;
 	return reg;
 }
 
 /** Spills one of the registers in @a mask. */
-static enum Register evict(struct RegAlloc *ctx, RegSet mask) {
+[[gnu::cold]] static enum Register evict(struct RegAlloc *ctx, RegSet mask) {
 	assert(!(ctx->available & mask) && "Redundant eviction");
 	mask &= ~ctx->available & REG_ALL;
 	uint16_t min_cost = UINT16_MAX;
@@ -433,18 +434,23 @@ static enum Register evict(struct RegAlloc *ctx, RegSet mask) {
 	return reload(ctx, min_cost);
 }
 
+static enum Register reg_alloc(struct RegAlloc *ctx, RegSet mask) {
+	if (!(ctx->available & mask)) return evict(ctx, mask);
+	enum Register r = stdc_trailing_zeros(ctx->available & mask);
+	ctx->clobbers |= 1 << r;
+	return r;
+}
+
 /** Allocates a register for the definition of @a ref.
  *
  * @param mask Allowed registers, for fixed allocations.
  */
-static enum Register reg_alloc(struct RegAlloc *ctx, Ref ref, RegSet mask) {
+static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	assert(IS_VAR_REF(ref));
 	union SsaInstruction *x = &IR_GET(ctx->trace, ref);
-	RegSet available = ctx->available & mask;
 	enum Register reg
 		= has_reg(*x) && 1 << x->reg & mask ? x->reg // Already allocated
-		: available ? stdc_trailing_zeros(available) : evict(ctx, mask);
-	ctx->clobbers |= 1 << reg;
+		: reg_alloc(ctx, mask);
 	if (has_reg(*x)) {
 		if (reg != x->reg) // Existing allocation was masked
 			asm_mov_reg_reg(&ctx->assembler, x->reg, reg);
@@ -463,19 +469,18 @@ static enum Register reg_alloc(struct RegAlloc *ctx, Ref ref, RegSet mask) {
  * ref has a prior masked register, then a move is needed.
  */
 static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
-	union SsaInstruction *x = ref == REF_BP ? &ctx->bp_ins
-		: IS_VAR_REF(ref) ? &IR_GET(ctx->trace, ref) : NULL;
-	if (x && has_reg(*x) && 1 << x->reg & mask) return x->reg; // Already allocated
+	union SsaInstruction *x = IS_VAR_REF(ref) ? &IR_GET(ctx->trace, ref)
+		: ref == REF_BP ? &ctx->bp_ins : NULL;
+	if (!x) return reg_alloc(ctx, mask);
+	if (has_reg(*x) && 1 << x->reg & mask) return x->reg; // Already allocated
 	RegSet available = ctx->available & mask;
-	enum Register reg;
-	if (!(x && 1 << (reg = x->reg % stdc_bit_ceil_uc(NUM_REGS)) & available)) // Use hint
+	enum Register reg = x->reg % stdc_bit_ceil_uc(NUM_REGS); // Use hint
+	if (!(1 << reg & available))
 		// Prefer callee-saved registers
-		reg = available ? stdc_trailing_zeros(available & CALLEE_SAVED_REGS
-			? available & CALLEE_SAVED_REGS : available)
-			: evict(ctx, mask);
-	ctx->clobbers |= 1 << reg;
-	assert(!(x && has_reg(*x)) && "TODO Need to move");
-	if (x && !has_reg(*x)) {
+		reg = reg_alloc(ctx, available & CALLEE_SAVED_REGS
+			? available & CALLEE_SAVED_REGS : mask);
+	assert(!has_reg(*x) && "TODO Need to move");
+	if (!has_reg(*x)) {
 		ctx->available &= ~(1 << reg);
 		ctx->reg_costs[x->reg = reg] = ref;
 	}
@@ -526,7 +531,7 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 		reload(ctx, ctx->reg_costs[reg]);
 
 	union SsaInstruction x = IR_GET(ctx->trace, ref);
-	reg_alloc(ctx, ref, 1 << rax);
+	reg_def(ctx, ref, 1 << rax);
 	enum Register f_reg = reg_use(ctx, x.a, CALLEE_SAVED_REGS);
 	asm_rmrd(&ctx->assembler, 0, XI_GRP5, /* CALL */ 2,
 		f_reg, offsetof(struct LispCFunction, f) - 1);
@@ -588,16 +593,16 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 		union SsaInstruction x = IR_GET(trace, ref);
 		switch (x.op) {
 		case IR_SLOAD:
-			enum Register reg = reg_alloc(&ctx, ref, -1), bp = reg_use(&ctx, REF_BP, -1);
+			enum Register reg = reg_def(&ctx, ref, -1), bp = reg_use(&ctx, REF_BP, -1);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, bp, x.a * sizeof x.v);
 			break;
 		case IR_GLOAD:
-			reg = reg_alloc(&ctx, ref, -1);
+			reg = reg_def(&ctx, ref, -1);
 			int32_t p = GC_COMPRESS(UNTAG_OBJ(IR_GET(trace, x.a).v)).p + offsetof(struct Symbol, value);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, p);
 			break;
 		case IR_ULOAD: {
-			enum Register reg = reg_alloc(&ctx, ref, -1), fn = reg_use(&ctx, x.a, -1);
+			enum Register reg = reg_def(&ctx, ref, -1), fn = reg_use(&ctx, x.a, -1);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, reg, 0);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, reg,
 				offsetof(struct Upvalue, location));
