@@ -242,7 +242,7 @@ static void dce(struct JitState *state) {
 	Ref *pchain[IR_NUM_OPS];
 	for (unsigned i = 0; i < IR_NUM_OPS; ++i) pchain[i] = state->chain + i;
 	for (union SsaInstruction *xs = state->trace + MAX_CONSTS,
-				*x = xs + state->len; x-- > xs;) { // Sweep
+				*x = xs + state->len - /* Skip IR_LOOP */ 1; x-- > xs;) { // Sweep
 		if (!(x->ty & IR_MARK || has_side_effects(x->op))) {
 			*pchain[x->op] = x->prev;
 			x->op = IR_NOP;
@@ -270,6 +270,8 @@ static void peel_loop(struct JitState *state) {
 	state->need_snapshot = true;
 	struct Snapshot *snap = state->snapshots,
 		*loopsnap = (take_snapshot(state), snap + state->num_snapshots - 1);
+
+	dce(state);
 
 	// Map of variables in the preamble onto variables of the peeled loop
 	Ref subst[MAX_TRACE_LEN], phis[12];
@@ -860,7 +862,6 @@ static void do_record(void *userdata) {
 		state->max_slot = 2 + x.c - 1;
 		if (fun_value == TAG_OBJ(state->origin)) {
 			*state->bp = cur; // Avoid reloading closure
-			dce(state);
 			peel_loop(state);
 			struct LispTrace *trace = assemble_trace(state);
 #ifdef DEBUG
