@@ -124,8 +124,11 @@ static inline void asm_loadu64(struct Assembler *ctx, enum Register r, uint64_t 
 	}
 }
 
+enum ImmGrp1 { XG_ADD, XG_SUB = 5, XG_CMP = 7, };
+
 /** Emits an Immediate Group 1 instruction with a register as 2nd operand. */
-static inline void asm_grp1_imm(struct Assembler *ctx, bool w, unsigned char reg, enum Register rm, int32_t i) {
+static inline void asm_grp1_imm(struct Assembler *ctx, bool w, enum ImmGrp1 reg,
+	enum Register rm, int32_t i) {
 	uint8_t op;
 	if ((int8_t) i == i) { *--ctx->p = i; op = 0x83; }
 	else { asm_write32(ctx, i); op = 0x81; }
@@ -133,7 +136,8 @@ static inline void asm_grp1_imm(struct Assembler *ctx, bool w, unsigned char reg
 }
 
 /** Condition code for Conditional Test fields. */
-enum Cc : unsigned char {
+enum Cc {
+	CC_O, ///< Overflow.
 	CC_E = 0x4, ///< Equal, Zero.
 	CC_NE, ///< Not equal, Not zero.
 };

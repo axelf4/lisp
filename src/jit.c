@@ -35,6 +35,9 @@ enum SsaOp : uint8_t {
 	IR_LOOP,
 	IR_PHI,
 	IR_NOP,
+
+	IR_ADD,
+
 	IR_NUM_OPS
 };
 
@@ -147,6 +150,15 @@ static void take_snapshot(struct JitState *state) {
 	state->need_snapshot = false;
 }
 
+static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
+	Ref i = IR_BIAS;
+	while (i-- > IR_BIAS - state->num_consts)
+		if (GC_COMPRESS(IR_GET(state, i).v).p == GC_COMPRESS(x).p) goto out;
+	if (state->num_consts >= MAX_CONSTS) throw(1);
+	IR_GET(state, i = IR_BIAS - ++state->num_consts).v = x;
+out: return ty << IR_REF_TYPE_SHIFT | i;
+}
+
 static IrRef emit(struct JitState *state, union SsaInstruction x) {
 	if (state->len >= MAX_TRACE_LEN) throw(1);
 	x.prev = state->chain[x.op];
@@ -157,6 +169,7 @@ static IrRef emit(struct JitState *state, union SsaInstruction x) {
 
 /** Emits @a x after peephole optimizations and CSE. */
 static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
+	union SsaInstruction o;
 	switch (x.op) {
 	case IR_NOP: return 0;
 	case IR_SLOAD: return state->slots[x.a];
@@ -164,26 +177,23 @@ static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
 		if (IS_VAR_REF(x.a) || IS_VAR_REF(x.b)) break;
 		if ((x.a == x.b) == (x.op == IR_EQ)) return 0;
 		throw(1);
-		break;
 	case IR_ULOAD: case IR_GLOAD: break; // TODO Check if set since last load
-	default: goto no_cse;
+	default: goto out_no_cse;
+
+	case IR_ADD:
+		// Normalize by shifting constant to the left operand
+		if (!IS_VAR_REF(x.a)) { Ref tmp = x.a; x.a = x.b; x.b = tmp; }
+		if (IR_GET(state, x.b).v == TAG_SMI(0)) return x.a;
+		if (!IS_VAR_REF(x.a)) return emit_const(state, LISP_INTEGER,
+			IR_GET(state, x.a).v + IR_GET(state, x.b).v);
+		break;
 	}
 	// Common Subexpression Elimination (CSE)
-	for (Ref ref = state->chain[x.op]; ref;) {
-		union SsaInstruction o = IR_GET(state, ref);
+	for (Ref ref = state->chain[x.op]; ref; ref = o.prev) {
+		o = IR_GET(state, ref);
 		if (o.a == x.a && o.b == x.b) return o.ty << IR_REF_TYPE_SHIFT | ref;
-		ref = o.prev;
 	}
-no_cse: return emit(state, x);
-}
-
-static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
-	Ref i;
-	for (i = IR_BIAS; i-- > IR_BIAS - state->num_consts;)
-		if (GC_COMPRESS(IR_GET(state, i).v).p == GC_COMPRESS(x).p) goto out;
-	if (state->num_consts >= MAX_CONSTS) throw(1);
-	IR_GET(state, i = IR_BIAS - ++state->num_consts).v = x;
-out: return ty << IR_REF_TYPE_SHIFT | i;
+out_no_cse: return emit(state, x);
 }
 
 /** Emits a stack load instruction unless the stack slot content is already loaded. */
@@ -559,6 +569,26 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 	asm_rmrd(&ctx->assembler, 1, XI_LEA, args_reg, bp, 0x100 * sizeof x.v);
 }
 
+static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
+	union SsaInstruction x = IR_GET(ctx->trace, ref),
+		a = IR_GET(ctx->trace, x.a), b = IR_GET(ctx->trace, x.b);
+	assert(IS_VAR_REF(x.a) && "non-folded constant arithmetic op");
+
+	asm_guard(ctx, CC_O);
+
+	RegSet mask = ~(IS_VAR_REF(x.b) && has_reg(b)
+		? /* Avoid aliasing live operand */ 1 << b.reg : 0);
+	enum Register dst = reg_def(ctx, ref, mask);
+	if (IS_VAR_REF(x.b)) {
+		enum Register src = reg_use(ctx, x.b, -1);
+		asm_rr(&ctx->assembler, 0, (op << 3) + 1, src, dst);
+	} else asm_grp1_imm(&ctx->assembler, 0, op, dst, (uint32_t) b.v);
+
+	// Fix up 2-operand instruction by moving left operand to destination
+	if (has_reg(a)) asm_mov_reg_reg(&ctx->assembler, dst, a.reg);
+	else reg_use(ctx, x.a, 1 << dst);
+}
+
 static struct LispTrace *assemble_trace(struct JitState *trace) {
 	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_insn.reg = -1,
 		.snapshot_idx = trace->num_snapshots - 1, };
@@ -620,7 +650,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			if (IS_VAR_REF(x.b)) {
 				enum Register reg2 = reg_use(&ctx, x.b, -1);
 				asm_rr(&ctx.assembler, 0, XI_CMP, reg2, reg1);
-			} else asm_grp1_imm(&ctx.assembler, 0, /* CMP */ 7,
+			} else asm_grp1_imm(&ctx.assembler, 0, XG_CMP,
 				reg1, (uint32_t) IR_GET(trace, x.b).v);
 			break;
 
@@ -644,6 +674,9 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			ctx.phis_refs[dst] = x.a;
 			break;
 		case IR_NOP: break;
+
+		case IR_ADD: asm_arith(&ctx, XG_ADD, ref); break;
+
 		default: unreachable();
 		}
 	}
@@ -658,7 +691,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	ctx.clobbers &= CALLEE_SAVED_REGS;
 	if ((stdc_count_ones(ctx.clobbers) + ctx.num_spill_slots) % 2 == 0)
 		++ctx.num_spill_slots; // Align stack to 16-byte boundary
-	asm_grp1_imm(&ctx.assembler, 1, /* SUB */ 5, rsp, ctx.num_spill_slots * sizeof(void *));
+	asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, ctx.num_spill_slots * sizeof(void *));
 	// Save callee-saved registers
 	FOR_ONES(reg, ctx.clobbers) {
 		*--ctx.assembler.p = /* PUSH */ 0x50 + (reg & 7);
@@ -764,6 +797,14 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			putchar('\n');
 			break;
 		case IR_NOP: puts("NOP"); break;
+
+		case IR_ADD:
+			printf("ADD   ");
+			print_ir_ref(state, x.ty, x.a);
+			printf("  ");
+			print_ir_ref(state, x.ty, x.b);
+			putchar('\n');
+			break;
 		}
 	}
 	switch (link) {
@@ -795,8 +836,20 @@ bool jit_init(struct JitState *state, struct Closure *f) {
 	return true;
 }
 
-static IrRef record_cfun_call(struct JitState *state, struct Instruction x) {
+static IrRef record_c_call(struct JitState *state, struct Instruction x) {
 	IrRef ref = sload(state, x.a);
+
+	LispObject f_value = state->lisp_ctx->bp[x.a];
+	struct LispCFunction *f = UNTAG_OBJ(f_value);
+	if (!strcmp(f->name, "+")) {
+		assert_value(state, &ref, f_value);
+		IrRef a = sload(state, x.a + 2), b = sload(state, x.a + 2 + 1);
+		assert_type(state, &a, LISP_INTEGER);
+		assert_type(state, &b, LISP_INTEGER);
+		return emit_folded(state, (union SsaInstruction)
+			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
+	}
+
 	assert_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
 	IrRef result = emit(state, (union SsaInstruction)
@@ -835,7 +888,7 @@ static void do_record(void *userdata) {
 	case CALL:
 		LispObject fun_value = bp[x.a];
 		switch (lisp_type(fun_value)) {
-		case LISP_CFUNCTION: result = record_cfun_call(state, x); break;
+		case LISP_CFUNCTION: result = record_c_call(state, x); break;
 		case LISP_CLOSURE:
 			// Specialize to the function value in question
 			assert_value(state, (IrRef[]) { sload(state, x.a) }, fun_value);
@@ -851,8 +904,8 @@ static void do_record(void *userdata) {
 		break;
 	case TAIL_CALL:
 		fun_value = bp[x.a];
-		bool is_cfun = lisp_type(fun_value) == LISP_CFUNCTION;
-		if (is_cfun) { state->bp[x.a] = record_cfun_call(state, x); goto do_ret; }
+		bool is_cfn = lisp_type(fun_value) == LISP_CFUNCTION;
+		if (is_cfn) { state->bp[x.a] = record_c_call(state, x); goto do_ret; }
 		// Specialize to the function value in question
 		// TODO Guard on prototype only
 		IrRef cur = *state->bp, ref = *state->bp = sload(state, x.a);
