@@ -319,6 +319,8 @@ void garbage_collect(struct GcHeap *heap) {
 	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
 	if (heap->is_major_gc) {
 		if (heap->defrag) select_defrag_candidates(heap);
+		// TODO Cyclical line marks (see MMTk) need not be reset, but
+		// would complicate gc_mark().
 		struct GcBlock *head = (struct GcBlock *) ((uintptr_t) heap->ptr.cursor & ~(sizeof *head - 1));
 		// Unmark blocks
 		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
