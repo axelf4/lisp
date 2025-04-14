@@ -25,7 +25,7 @@
 #endif
 
 #if defined __has_builtin && __has_builtin(__builtin_assume_aligned)
-#define ASSUME_ALIGNED(x, align) __builtin_assume_aligned((x), (align))
+#define ASSUME_ALIGNED(x, align) __builtin_assume_aligned(x, align)
 #else
 #define ASSUME_ALIGNED(x, align) ((void *) (x))
 #endif

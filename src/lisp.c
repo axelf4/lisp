@@ -250,14 +250,14 @@ DEFUN("cdr", cdr, (struct LispCtx *ctx, LispObject x)) { return cdr(ctx, x); }
 DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
 	int32_t result;
-	if (ckd_add(&result, (int32_t) (uint32_t) a, (int32_t) (uint32_t) b))
+	if (ckd_add(&result, (int32_t) a, (int32_t) b))
 		throw(1);
 	return result;
 }
 
 DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
-	return (int32_t) (uint32_t) a < (int32_t) (uint32_t) b ? LISP_CONST(ctx, t) : NIL;
+	return (int32_t) a < (int32_t) b ? LISP_CONST(ctx, t) : NIL;
 }
 
 bool lisp_init(struct LispCtx *ctx) {
