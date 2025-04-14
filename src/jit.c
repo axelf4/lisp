@@ -490,7 +490,7 @@ static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
 	// Emit conditional jump to side exit trampoline
 	uint8_t *target = ctx->assembler.buf + MCODE_CAPACITY - 5 - 2 - 4 * ctx->snapshot_idx;
-	asm_write32(&ctx->assembler, rel32((uintptr_t) ctx->assembler.p, (uintptr_t) target));
+	asm_write32(&ctx->assembler, REL32(ctx->assembler.p, target));
 	*--ctx->assembler.p = /* Jcc */ 0x80 | cc;
 	*--ctx->assembler.p = 0x0f;
 }
@@ -521,7 +521,7 @@ static void asm_loop(struct RegAlloc *ctx, uint8_t *asm_end) {
 		reg_use(ctx, lref, 1 << reg);
 	}
 
-	int32_t jmp_disp = rel32((uintptr_t) asm_end, (uintptr_t) ctx->assembler.p);
+	int32_t jmp_disp = REL32(asm_end, ctx->assembler.p);
 	memcpy(asm_end - sizeof jmp_disp, &jmp_disp, sizeof jmp_disp);
 }
 
@@ -563,8 +563,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	if (!asm_init(&ctx.assembler)) die("asm_init failed");
 	// Emit side-exit trampolines
 	void side_exit_handler();
-	asm_write32(&ctx.assembler,
-		rel32((uintptr_t) ctx.assembler.p, (uintptr_t) side_exit_handler));
+	asm_write32(&ctx.assembler, REL32(ctx.assembler.p, side_exit_handler));
 	*--ctx.assembler.p = /* JMP */ 0xe9;
 	for (unsigned i = 0; i < MAX_SNAPSHOTS; ++i) {
 		if (i) {
