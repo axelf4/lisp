@@ -35,9 +35,10 @@ static inline void asm_write64(struct Assembler *ctx, uint64_t x) {
 
 static inline int32_t rel32(uintptr_t p, uintptr_t target) {
 	ptrdiff_t dt = target - p;
-	assert((int32_t) dt == dt && "Out of range jump target");
+	assert((int32_t) dt == dt && "Jump target is out of range");
 	return dt;
 }
+#define REL32(p, target) rel32((uintptr_t) (p), (uintptr_t) (target))
 
 #ifdef __x86_64__
 #define JMP_RANGE 31 // +-2^31
