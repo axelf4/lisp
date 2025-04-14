@@ -143,9 +143,8 @@ static void lisp_trace_compressed(struct GcHeap *heap, Lobj *p) {
 }
 
 void gc_object_visit(struct GcHeap *heap, void *p) {
-	struct LispObjectHeader *hdr = p;
-	switch (hdr->tag) {
-	case LISP_INTEGER: case LISP_NIL: unreachable();
+	switch (((struct LispObjectHeader *) p)->tag) {
+	case LISP_INTEGER: case LISP_NIL: default: unreachable();
 	case LISP_PAIR:
 		struct LispPair *pair = p;
 		gc_mark(sizeof *pair, p);
@@ -189,8 +188,7 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 }
 
 size_t gc_object_size(void *p, size_t *alignment) {
-	struct LispObjectHeader *hdr = p;
-	switch (hdr->tag) {
+	switch (((struct LispObjectHeader *) p)->tag) {
 	case LISP_PAIR:
 		*alignment = alignof(struct LispPair);
 		return sizeof(struct LispPair);
@@ -250,14 +248,14 @@ DEFUN("cdr", cdr, (struct LispCtx *ctx, LispObject x)) { return cdr(ctx, x); }
 DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
 	int32_t result;
-	if (ckd_add(&result, (int32_t) (uint32_t) a, (int32_t) (uint32_t) b))
+	if (ckd_add(&result, (int32_t) a, (int32_t) b))
 		throw(1);
 	return result;
 }
 
 DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
-	return (int32_t) (uint32_t) a < (int32_t) (uint32_t) b ? LISP_CONST(ctx, t) : NIL;
+	return (int32_t) a < (int32_t) b ? LISP_CONST(ctx, t) : NIL;
 }
 
 bool lisp_init(struct LispCtx *ctx) {

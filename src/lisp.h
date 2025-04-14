@@ -42,13 +42,16 @@
 #include "tbl.h"
 
 #define IS_SMI(x) (!((x) & 1))
-#define TAG_SMI(i) ((uintptr_t) (i) << 1)
+#define TAG_SMI(i) ((uint32_t) (i) << 1)
 #define UNTAG_SMI(x) SAR((union { uint32_t u; int32_t i; }) { x }.i, 1)
-#define TAG_OBJ(p) ((uintptr_t) (p) + 1)
+#define TAG_OBJ(p) ((LispObject) (p) + 1)
 #define UNTAG_OBJ(x) ((void *) ((x) - 1))
 
 #define NIL TAG_OBJ(NULL)
 #define NILP(x) (GC_COMPRESS(x).p == NIL)
+
+typedef uintptr_t LispObject;
+typedef struct GcRef Lobj;
 
 enum LispObjectType : unsigned char {
 	LISP_PAIR,
@@ -66,9 +69,6 @@ struct LispObjectHeader {
 	struct GcObjectHeader hdr;
 	enum LispObjectType tag;
 };
-
-typedef uintptr_t LispObject;
-typedef struct GcRef Lobj;
 
 static inline enum LispObjectType lisp_type(LispObject p) {
 	return NILP(p) ? LISP_NIL
@@ -111,6 +111,9 @@ enum LispKeyword {
 	LISP_NUM_KEYWORDS,
 	LISP_NO_KEYWORD = LISP_NUM_KEYWORDS
 };
+
+struct LispTrace;
+struct JitState;
 
 struct LispCtx {
 	uintptr_t *bp, ///< Base pointer.
@@ -281,8 +284,6 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 
 #define REG_LISP_CTX r15
 #define REG_PC rsi
-
-struct JitState;
 
 [[gnu::malloc]] struct JitState *jit_new(struct LispCtx *ctx);
 

@@ -302,21 +302,21 @@ static void peel_loop(struct JitState *state) {
 			++snap;
 		}
 
-		union SsaInstruction ins = state->trace[MAX_CONSTS + i];
-		if (IS_VAR_REF(ins.a)) ins.a = subst[ins.a - IR_BIAS];
-		if (IS_VAR_REF(ins.b)) ins.b = subst[ins.b - IR_BIAS];
+		union SsaInstruction insn = state->trace[MAX_CONSTS + i];
+		if (IS_VAR_REF(insn.a)) insn.a = subst[insn.a - IR_BIAS];
+		if (IS_VAR_REF(insn.b)) insn.b = subst[insn.b - IR_BIAS];
 
-		IrRef ref = emit_folded(state, ins);
+		IrRef ref = emit_folded(state, insn);
 		uint16_t j = (subst[i] = ref) % IR_BIAS;
 		if (j != i && j < preamble_len) { // Loop-carried dependency
+			// SLOAD:s of arguments varied in tail call give rise to φ:s
 			if (IS_VAR_REF(ref)) {
-				// SLOAD:s of arguments varied in tail call give rise to φ:s
 				if (num_phis >= LENGTH(phis)) throw(1);
 				phis[num_phis++] = ref;
 			}
 			// In case of type-instability, need to emit conversion
 			// since later instructions expect the previous type.
-			assert(ref >> IR_REF_TYPE_SHIFT == ins.ty && "TODO Type-instability");
+			assert(ref >> IR_REF_TYPE_SHIFT == insn.ty && "TODO Type-instability");
 		}
 	}
 
@@ -344,10 +344,10 @@ static void peel_loop(struct JitState *state) {
 	printf("Side exit %" PRIu8 "\n", exit_num);
 	for (struct SnapshotEntry *e = snapshot_entries + snapshot->offset,
 				*end = e + snapshot->num_entries; e < end; ++e) {
-		union SsaInstruction ins = instructions[trace->num_consts + e->ref - IR_BIAS];
+		union SsaInstruction insn = instructions[trace->num_consts + e->ref - IR_BIAS];
 		ctx->bp[e->slot] = IS_VAR_REF(e->ref)
-			? regs[ins.spill_slot == SPILL_SLOT_NONE ? -ins.reg - 1 : 1 + ins.spill_slot]
-			: ins.v;
+			? regs[insn.spill_slot == SPILL_SLOT_NONE ? -insn.reg - 1 : 1 + insn.spill_slot]
+			: insn.v;
 		printf("Restoring stack slot %" PRIu8 " to value: ", e->slot);
 		lisp_print(ctx, ctx->bp[e->slot]);
 		puts(".");
@@ -390,7 +390,7 @@ struct RegAlloc {
 	struct JitState *trace;
 	RegSet available, clobbers, phi_regs;
 	uint8_t num_spill_slots, snapshot_idx;
-	union SsaInstruction bp_ins; ///< Dummy virtual representing the BP.
+	union SsaInstruction bp_insn; ///< Dummy virtual representing the BP.
 	/** The LuaJIT register cost model. */
 	alignas(32) uint16_t reg_costs[NUM_REGS];
 	Ref phis_refs[NUM_REGS]; ///< For each #phi_regs bit, its corresponding "in".
@@ -414,8 +414,8 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, x->spill_slot * sizeof x->v);
 	} else { // (Re-)materialize constant
 		assert(ref == REF_BP);
-		reg = ctx->bp_ins.reg;
-		ctx->bp_ins.reg = -1;
+		reg = ctx->bp_insn.reg;
+		ctx->bp_insn.reg = -1;
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg,
 			REG_LISP_CTX, offsetof(struct LispCtx, bp));
 	}
@@ -470,7 +470,7 @@ static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
  */
 static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	union SsaInstruction *x = IS_VAR_REF(ref) ? &IR_GET(ctx->trace, ref)
-		: ref == REF_BP ? &ctx->bp_ins : NULL;
+		: ref == REF_BP ? &ctx->bp_insn : NULL;
 	if (!x) return reg_alloc(ctx, mask);
 	if (has_reg(*x) && 1 << x->reg & mask) return x->reg; // Already allocated
 	RegSet available = ctx->available & mask;
@@ -543,9 +543,9 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 	for (unsigned i = x.b; i--;) {
 		Ref arg_ref = IR_GET(ctx->trace, ref + 1 + i).a;
 		union SsaInstruction arg = IR_GET(ctx->trace, arg_ref);
-		if (!IS_VAR_REF(arg_ref) && (int32_t) arg.v == (intptr_t) arg.v) {
+		if (!IS_VAR_REF(arg_ref) && (uint32_t) arg.v == arg.v) {
 			asm_write32(&ctx->assembler, arg.v);
-			asm_rmrd(&ctx->assembler, 1, /* MOV */ 0xc7, 0, args_reg, i * sizeof arg.v);
+			asm_rmrd(&ctx->assembler, 0, XI_MOVmi, 0, args_reg, i * sizeof arg.v);
 			continue;
 		}
 		enum Register arg_reg = IS_VAR_REF(arg_ref)
@@ -558,7 +558,7 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 }
 
 static struct LispTrace *assemble_trace(struct JitState *trace) {
-	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_ins.reg = -1,
+	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_insn.reg = -1,
 		.snapshot_idx = trace->num_snapshots - 1, };
 	if (!asm_init(&ctx.assembler)) die("asm_init failed");
 	// Emit side-exit trampolines
@@ -567,7 +567,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	*--ctx.assembler.p = /* JMP */ 0xe9;
 	for (unsigned i = 0; i < MAX_SNAPSHOTS; ++i) {
 		if (i) {
-			*--ctx.assembler.p = (4 * i - 2) & ~0x80; // Chain jumps if i>=32
+			*--ctx.assembler.p = (4 * i - 2) & 0x7f; // Chain jumps if i>=32
 			*--ctx.assembler.p = /* JMP */ 0xeb;
 		}
 		*--ctx.assembler.p = i;
@@ -617,9 +617,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			enum Register reg1 = reg_use(&ctx, x.a, -1);
 			if (IS_VAR_REF(x.b)) {
 				enum Register reg2 = reg_use(&ctx, x.b, -1);
-				*--ctx.assembler.p = MODRM(MOD_REG, reg2, reg1);
-				*--ctx.assembler.p = XI_CMP;
-				EMIT_REX(&ctx.assembler, 0, reg2, 0, reg1);
+				asm_rr(&ctx.assembler, 0, XI_CMP, reg2, reg1);
 			} else asm_grp1_imm(&ctx.assembler, 0, /* CMP */ 7,
 				reg1, (uint32_t) IR_GET(trace, x.b).v);
 			break;
@@ -763,7 +761,7 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			print_ir_ref(state, x.ty, x.b);
 			putchar('\n');
 			break;
-		case IR_NOP: break;
+		case IR_NOP: puts("NOP"); break;
 		}
 	}
 	switch (link) {

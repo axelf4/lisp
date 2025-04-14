@@ -80,10 +80,20 @@ enum {
 	XI_MOVrr = 0x89,
 	XI_MOVrm = 0x8b,
 	XI_MOVri = 0xb8,
+	XI_MOVmi = 0xc7,
 	XI_RET = 0xc3,
 	XI_GRP5 = 0xff,
 	XI_LEA = 0x8d,
 };
+
+/** Emits @a op with operands @a reg and @a rm. */
+static inline void asm_rr(struct Assembler *ctx, bool w, uint8_t op,
+	enum Register reg, enum Register rm) {
+	*--ctx->p = MODRM(MOD_REG, reg, rm);
+	*--ctx->p = op;
+	EMIT_REX(ctx, w, reg, 0, rm);
+}
+#define asm_mov_reg_reg(ctx, dst, src) asm_rr(ctx, 1, XI_MOVrr, src, dst)
 
 /** Emits @a op with operands @a reg and `[%base+disp]`.
  *
@@ -101,22 +111,13 @@ static inline void asm_rmrd(struct Assembler *ctx, bool w, uint8_t op,
 	EMIT_REX(ctx, w, reg, 0, base);
 }
 
-static inline void asm_mov_reg_reg(struct Assembler *ctx, enum Register dst, enum Register src) {
-	*--ctx->p = MODRM(MOD_REG, src, dst);
-	*--ctx->p = XI_MOVrr;
-	EMIT_REX(ctx, 1, src, 0, dst);
-}
-
 static inline void asm_loadu64(struct Assembler *ctx, enum Register r, uint64_t x) {
 	if ((uint32_t) x != x) {
 		asm_write64(ctx, x);
 		*--ctx->p = XI_MOVri + (r & 7);
 		EMIT_REX(ctx, 1, 0, 0, r);
-	} else if (!x) {
-		*--ctx->p = MODRM(MOD_REG, r, r);
-		*--ctx->p = XI_XORr + (r & 7);
-		EMIT_REX(ctx, 0, r, 0, r);
-	} else {
+	} else if (!x) asm_rr(ctx, 0, XI_XORr + (r & 7), r, r);
+	else {
 		asm_write32(ctx, x);
 		*--ctx->p = XI_MOVri + (r & 7);
 		EMIT_REX(ctx, 0, 0, 0, r);
@@ -128,9 +129,7 @@ static inline void asm_grp1_imm(struct Assembler *ctx, bool w, unsigned char reg
 	uint8_t op;
 	if ((int8_t) i == i) { *--ctx->p = i; op = 0x83; }
 	else { asm_write32(ctx, i); op = 0x81; }
-	*--ctx->p = MODRM(MOD_REG, reg, rm);
-	*--ctx->p = op;
-	EMIT_REX(ctx, w, 0, 0, rm);
+	asm_rr(ctx, w, op, (uint8_t) reg, rm);
 }
 
 /** Condition code for Conditional Test fields. */

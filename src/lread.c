@@ -16,6 +16,7 @@ static enum CharType : unsigned char {
 	[';'] = 0x4, ['`'] = 0x2,
 };
 
+static bool is_space(char c) { return char_table[(unsigned char) c] & CHAR_SPACE; }
 static bool is_digit(char c) { return char_table[(unsigned char) c] & CHAR_DIGIT; }
 static bool is_ident(char c) { return !(char_table[(unsigned char) c]
 		& (CHAR_SPACE | CHAR_COMMENT | CHAR_SPECIAL)); }
@@ -24,9 +25,9 @@ static bool is_ident(char c) { return !(char_table[(unsigned char) c]
 static void skip_whitespace(const char **s) {
 	for (const char *x = *s; ;) {
 		if (*x == ';') { ++x; while (*x != '\n' && *x) ++x; continue; }
-		if (!(char_table[(unsigned char) *x] & CHAR_SPACE)) { *s = x; break; }
+		if (!is_space(*x)) { *s = x; break; }
 		++x;
-		while (char_table[(unsigned char) *x] & CHAR_SPACE) ++x;
+		while (is_space(*x)) ++x;
 	}
 }
 
@@ -44,12 +45,16 @@ static bool read_integer(const char **s, LispObject *result) {
 }
 
 static bool read_prefix(struct LispCtx *ctx, const char **s, LispObject *result) {
-	if (**s == '\'') { ++*s; *result = LISP_CONST(ctx, fquote); }
-	else if (**s == '`') { ++*s; *result = LISP_CONST(ctx, fquasiquote); }
-	else if (**s == ',') *result = *++*s == '@' ? (++*s, LISP_CONST(ctx, funquoteSplicing))
-				: LISP_CONST(ctx, funquote);
-	else return false;
-	return true;
+	switch (**s) {
+	case '\'': ++*s; *result = LISP_CONST(ctx, fquote); return true;
+	case '`': ++*s; *result = LISP_CONST(ctx, fquasiquote); return true;
+	case ',':
+		*result = *++*s == '@'
+			? (++*s, LISP_CONST(ctx, funquoteSplicing))
+			: LISP_CONST(ctx, funquote);
+		return true;
+	default: return false;
+	}
 }
 
 #define TYPE_BITS 2

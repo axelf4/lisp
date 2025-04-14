@@ -240,17 +240,17 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	default: throw(1);
 	}
 	struct Prototype *proto = ((struct Closure *) UNTAG_OBJ(function))->prototype;
-	bool variadic = proto->arity & PROTO_VARIADIC;
+	bool is_variadic = proto->arity & PROTO_VARIADIC;
 	uint8_t m = proto->arity & ~PROTO_VARIADIC;
 
 	*ctx->bp = function;
 	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
 
 	LispObject xs = args[n];
-	if (n < m) while (!NILP(xs) && n < m) ctx->bp[2 + n++] = pop(ctx, &xs);
-	else while (n > m) xs = cons(ctx, args[--n], xs);
-	if (n < m || (!NILP(xs) && !variadic)) die("Wrong number of arguments");
-	if (variadic) ctx->bp[2 + m] = xs;
+	while (n < m && !NILP(xs)) ctx->bp[2 + n++] = pop(ctx, &xs);
+	while (n > m) xs = cons(ctx, args[--n], xs);
+	if (n < m || !(is_variadic || NILP(xs))) die("Wrong number of arguments");
+	ctx->bp[2 + m] = xs;
 
 	return run(ctx, proto->body);
 }
