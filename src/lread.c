@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include "lisp.h"
 
+/// Maximum number of digits for reading int31_t safely (no overflow).
+#define INT31_SAFE_DIG 9 // int31_t max is 1073741823, 10 digits
+
 /** Character type lookup table. */
 static enum CharType : unsigned char {
 	CHAR_SPACE = 1,
@@ -32,16 +35,19 @@ static void skip_whitespace(const char **s) {
 }
 
 static bool read_integer(const char **s, LispObject *result) {
-	int sign = 1;
+	bool is_neg = false;
 	switch (**s) {
-	case '-': sign = -1; [[fallthrough]];
+	case '-': is_neg = true; [[fallthrough]];
 	case '+': ++*s;
 	}
 	if (!is_digit(**s)) return false;
-	int i = 0;
-	do i = 10 * i + (**s - '0'); while (is_digit(*++*s));
-	*result = TAG_SMI(sign * i);
-	return !is_ident(**s);
+	const char *beg = *s;
+	uint32_t i = **s - '0', d;
+	while ((d = *++*s - '0') <= 9) i = 10 * i + d;
+	if (is_ident(**s)) return false;
+	if (*s - beg > INT31_SAFE_DIG) throw(1); // TODO Precise overflow check
+	*result = TAG_SMI(is_neg ? -i : i);
+	return true;
 }
 
 static bool read_prefix(struct LispCtx *ctx, const char **s, LispObject *result) {
