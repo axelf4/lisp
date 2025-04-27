@@ -53,7 +53,7 @@ static inline int32_t rel32(uintptr_t p, uintptr_t target) {
  */
 #define REX(w, rr, rx, rb) \
 	(0x40 | (w) << 3 | ((rr) >> 1 & 0b0100) | ((rx) >> 2 & 0b0010) | (rb) >> 3)
-#define EMIT_REX(ctx, w, rr, rx, rb) do { uint8_t _n = REX((w), (rr), (rx), (rb)); \
+#define EMIT_REX(ctx, w, rr, rx, rb) do { uint8_t _n = REX(w, rr, rx, rb); \
 		if (_n != 0x40) *--(ctx)->p = _n; } while (0)
 
 /** Register addressing mode. */

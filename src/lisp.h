@@ -43,7 +43,7 @@
 
 #define IS_SMI(x) (!((x) & 1))
 #define TAG_SMI(i) ((uintptr_t) (i) << 1)
-#define UNTAG_SMI(x) SAR((union { uint32_t u; int32_t i; }) { (x) }.i, 1)
+#define UNTAG_SMI(x) SAR((union { uint32_t u; int32_t i; }) { x }.i, 1)
 #define TAG_OBJ(p) ((uintptr_t) (p) + 1)
 #define UNTAG_OBJ(x) ((void *) ((x) - 1))
 
@@ -134,7 +134,7 @@ struct LispCtx {
 #include LISP_GENERATED_FILE
 #else
 #define LISP_CONST(ctx, name) (ctx)->name
-#define LISP_CONST_COMPRESSED(ctx, name) GC_COMPRESS(LISP_CONST((ctx), name))
+#define LISP_CONST_COMPRESSED(ctx, name) GC_COMPRESS(LISP_CONST(ctx, name))
 #endif
 
 struct LispCFunction {

@@ -87,7 +87,7 @@ int main(int argc, char *argv[]) {
 #else
 		"(struct GcRef) { lisp_consts.name.p + (uintptr_t) (ctx) }"
 #endif
-		"\n#define LISP_CONST(ctx, name) GC_DECOMPRESS((ctx), LISP_CONST_COMPRESSED((ctx), name))\n"
+		"\n#define LISP_CONST(ctx, name) GC_DECOMPRESS(ctx, LISP_CONST_COMPRESSED(ctx, name))\n"
 
 #define Z(var, _) , (uint32_t) (LISP_CONST(ctx, var) - (uintptr_t) ctx)
 		FOR_SYMBOL_CONSTS(Z));
