@@ -12,11 +12,9 @@ find_package(cmocka 1.1.0 REQUIRED)
 check_c_source_runs("#include <stdlib.h>
 int main(void) { void *ptr = &&foo; goto *ptr; return EXIT_FAILURE; foo: }"
   HAVE_COMPUTED_GOTO)
-if(NOT HAVE_COMPUTED_GOTO)
-  message(FATAL_ERROR "Computed goto support is required")
-endif()
 
 option(WITH_JIT "Enable just-in-time compilation." ON)
+option(WITH_TAIL_CALL_INTERP "Enable tail-calling interpreter.")
 option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore.")
 
 add_compile_definitions(_POSIX_C_SOURCE=200809L)
@@ -48,6 +46,8 @@ target_compile_definitions(lisplib PUBLIC
   $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp-generated.h">
   ENABLE_JIT=$<BOOL:${WITH_JIT}>)
 target_compile_definitions(lisplib PRIVATE
+  HAVE_COMPUTED_GOTO=$<BOOL:${HAVE_COMPUTED_GOTO}>
+  ENABLE_TAIL_CALL_INTERP=$<BOOL:${WITH_TAIL_CALL_INTERP}>
   LIBRESTORE_SO="${CMAKE_INSTALL_FULL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}restore${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
 add_executable(lisp src/main.c)

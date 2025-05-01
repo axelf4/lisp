@@ -13,6 +13,7 @@
 
 static_assert(sizeof(LispObject) % alignof(struct Instruction) == 0);
 
+#ifdef DEBUG
 static void disassemble_range(size_t n, struct Instruction xs[static n], int indent) {
 	for (size_t i = 0; i < n;) {
 		printf("%*s%.4zu ", indent, "", i);
@@ -55,171 +56,256 @@ static void disassemble(struct Chunk *chunk) {
 	puts("Disassembling chunk:");
 	disassemble_range(chunk->count, chunk_instructions(chunk), 0);
 }
+#endif
 
-static struct Upvalue *capture_upvalue(struct GcHeap *heap, struct Upvalue **p, LispObject *local) {
+static struct Upvalue *capture_upvalue(struct LispCtx *ctx, LispObject *local) {
+	struct Upvalue **p = &ctx->upvalues;
 	while (*p && (*p)->location > local) p = &(*p)->next;
 	if (*p && (*p)->location == local) return *p;
 
+	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct Upvalue *new = gc_alloc(heap, alignof(struct Upvalue), sizeof *new);
 	*new = (struct Upvalue) { { new->hdr.hdr, LISP_UPVALUE },
 		.is_closed = false, .next = *p, .location = local };
 	return *p = new;
 }
 
-[[gnu::optimize ("-fnon-call-exceptions"), gnu::hot]]
-static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
-	struct GcHeap *heap = (struct GcHeap *) ctx;
-	uintptr_t *bp = ctx->bp;
-	bp[1] = (uintptr_t) NULL;
-	struct Upvalue *upvalues = NULL;
-#if ENABLE_JIT
-	unsigned char hotcounts[64] = {};
-#define JIT_THRESHOLD 4
-	memset(hotcounts, JIT_THRESHOLD, sizeof hotcounts);
-#endif
+/** Collects arguments of a CALL instruction. */
+static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *proto,
+	uint8_t n, LispObject *bp) {
+	uint8_t nargs = proto->arity & ~PROTO_VARIADIC;
+	if (proto->arity & PROTO_VARIADIC) {
+		LispObject rest = NIL;
+		while (n > nargs) rest = cons(ctx, bp[2 + --n], rest);
+		bp[2 + n++] = rest;
+		++nargs;
+	}
+	if (n != nargs) die("Wrong number of arguments");
+	return nargs;
+}
 
 #pragma GCC diagnostic push
+#if ENABLE_TAIL_CALL_INTERP
+#ifdef __clang__
+#define PRESERVE_NONE [[clang::preserve_none]]
+#elifdef __GNUC__
+#define PRESERVE_NONE [[gnu::no_callee_saved_registers]]
+#else
+#define PRESERVE_NONE
+#endif
+
+struct Handler;
+#define TAIL_CALL_PARAMS struct LispCtx *ctx, struct Instruction *restrict pc, \
+		LispObject *bp, struct Instruction ins, struct Handler *dispatch_table
+#define TAIL_CALL_ARGS ctx, pc, bp, ins, dispatch_table
+PRESERVE_NONE typedef LispObject LispTailCallFunc(TAIL_CALL_PARAMS);
+
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#define HANDLER_ADDR(op) _tail_call_ ## op,
+#define RECORD_ADDR(_) HANDLER_ADDR(RECORD)
+static LispTailCallFunc FOR_OPS(HANDLER_ADDR) _tail_call_RECORD;
+static struct Handler { LispTailCallFunc *hnd; }
+	main_dispatch_table[] = { FOR_OPS(HANDLER_ADDR) },
+	recording_dispatch_table[] = { FOR_OPS(RECORD_ADDR) };
+
+#define DEFINE_OP(op) PRESERVE_NONE static LispObject _tail_call_ ## op(TAIL_CALL_PARAMS)
+#define NEXT do { ins = *pc++;											\
+		[[clang::musttail]] return dispatch_table[ins.op].hnd(TAIL_CALL_ARGS); } \
+	while (0)
+#define JMP_TO_LABEL(name) do [[clang::musttail]] return \
+			_tail_call_ ## name(TAIL_CALL_ARGS); while (0)
+#define DISPATCH_MAIN(op) do [[clang::musttail]] return \
+			main_dispatch_table[op].hnd(TAIL_CALL_ARGS); while (0)
+
+#define VM_BEGIN											\
+	struct Handler *dispatch_table = main_dispatch_table;	\
+	struct Instruction ins = *pc++;							\
+	return dispatch_table[ins.op].hnd(TAIL_CALL_ARGS); }
+#define VM_END [[maybe_unused]] static void _dummy() {
+#elif HAVE_COMPUTED_GOTO
 #pragma GCC diagnostic ignored "-Wpedantic"
-	void *main_dispatch_table[] = {
-		[RET] = &&op_ret,
-		[LOAD_NIL] = &&op_load_nil,
-		[LOAD_OBJ] = &&op_load_obj,
-		[LOAD_SHORT] = &&op_load_short,
-		[GETGLOBAL] = &&op_getglobal, [SETGLOBAL] = &&op_setglobal,
-		[GETUPVALUE] = &&op_getupvalue, [SETUPVALUE] = &&op_setupvalue,
-		[CALL] = &&op_call, [TAIL_CALL] = &&op_tail_call,
-		[TAIL_JIT_CALL] = &&op_tail_jit_call,
-		[MOV] = &&op_mov,
-		[JMP] = &&op_jmp, [JNIL] = &&op_jnil,
-		[CLOS] = &&op_clos, [CLOSE_UPVALS] = &&op_close_upvals,
-	}, **dispatch_table = main_dispatch_table;
-	void *recording_dispatch_table[BC_NUM_OPS];
-	for (unsigned i = 0; i < LENGTH(recording_dispatch_table); ++i)
-		recording_dispatch_table[i] = &&do_record;
-	struct Instruction ins;
-	// Use token-threading to be able to swap dispatch table when recording
-#define NEXT goto *dispatch_table[(ins = *pc++).op]
-	NEXT;
+
+#define DEFINE_OP(op) op_ ## op:
+// Use token-threading to be able to swap dispatch table when recording
+#define NEXT do goto *dispatch_table[(ins = *pc++).op]; while (0)
+#define JMP_TO_LABEL(name) goto op_ ## name
+#define DISPATCH_MAIN(op) do goto *main_dispatch_table[op]; while (0)
+
+#define HANDLER_PTR(op) &&op_ ## op,
+#define RECORD_PTR(op) &&op_RECORD,
+#define VM_BEGIN void *main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) }, \
+		*recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) },			\
+		**dispatch_table = main_dispatch_table;							\
+	struct Instruction ins; NEXT;
+#define VM_END
+#elif ENABLE_JIT
+#error Switch-based dispatch does not support JIT trace recording
+#else
+#define DEFINE_OP(op) op_ ## op: case op:
+#define NEXT goto vm_start
+#define JMP_TO_LABEL(name) goto op_ ## name
+
+#define VM_BEGIN vm_start:; struct Instruction ins = *pc++; switch (ins.op) {
+#define VM_END }
+#endif
+
+[[gnu::optimize ("-fnon-call-exceptions"), gnu::hot]]
+static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
+	uintptr_t *bp = ctx->bp;
+	bp[1] = (uintptr_t) NULL; // TODO Reentrancy
+	ctx->upvalues = NULL;
+#if ENABLE_JIT
+#define JIT_THRESHOLD 4
+	memset(ctx->hotcounts, JIT_THRESHOLD, sizeof ctx->hotcounts);
+
+	/** Decrements hotcount by @a n, triggering trace recorder at zero. */
+#define DECR_HOTCOUNT(closure, to, n) do {								\
+		unsigned char hash = ((uintptr_t) pc ^ (uintptr_t) (to)) / sizeof *(to), \
+			*hotcount = ctx->hotcounts + hash % LENGTH(ctx->hotcounts);	\
+		if (!ckd_sub(hotcount, *hotcount, n)) break;					\
+		*hotcount = JIT_THRESHOLD;										\
+		if (dispatch_table != recording_dispatch_table					\
+			&& jit_init(ctx->jit_state, (closure)))						\
+			dispatch_table = recording_dispatch_table;					\
+} while(0)
+#else
+#define DECR_HOTCOUNT(closure, to, n) ((void) (closure), (void) (to), (void) (n))
+#endif
 
 #define LOAD_CONST (*(LispObject *) (pc - ins.b))
-op_ret:
-	if (!LIKELY(pc = (struct Instruction *) bp[1])) return ins.a[ctx->bp = bp];
-	*bp = bp[ins.a]; // Copy return value to R(A) of CALL instruction
-	bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
-	NEXT;
-op_load_nil: bp[ins.a] = NIL; NEXT;
-op_load_obj: bp[ins.a] = LOAD_CONST; NEXT;
-op_load_short: bp[ins.a] = TAG_SMI((int16_t) ins.b); NEXT;
-op_getglobal: bp[ins.a] = ((struct LispSymbol *) UNTAG_OBJ(LOAD_CONST))->value; NEXT;
-op_setglobal:
-	struct LispSymbol *sym = UNTAG_OBJ(LOAD_CONST);
-	sym->value = bp[ins.a];
-	gc_write_barrier(heap, &sym->hdr.hdr);
-	NEXT;
-op_getupvalue:
-	bp[ins.a] = *((struct Closure *) UNTAG_OBJ(*bp))->upvalues[ins.c]->location;
-	NEXT;
-op_setupvalue:
-	struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[ins.c];
-	*upvalue->location = bp[ins.a];
-	gc_write_barrier(heap, &upvalue->hdr.hdr);
-	NEXT;
-op_call: op_tail_call:
-	LispObject *vals = bp + ins.a;
-	switch (lisp_type(*vals)) {
-	case LISP_CFUNCTION:
-		struct LispCFunction *fun = UNTAG_OBJ(*vals);
-		1[ctx->bp = vals] = (uintptr_t) pc; // Synchronize bp and link call-frames
-		*vals = fun->f(ctx, ins.c, vals + 2);
-		if (ins.op == TAIL_CALL) goto op_ret;
-		break;
-	case LISP_CLOSURE:
-		struct Closure *closure = UNTAG_OBJ(*vals);
-		struct Prototype *proto = closure->prototype;
-		uint8_t nargs = proto->arity & ~PROTO_VARIADIC;
-		if (proto->arity & PROTO_VARIADIC) {
-			LispObject rest = NIL;
-			while (ins.c > nargs) rest = cons(ctx, vals[2 + --ins.c], rest);
-			vals[2 + ins.c++] = rest;
-			++nargs;
-		}
-		if (ins.c != nargs) die("Wrong number of arguments");
 
-		struct Instruction *to = proto->body;
-#if ENABLE_JIT
-		// Increment hotcount
-		unsigned char hash = ((uintptr_t) pc ^ (uintptr_t) to) / sizeof *to,
-			*hotcount = hotcounts + hash % LENGTH(hotcounts);
-		if (ckd_sub(hotcount, *hotcount, 1 + (ins.op == TAIL_CALL))) {
-			*hotcount = JIT_THRESHOLD;
-			if (dispatch_table != recording_dispatch_table
-				&& jit_init(ctx->jit_state, closure))
-				dispatch_table = recording_dispatch_table; // Start recording trace
-		}
-#endif
+	VM_BEGIN
+		DEFINE_OP(RET) {
+		if (!LIKELY(pc = (struct Instruction *) bp[1])) return ins.a[ctx->bp = bp];
+		*bp = bp[ins.a]; // Copy return value to R(A) of CALL instruction
+		bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
+		NEXT;
+	}
+	DEFINE_OP(LOAD_NIL) { bp[ins.a] = NIL; NEXT; }
+	DEFINE_OP(LOAD_OBJ) { bp[ins.a] = LOAD_CONST; NEXT; }
+	DEFINE_OP(LOAD_SHORT) { bp[ins.a] = TAG_SMI((int16_t) ins.b); NEXT; }
+	DEFINE_OP(GETGLOBAL) {
+		bp[ins.a] = ((struct LispSymbol *) UNTAG_OBJ(LOAD_CONST))->value;
+		NEXT;
+	}
+	DEFINE_OP(SETGLOBAL) {
+		struct LispSymbol *sym = UNTAG_OBJ(LOAD_CONST);
+		sym->value = bp[ins.a];
+		gc_write_barrier((struct GcHeap *) ctx, &sym->hdr.hdr);
+		NEXT;
+	}
+	DEFINE_OP(GETUPVALUE) {
+		bp[ins.a] = *((struct Closure *) UNTAG_OBJ(*bp))->upvalues[ins.c]->location;
+		NEXT;
+	}
+	DEFINE_OP(SETUPVALUE) {
+		struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[ins.c];
+		*upvalue->location = bp[ins.a];
+		gc_write_barrier((struct GcHeap *) ctx, &upvalue->hdr.hdr);
+		NEXT;
+	}
 
-		if (ins.op == TAIL_CALL) {
-			*bp = *vals;
-			memmove(bp + 2, vals + 2, ins.c * sizeof *vals);
-		} else 1[bp = vals] = (uintptr_t) pc;
-		pc = to;
-		break;
-	default: die("Bad function");
+	DEFINE_OP(CALL) {
+		LispObject *frame = bp + ins.a;
+		switch (lisp_type(*frame)) {
+		case LISP_CFUNCTION:
+			struct LispCFunction *fn = UNTAG_OBJ(*frame);
+			1[ctx->bp = frame] = (uintptr_t) pc; // Synchronize bp and link call-frames
+			*frame = fn->f(ctx, ins.c, frame + 2);
+			break;
+		case LISP_CLOSURE:
+			bp += ins.a;
+			struct Closure *closure = UNTAG_OBJ(*bp);
+			bind_rest(ctx, closure->prototype, ins.c, bp);
+
+			struct Instruction *to = closure->prototype->body;
+			DECR_HOTCOUNT(closure, to, 1);
+			bp[1] = (uintptr_t) pc;
+			pc = to;
+			break;
+		default: die("Bad function");
+		}
+		NEXT;
 	}
-	NEXT;
-op_mov: bp[ins.a] = bp[ins.c]; NEXT;
-op_jnil: if (NILP(bp[ins.a])) op_jmp: pc += ins.b; NEXT;
-op_clos:
-	struct Prototype *proto = (struct Prototype *) pc;
-	struct Closure *closure = gc_alloc(heap, alignof(struct Closure),
-		sizeof *closure + proto->num_upvalues * sizeof *closure->upvalues);
-	*closure = (struct Closure) { { closure->hdr.hdr, LISP_CLOSURE }, proto };
-	// Read upvalues
-	uint8_t *indices = (uint8_t *) (pc += ins.b) - proto->num_upvalues;
-	for (unsigned i = 0; i < proto->num_upvalues; ++i) {
-		uint8_t index = indices[i];
-		closure->upvalues[i] = index & UPVALUE_LOCAL
-			? capture_upvalue(heap, &upvalues, bp + (index & ~UPVALUE_LOCAL))
-			: ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[index];
+	DEFINE_OP(TAIL_CALL) {
+		LispObject *frame = bp + ins.a;
+		switch (lisp_type(*frame)) {
+		case LISP_CFUNCTION:
+			struct LispCFunction *fn = UNTAG_OBJ(*frame);
+			1[ctx->bp = frame] = (uintptr_t) pc; // Synchronize bp and link call-frames
+			*frame = fn->f(ctx, ins.c, frame + 2);
+			JMP_TO_LABEL(RET);
+		case LISP_CLOSURE:
+			struct Closure *closure = UNTAG_OBJ(*bp = *frame);
+			uint8_t n = bind_rest(ctx, closure->prototype, ins.c, frame);
+			memmove(bp + 2, frame + 2, n * sizeof *frame);
+
+			struct Instruction *to = closure->prototype->body;
+			DECR_HOTCOUNT(closure, to, 2);
+			pc = to;
+			NEXT;
+		default: die("Bad function");
+		}
 	}
-	bp[ins.a] = TAG_OBJ(closure);
-	NEXT;
-op_close_upvals:
-	while (upvalues && upvalues->location >= bp + ins.a) {
-		struct Upvalue *x = upvalues;
-		upvalues = x->next;
-		*x = (struct Upvalue)
-			{ x->hdr, .is_closed = true, .value = *x->location, .location = &x->value };
+
+	DEFINE_OP(MOV) { bp[ins.a] = bp[ins.c]; NEXT; }
+	DEFINE_OP(JMP) { pc += ins.b; NEXT; }
+	DEFINE_OP(JNIL) { if (NILP(bp[ins.a])) JMP_TO_LABEL(JMP); NEXT; }
+	DEFINE_OP(CLOS) {
+		struct Prototype *proto = (struct Prototype *) pc;
+		struct Closure *closure = gc_alloc(
+			(struct GcHeap *) ctx, alignof(struct Closure),
+			sizeof *closure + proto->num_upvalues * sizeof *closure->upvalues);
+		*closure = (struct Closure) { { closure->hdr.hdr, LISP_CLOSURE }, proto };
+		// Read upvalues
+		uint8_t *indices = (uint8_t *) (pc += ins.b) - proto->num_upvalues;
+		for (unsigned i = 0; i < proto->num_upvalues; ++i) {
+			uint8_t index = indices[i];
+			closure->upvalues[i] = index & UPVALUE_LOCAL
+				? capture_upvalue(ctx, bp + (index & ~UPVALUE_LOCAL))
+				: ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[index];
+		}
+		bp[ins.a] = TAG_OBJ(closure);
+		NEXT;
 	}
-	NEXT;
+	DEFINE_OP(CLOSE_UPVALS) {
+		while (ctx->upvalues && ctx->upvalues->location >= bp + ins.a) {
+			struct Upvalue *x = ctx->upvalues;
+			ctx->upvalues = x->next;
+			*x = (struct Upvalue) { x->hdr, .is_closed = true,
+				.value = *x->location, .location = &x->value };
+		}
+		NEXT;
+	}
 #if ENABLE_JIT
-op_tail_jit_call:
-	struct LispTrace *trace = ctx->current_trace = (*ctx->traces)[ins.b];
-	vals = bp + ins.a;
-	*bp = *vals;
-	memmove(bp + 2, vals + 2, trace_arity(trace) * sizeof *vals);
-	ctx->bp = bp; // Synchronize bp
-	register struct LispCtx *ctx2 __asm__ (STR(REG_LISP_CTX)) = ctx;
-	register struct Instruction *pc2 __asm__ (STR(REG_PC));
-	uint8_t base_offset;
-	__asm__ volatile ("call %[f]"
-		: "=r" (pc2), "=d" (base_offset)
-		: "r" (ctx2), [f] "rm" (*(void (**)()) trace)
-		: "rax", "rcx", "rdi", "r8", "r9", "r10", "r11", "cc", "memory");
-	pc = pc2;
-	bp += base_offset;
-	NEXT;
-do_record:
-	ctx->bp = bp;
-	if (!jit_record(ctx->jit_state, pc)) {
-		dispatch_table = main_dispatch_table;
-		ins = pc[-1];
+	DEFINE_OP(TAIL_JIT_CALL) {
+		struct LispTrace *trace = ctx->current_trace = (*ctx->traces)[ins.b];
+		LispObject *frame = bp + ins.a;
+		*bp = *frame;
+		memmove(bp + 2, frame + 2, trace_arity(trace) * sizeof *bp);
+		ctx->bp = bp; // Synchronize bp
+		register struct LispCtx *ctx2 __asm__ (STR(REG_LISP_CTX)) = ctx;
+		register struct Instruction *pc2 __asm__ (STR(REG_PC));
+		int8_t base_offset;
+		__asm__ volatile ("call %[f]"
+			: "=r" (pc2), "=d" (base_offset)
+			: "r" (ctx2), [f] "rm" (*(void (**)()) trace)
+			: "rax", "rcx", "rdi", "r8", "r9", "r10", "r11", "cc", "memory");
+		pc = pc2;
+		bp += base_offset;
+		NEXT;
 	}
-	goto *main_dispatch_table[ins.op];
-#else
-op_tail_jit_call: do_record: unreachable();
+	DEFINE_OP(RECORD) {
+		ctx->bp = bp;
+		if (!jit_record(ctx->jit_state, pc)) {
+			dispatch_table = main_dispatch_table;
+			ins = pc[-1];
+		}
+		DISPATCH_MAIN(ins.op);
+	}
 #endif
 #pragma GCC diagnostic pop
+	VM_END;
 }
 
 /** Applies @a function to @a args.
@@ -262,8 +348,8 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 #ifndef LISP_GENERATED_FILE
 static enum LispKeyword lisp_symbol_to_keyword(struct LispCtx *ctx, LispObject sym) {
 	Lobj x = GC_COMPRESS(sym);
-#define X(kw, var) else if (x.p == LISP_CONST_COMPRESSED(ctx, var).p) return LISP_KW_ ## kw;
-	if (false) ; FOR_KEYWORDS(X) else return LISP_NO_KEYWORD;
+#define X(kw, var) x.p == LISP_CONST_COMPRESSED(ctx, var).p ? LISP_KW_ ## kw :
+	return FOR_KEYWORDS(X) LISP_NO_KEYWORD;
 #undef X
 }
 #endif
@@ -627,6 +713,8 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
+#ifdef DEBUG
 	disassemble(chunk);
+#endif
 	return run(ctx, chunk_instructions(chunk));
 }

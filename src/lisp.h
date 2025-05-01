@@ -119,8 +119,10 @@ struct LispCtx {
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
 	struct Table symbol_tbl;
+	struct Upvalue *upvalues;
 
 #if ENABLE_JIT
+	unsigned char hotcounts[64];
 	struct JitState *jit_state;
 	struct LispTrace *(*traces)[UINT16_MAX], *current_trace;
 #endif
@@ -209,26 +211,28 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 	return car(ctx, cell);
 }
 
+#define FOR_OPS(X) \
+	X(RET) /* Return R(A) */ \
+	X(LOAD_NIL) /* R(A) <- NIL */ \
+	X(LOAD_OBJ) /* R(A) <- K(B) */ \
+	X(LOAD_SHORT) /* R(A) <- sB */ \
+	X(GETGLOBAL) /* R(A) <- G[K[PC, B]] */ \
+	X(SETGLOBAL) /* G[K[PC, B]] <- R(A) */ \
+	X(GETUPVALUE) /* R(A) <- U[C] */ \
+	X(SETUPVALUE) /* U[C] <- R(A) */ \
+	X(CALL) /* R(A) <- R(A)(R(A+2), ..., R(A+2+C-1)) */ \
+	X(TAIL_CALL) \
+	X(TAIL_JIT_CALL) \
+	X(MOV) /* R(A) <- R(C) */ \
+	X(JMP) /* PC += sB */ \
+	X(JNIL) /* If NILP(R(A)) then PC += sB */ \
+	X(CLOS) \
+	X(CLOSE_UPVALS) /* Close stack variables up to R(A). */
+
 /** Bytecode operation code. */
-enum Op : uint8_t {
-	RET, ///< Return R(A)
-	LOAD_NIL, ///< R(A) <- NIL
-	LOAD_OBJ, ///< R(A) <- K(B)
-	LOAD_SHORT, ///< R(A) <- sB
-	GETGLOBAL, ///< R(A) <- G[K[PC, B]]
-	SETGLOBAL, ///< G[K[PC, B]] <- R(A)
-	GETUPVALUE, ///< R(A) <- U[C]
-	SETUPVALUE, ///< U[C] <- R(A)
-	CALL, ///< R(A) <- R(A)(R(A+2), ..., R(A+2+C-1))
-	TAIL_CALL,
-	TAIL_JIT_CALL,
-	MOV, ///< R(A) <- R(C)
-	JMP, ///< PC += sB
-	JNIL, ///< If NILP(R(A)) then PC += sB
-	CLOS,
-	CLOSE_UPVALS, ///< Close stack variables up to R(A).
-	BC_NUM_OPS,
-};
+#define X(op) op,
+enum Op : uint8_t { FOR_OPS(X) BC_NUM_OPS };
+#undef X
 
 /** Bytecode instruction. */
 struct Instruction {
