@@ -27,7 +27,7 @@ struct BumpPointer { char *cursor, *limit; };
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 	if (ptr->cursor - size < ptr->limit) return NULL;
 	// Bump allocate downward to align with a single AND instruction
-	char *p = (char *) (((uintptr_t) ASSUME_ALIGNED(ptr->cursor, GC_MIN_ALIGNMENT)
+	char *p = (char *) (((uintptr_t) ASSUME_ALIGNED(ptr->cursor, GC_ALIGNMENT)
 			- size) & ~(align - 1));
 	if (p) return ptr->cursor = p; else unreachable();
 }
@@ -59,7 +59,7 @@ static struct BumpPointer block_bump_ptr(struct GcBlock *block) {
 #endif
 #define NUM_BLOCKS (GC_HEAP_SIZE / sizeof(struct GcBlock) - 1)
 #define MIN_FREE (NUM_BLOCKS * 3 / 100)
-#define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_MIN_ALIGNMENT * CHAR_BIT))
+#define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_ALIGNMENT * CHAR_BIT))
 
 struct GcHeap {
 	// Store at same offset to use a single pointer for both
@@ -126,14 +126,14 @@ void gc_free(struct GcHeap *heap) {
 
 /** Remembers @a x as a live allocated object location. */
 static void object_map_add(struct GcHeap *heap, char *x) {
-	size_t i = (x - (char *) heap) / GC_MIN_ALIGNMENT;
+	size_t i = (x - (char *) heap) / GC_ALIGNMENT;
 	heap->object_map[i / CHAR_BIT] |= 1 << i % CHAR_BIT;
 }
 
 /** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
-	size_t i = (x - (uintptr_t) heap) / GC_MIN_ALIGNMENT;
-	if (x % GC_MIN_ALIGNMENT || x - (uintptr_t) heap->blocks >= sizeof heap->blocks)
+	size_t i = (x - (uintptr_t) heap) / GC_ALIGNMENT;
+	if (x % GC_ALIGNMENT || x - (uintptr_t) heap->blocks >= sizeof heap->blocks)
 		return false;
 	char *v = heap->object_map + i / CHAR_BIT, mask = 1 << i % CHAR_BIT;
 	if (*v & mask) { *v &= ~mask; return true; }
@@ -167,8 +167,8 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 	*ptr = block_bump_ptr(heap->free[--heap->free_len]);
 out_bump:
 	ASAN_POISON_MEMORY_REGION(ptr->limit, ptr->cursor - ptr->limit);
-	memset(heap->object_map + (ptr->limit - (char *) heap) / (GC_MIN_ALIGNMENT * CHAR_BIT),
-		0, (ptr->cursor - ptr->limit) / (GC_MIN_ALIGNMENT * CHAR_BIT));
+	memset(heap->object_map + (ptr->limit - (char *) heap) / (GC_ALIGNMENT * CHAR_BIT),
+		0, (ptr->cursor - ptr->limit) / (GC_ALIGNMENT * CHAR_BIT));
 	return bump_alloc(ptr, alignment, size);
 }
 

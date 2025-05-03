@@ -49,7 +49,7 @@ struct GcRef {
 #define GC_DECOMPRESS(base, ref) ((void) (base), (ref).p)
 #endif
 
-#define GC_MIN_ALIGNMENT (sizeof(struct GcRef))
+#define GC_ALIGNMENT (sizeof(struct GcRef))
 
 struct GcObjectHeader { unsigned char flags; /**< GC flags. */ };
 

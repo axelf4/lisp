@@ -43,7 +43,7 @@ static double rnorm(uint64_t u) {
 }
 
 struct Obj {
-	alignas(GC_MIN_ALIGNMENT) struct {
+	alignas(GC_ALIGNMENT) struct {
 		struct GcObjectHeader hdr;
 		uint8_t used_slot_count;
 		uint16_t num_slots;

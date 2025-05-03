@@ -78,7 +78,7 @@ static inline enum LispObjectType lisp_type(LispObject p) {
 
 /** Interned string with a value slot. */
 struct Symbol {
-	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	size_t len; ///< Name length (excluding NULL terminator).
 	const char *name; ///< NULL-terminated name string.
 	LispObject value;
@@ -141,7 +141,7 @@ struct LispCtx {
 #endif
 
 struct LispCFunction {
-	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	unsigned char nargs;
 	LispObject (*f)(struct LispCtx *, size_t n, const LispObject args[static n]);
 	const char *name;
@@ -149,7 +149,7 @@ struct LispCFunction {
 
 /** Cons cell. */
 struct LispPair {
-	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	Lobj car, cdr;
 };
 
@@ -242,7 +242,7 @@ struct Instruction {
 
 /** Array of bytecode instructions. */
 struct Chunk {
-	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	uint16_t num_consts;
 	size_t count;
 	/// Array of #num_consts constants, followed by #count instructions.
@@ -259,7 +259,7 @@ struct Prototype {
 };
 
 struct Upvalue {
-	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	bool is_closed;
 	union {
 		struct Upvalue *next; ///< Next unclosed in list sorted by stack locations.
@@ -269,7 +269,7 @@ struct Upvalue {
 };
 
 struct Closure {
-	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	struct Prototype *prototype;
 	struct Upvalue *upvalues[];
 	// TODO Add plist as an alternative to https://zenodo.org/records/6228797

@@ -48,7 +48,7 @@ LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 }
 
 struct LispString {
-	alignas(GC_MIN_ALIGNMENT) struct LispObjectHeader hdr;
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	size_t len;
 	char s[];
 };
