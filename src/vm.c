@@ -1,5 +1,6 @@
 /** Register-based bytecode virtual machine. */
 
+#include <stdckdint.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -149,7 +150,7 @@ op_call: op_tail_call:
 		// Increment hotcount
 		unsigned char hash = ((uintptr_t) pc ^ (uintptr_t) to) / sizeof *to,
 			*hotcount = hotcounts + hash % LENGTH(hotcounts);
-		if ((*hotcount -= 1 + (ins.op == TAIL_CALL)) <= 0) {
+		if (ckd_sub(hotcount, *hotcount, 1 + (ins.op == TAIL_CALL))) {
 			*hotcount = JIT_THRESHOLD;
 			if (dispatch_table != recording_dispatch_table
 				&& jit_init(ctx->jit_state, closure))
