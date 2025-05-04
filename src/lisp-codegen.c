@@ -66,8 +66,8 @@ int main(int argc, char *argv[]) {
 	const char *filename = argv[argc - 1];
 	int ret = 0;
 	struct GcHeap *heap;
-	struct LispCtx *ctx;
-	if (!(ctx = (struct LispCtx *) (heap = gc_new()))) return EXIT_FAILURE;
+	if (!(heap = gc_new())) return EXIT_FAILURE;
+	struct LispCtx *ctx = (struct LispCtx *) heap;
 	if (!lisp_init(ctx)) { ret = EXIT_FAILURE; goto out_free_heap; }
 	FILE *f;
 	if (!(f = fopen(filename, "w"))) { ret = EXIT_FAILURE; goto out_free_lisp; }

@@ -77,9 +77,9 @@ static inline enum LispObjectType lisp_type(LispObject p) {
 }
 
 /** Interned string with a value slot. */
-struct Symbol {
+struct LispSymbol {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	size_t len; ///< Name length (excluding NULL terminator).
+	unsigned int len; ///< Length of #name (excluding NULL terminator).
 	const char *name; ///< NULL-terminated name string.
 	LispObject value;
 };
@@ -184,8 +184,8 @@ bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b);
  *
  * @return Whether the signal was handled.
  */
-[[gnu::cold]] bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext,
-	struct LispCtx *ctx);
+[[gnu::cold]]
+bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext, struct LispCtx *ctx);
 
 bool lisp_init(struct LispCtx *);
 
@@ -240,7 +240,7 @@ struct Instruction {
 	};
 };
 
-/** Array of bytecode instructions. */
+/** Sequence of bytecode instructions. */
 struct Chunk {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	uint16_t num_consts;

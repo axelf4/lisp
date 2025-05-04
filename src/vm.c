@@ -23,9 +23,9 @@ static void disassemble_range(size_t n, struct Instruction xs[static n], int ind
 		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIuPTR "\n", x.a, GET_CONST); break;
 		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
 		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", x.a,
-			((struct Symbol *) UNTAG_OBJ(GET_CONST))->name); break;
+			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
 		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", x.a,
-			((struct Symbol *) UNTAG_OBJ(GET_CONST))->name); break;
+			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
 		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
 		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
 		case CALL: case TAIL_CALL:
@@ -109,9 +109,9 @@ op_ret:
 op_load_nil: bp[ins.a] = NIL; NEXT;
 op_load_obj: bp[ins.a] = LOAD_CONST; NEXT;
 op_load_short: bp[ins.a] = TAG_SMI((int16_t) ins.b); NEXT;
-op_getglobal: bp[ins.a] = ((struct Symbol *) UNTAG_OBJ(LOAD_CONST))->value; NEXT;
+op_getglobal: bp[ins.a] = ((struct LispSymbol *) UNTAG_OBJ(LOAD_CONST))->value; NEXT;
 op_setglobal:
-	struct Symbol *sym = UNTAG_OBJ(LOAD_CONST);
+	struct LispSymbol *sym = UNTAG_OBJ(LOAD_CONST);
 	sym->value = bp[ins.a];
 	gc_write_barrier(heap, &sym->hdr.hdr);
 	NEXT;
@@ -557,8 +557,8 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		}
 		default:
 			if (lisp_type(head) == LISP_SYMBOL
-				&& consp(((struct Symbol *) UNTAG_OBJ(head))->value)) {
-				LispObject macro = car(lisp_ctx, ((struct Symbol *) UNTAG_OBJ(head))->value);
+				&& consp(((struct LispSymbol *) UNTAG_OBJ(head))->value)) {
+				LispObject macro = car(lisp_ctx, ((struct LispSymbol *) UNTAG_OBJ(head))->value);
 				return compile_form(ctx, apply(ctx->lisp_ctx, macro, 0, &x), dst);
 			}
 

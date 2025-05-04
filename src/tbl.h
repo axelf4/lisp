@@ -77,7 +77,7 @@ static inline size_t find_insert_slot(struct Table *table, uint64_t h) {
 		size_t x = match_empty_or_deleted(group);
 		if (UNLIKELY(!x)) continue;
 		size_t match = (bucket + stdc_trailing_zeros(x) / CHAR_BIT) & table->bucket_mask;
-		// If n < GROUP_WIDTH, there may be fake EMPTY bytes before the mirror bytes
+		// If n < GROUP_WIDTH there may be fake EMPTY bytes before mirror bytes
 		if (IS_FULL(table->ctrl[match])) {
 			group = HTOL(*(Group *) table->ctrl);
 			match = stdc_trailing_zeros(match_empty_or_deleted(group)) / CHAR_BIT
@@ -114,10 +114,11 @@ KEY *CAT(NAME, _tbl_find)(struct Table *table, KEY key) {
  * @return False if iteration is done.
  */
 static bool CAT(NAME, _tbl_iter_next)(struct Table *table, size_t *i, KEY **entry) {
-	while (*i <= table->bucket_mask) if (IS_FULL(table->ctrl[(*i)++])) {
+	while (*i <= table->bucket_mask)
+		if (IS_FULL(table->ctrl[(*i)++])) {
 			*entry = (KEY *) table->ctrl - *i;
 			return true;
-	}
+		}
 	return false;
 }
 

@@ -629,7 +629,8 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			break;
 		case IR_GLOAD:
 			reg = reg_def(&ctx, ref, -1);
-			int32_t p = GC_COMPRESS(UNTAG_OBJ(IR_GET(trace, x.a).v)).p + offsetof(struct Symbol, value);
+			int32_t p = GC_COMPRESS(UNTAG_OBJ(IR_GET(trace, x.a).v)).p
+				+ offsetof(struct LispSymbol, value);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, p);
 			break;
 		case IR_ULOAD: {
@@ -732,7 +733,7 @@ static void print_ir_ref(struct JitState *state, uint8_t ty, Ref ref) {
 		[[fallthrough]];
 	case LISP_CFUNCTION: case LISP_CLOSURE: printf("%#" PRIxPTR, x.v); break;
 	case LISP_SYMBOL:
-		struct Symbol *sym = UNTAG_OBJ(x.v);
+		struct LispSymbol *sym = UNTAG_OBJ(x.v);
 		printf("[%.*s]", (int) sym->len, sym->name);
 		break;
 	case LISP_INTEGER: printf("%+" PRIi32, UNTAG_SMI(x.v)); break;

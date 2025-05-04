@@ -27,16 +27,16 @@
 	};																	\
 	static LispObject __ ## cname args
 
-static uint64_t symbol_hash(struct Symbol *x) {
+static uint64_t symbol_hash(struct LispSymbol *x) {
 	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
 }
 
-static bool symbol_equal(struct Symbol *a, struct Symbol *b) {
+static bool symbol_equal(struct LispSymbol *a, struct LispSymbol *b) {
 	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
 }
 
 #define NAME symbol
-#define KEY struct Symbol *
+#define KEY struct LispSymbol *
 #include "tbl.h"
 
 LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
@@ -49,7 +49,7 @@ LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 
 struct LispString {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	size_t len;
+	unsigned int len;
 	char s[];
 };
 
@@ -57,15 +57,15 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	if (len == 3 && memcmp(s, "nil", 3) == 0) return NIL;
 
 	struct GcHeap *heap = (struct GcHeap *) ctx;
-	struct Symbol key = { .len = len, .name = s }, **entry;
+	struct LispSymbol key = { .len = len, .name = s }, **entry;
 	if (!symbol_tbl_entry(&ctx->symbol_tbl, &key, &entry)) {
 		if (!entry) die("malloc failed");
 		struct LispString *name = gc_alloc(heap, alignof(struct LispString), sizeof *name + len + 1);
 		name->hdr.tag = LISP_STRING;
 		memcpy(name->s, s, name->len = len);
 		name->s[len] = '\0';
-		*entry = gc_alloc(heap, alignof(struct Symbol), sizeof **entry);
-		**entry = (struct Symbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
+		*entry = gc_alloc(heap, alignof(struct LispSymbol), sizeof **entry);
+		**entry = (struct LispSymbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
 			.name = name->s, .len = len, .value = NIL, };
 	}
 	return TAG_OBJ(*entry);
@@ -83,7 +83,7 @@ void lisp_print(struct LispCtx *ctx, LispObject x) {
 		putchar(')');
 		break;
 	case LISP_SYMBOL:
-		struct Symbol *sym = UNTAG_OBJ(x);
+		struct LispSymbol *sym = UNTAG_OBJ(x);
 		fwrite(sym->name, sizeof *sym->name, sym->len, stdout);
 		break;
 	case LISP_CFUNCTION:
@@ -152,7 +152,7 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 		lisp_trace_compressed(heap, &pair->car);
 		break;
 	case LISP_SYMBOL:
-		struct Symbol *sym = p;
+		struct LispSymbol *sym = p;
 		gc_mark(sizeof *sym, p);
 		struct LispString *str
 			= gc_trace(heap, (char *) sym->name - offsetof(struct LispString, s));
@@ -193,8 +193,8 @@ size_t gc_object_size(void *p, size_t *alignment) {
 		*alignment = alignof(struct LispPair);
 		return sizeof(struct LispPair);
 	case LISP_SYMBOL:
-		*alignment = alignof(struct Symbol);
-		return sizeof(struct Symbol);
+		*alignment = alignof(struct LispSymbol);
+		return sizeof(struct LispSymbol);
 	case LISP_STRING:
 		*alignment = alignof(struct LispString);
 		return string_size(p);
@@ -222,7 +222,7 @@ void gc_trace_roots(struct GcHeap *heap) {
 	FOR_SYMBOL_CONSTS(X)
 #undef X
 
-	struct Symbol **sym;
+	struct LispSymbol **sym;
 	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
 		*sym = gc_trace(heap, *sym);
 
@@ -291,7 +291,7 @@ bool lisp_init(struct LispCtx *ctx) {
 		struct GcObjectHeader hdr = x->hdr.hdr;
 		*x = *cfuns[i];
 		x->hdr.hdr = hdr;
-		struct Symbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
+		struct LispSymbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
 		sym->value = TAG_OBJ(x);
 	}
 
