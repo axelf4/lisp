@@ -174,7 +174,8 @@ static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
 	case IR_NOP: return 0;
 	case IR_SLOAD: return state->slots[x.a];
 	case IR_EQ: case IR_NEQ:
-		if (IS_VAR_REF(x.a) || IS_VAR_REF(x.b)) break;
+		assert(!IS_VAR_REF(x.b));
+		if (IS_VAR_REF(x.a)) break;
 		if ((x.a == x.b) == (x.op == IR_EQ)) return 0;
 		throw(1);
 	case IR_ULOAD: case IR_GLOAD: break; // TODO Check if set since last load
@@ -542,9 +543,10 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 	FOR_ONES(reg, REG_ALL & ~ctx->available & ~CALLEE_SAVED_REGS)
 		reload(ctx, ctx->reg_costs[reg]);
 
+#define ARG_REGS (1 << rdi | 1 << rsi | 1 << rdx | 1 << rcx | 1 << r8 | 1 << r9)
 	union SsaInstruction x = IR_GET(ctx->trace, ref);
 	reg_def(ctx, ref, 1 << rax);
-	enum Register f_reg = reg_use(ctx, x.a, CALLEE_SAVED_REGS);
+	enum Register f_reg = reg_use(ctx, x.a, ~ARG_REGS);
 	asm_rmrd(&ctx->assembler, 0, XI_GRP5, /* CALL */ 2,
 		f_reg, offsetof(struct LispCFunction, f) - 1);
 
@@ -560,8 +562,7 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 			asm_rmrd(&ctx->assembler, 0, XI_MOVmi, 0, args_reg, i * sizeof arg.v);
 			continue;
 		}
-		enum Register arg_reg = IS_VAR_REF(arg_ref)
-			? reg_use(ctx, arg_ref, ~(1 << args_reg)) : rax;
+		enum Register arg_reg = reg_use(ctx, arg_ref, ~(1 << args_reg));
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrr, arg_reg, args_reg, i * sizeof arg.v);
 		if (!IS_VAR_REF(arg_ref)) asm_loadu64(&ctx->assembler, arg_reg, arg.v);
 	}

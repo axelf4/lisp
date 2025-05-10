@@ -82,8 +82,8 @@ enum {
 	XI_MOVri = 0xb8,
 	XI_MOVmi = 0xc7,
 	XI_RET = 0xc3,
-	XI_GRP5 = 0xff,
 	XI_LEA = 0x8d,
+	XI_GRP5 = 0xff,
 };
 
 /** Emits @a op with operands @a reg and @a rm. */
