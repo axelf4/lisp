@@ -18,7 +18,6 @@
 
 #define IR_MARK 0x80 ///< Multi-purpose flag.
 #define REG_NONE 0x80 ///< Spilled or unallocated register flag.
-#define SPILL_SLOT_NONE 0xff
 
 enum {
 	TY_ANY = LISP_INTEGER + 1,
@@ -55,7 +54,7 @@ union SsaInstruction {
 			Ref prev;
 			struct {
 				uint8_t reg, ///< The allocated register.
-					spill_slot;
+					spill_slot; ///< 1-based spill slot index.
 			};
 		};
 	};
@@ -385,8 +384,9 @@ static void peel_loop(struct JitState *state) {
 				*end = e + snapshot->num_entries; e < end; ++e) {
 		union SsaInstruction insn = instructions[trace->num_consts + e->ref - IR_BIAS];
 		ctx->bp[e->slot] = IS_VAR(e->ref)
-			? regs[insn.spill_slot == SPILL_SLOT_NONE ? -insn.reg - 1 : 1 + insn.spill_slot]
+			? regs[insn.spill_slot ? insn.spill_slot : -insn.reg - 1]
 			: insn.v;
+
 		printf("Restoring stack slot %" PRIu8 " to value: ", e->slot);
 		lisp_print(ctx, ctx->bp[e->slot]);
 		puts(".");
@@ -442,13 +442,13 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 		union SsaInstruction *x = &IR_GET(ctx->trace, ref);
 		assert(has_reg(*x) && "Evicting unallocated virtual?");
 		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, x->reg);
-		if (x->spill_slot == SPILL_SLOT_NONE
-			&& (x->spill_slot = ctx->num_spill_slots++) >= UINT8_MAX) // Allocate spill slot
+		if (!x->spill_slot
+			&& !(x->spill_slot = ++ctx->num_spill_slots)) // Allocate spill slot
 			rec_err(ctx->trace); // Out of spill slots
 		reg = x->reg;
 		x->reg |= REG_NONE;
 		// Reload from stack
-		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, x->spill_slot * sizeof x->v);
+		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, (x->spill_slot - 1) * sizeof x->v);
 	} else { // (Re-)materialize constant
 		assert(ref == REF_BP);
 		reg = ctx->bp_insn.reg;
@@ -495,8 +495,8 @@ static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	} else x->reg = reg;
 	// Save ASAP for all exits to see the same spilled value.
 	// (Snapshots always prefer spill slot over register for split virtuals.)
-	if (x->spill_slot != SPILL_SLOT_NONE)
-		asm_rmrd(&ctx->assembler, 1, XI_MOVmr, reg, rsp, x->spill_slot * sizeof x->v);
+	if (x->spill_slot)
+		asm_rmrd(&ctx->assembler, 1, XI_MOVmr, reg, rsp, (x->spill_slot - 1) * sizeof x->v);
 	return reg;
 }
 
@@ -550,9 +550,9 @@ static void asm_loop(struct RegAlloc *ctx, uint8_t *asm_end) {
 	FOR_ONES(reg, ctx->phi_regs) {
 		Ref lref = ctx->phis_refs[reg];
 		union SsaInstruction *in = &IR_GET(ctx->trace, lref);
-		if (LIKELY(in->spill_slot == SPILL_SLOT_NONE)) continue;
+		if (LIKELY(!in->spill_slot)) continue;
 		// Resave spill slot of "in" on each iteration
-		asm_rmrd(&ctx->assembler, 1, XI_MOVmr, reg, rsp, in->spill_slot * sizeof in->v);
+		asm_rmrd(&ctx->assembler, 1, XI_MOVmr, reg, rsp, (in->spill_slot - 1) * sizeof in->v);
 		in->ty |= IR_MARK; // Remember that spilling is handled by loop
 		// Allocate (now free) register for correct save on 1st iteration too
 		reg_use(ctx, lref, 1 << reg);
@@ -634,7 +634,8 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	// Initialize registers as unallocated
 	for (unsigned i = 0; i < trace->len; ++i) {
 		union SsaInstruction *x = trace->trace + MAX_CONSTS + i;
-		x->spill_slot = x->reg = -1;
+		x->reg = -1;
+		x->spill_slot = 0;
 	}
 	// Emit loop backedge placeholder
 	uint8_t *asm_end = ctx.assembler.p;
@@ -709,8 +710,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 
 	FOR_ONES(reg, ctx.phi_regs) {
 		union SsaInstruction in = IR_GET(ctx.trace, ctx.phis_refs[reg]);
-		if (in.spill_slot != SPILL_SLOT_NONE && !(in.ty & IR_MARK))
-			rec_err(trace); // Spilled outside loop
+		if (in.spill_slot && !(in.ty & IR_MARK)) rec_err(trace); // Spilled outside loop
 	}
 	reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
