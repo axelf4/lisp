@@ -102,6 +102,12 @@ struct LispTrace {
 
 uint8_t trace_arity(struct LispTrace *trace) { return trace->arity; }
 
+/** Closure JIT penalty FIFO-cache slot. */
+struct Penalty {
+	struct Closure *closure;
+	unsigned char value;
+};
+
 /** In-progress trace recording. */
 struct JitState {
 	uint16_t len, num_consts;
@@ -114,14 +120,18 @@ struct JitState {
 
 	struct Instruction *pc;
 	struct Closure *origin; ///< The closure that triggered the recording.
+	struct Instruction *origin_pc;
 
 	struct LispCtx *lisp_ctx;
 	uint16_t num_traces;
+	unsigned char next_penalty_slot;
 
 	struct Snapshot snapshots[MAX_SNAPSHOTS];
 	/// Backing storage for snapshot data.
 	struct SnapshotEntry stack_entries[MAX_SNAPSHOT_ENTRIES];
 	union SsaInstruction trace[MAX_CONSTS + MAX_TRACE_LEN];
+
+	struct Penalty penalties[32];
 };
 
 static void take_snapshot(struct JitState *state) {
@@ -724,6 +734,22 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	return result;
 }
 
+static void penalize(struct JitState *state) {
+	for (struct Penalty *x = state->penalties,
+				*end = x + LENGTH(state->penalties); x < end; ++x) {
+		if (x->closure != state->origin) continue;
+
+		if (!--x->value) {
+			x->closure = NULL;
+			state->origin_pc->op += CALL_INTERPR - CALL; // Blacklist
+		}
+		return;
+	}
+
+	state->penalties[state->next_penalty_slot++ % LENGTH(state->penalties)]
+		= (struct Penalty) { .closure = state->origin, .value = 16 };
+}
+
 #ifdef DEBUG
 static void print_ir_ref(struct JitState *state, uint8_t ty, Ref ref) {
 	if (IS_VAR_REF(ref)) { printf("%.4u", ref - IR_BIAS); return; }
@@ -821,6 +847,8 @@ struct JitState *jit_new(struct LispCtx *ctx) {
 	if (!(state = malloc(sizeof *state))) return NULL;
 	state->lisp_ctx = ctx;
 	state->num_traces = 0;
+	state->next_penalty_slot = 0;
+	memset(state->penalties, 0, sizeof state->penalties);
 	return state;
 }
 
@@ -828,11 +856,12 @@ void jit_free(struct JitState *state) {
 	free(state);
 }
 
-bool jit_init(struct JitState *state, struct Closure *f) {
+bool jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc) {
 	puts("Starting trace recording");
 	if (UNLIKELY(state->num_traces >= LENGTH(*state->lisp_ctx->traces))) return false;
 	memset(state, 0, offsetof(struct JitState, pc));
 	state->origin = f;
+	state->origin_pc = pc - 1;
 	state->bp = state->slots;
 	state->need_snapshot = true;
 	return true;
@@ -887,7 +916,7 @@ static void do_record(void *userdata) {
 			{ .op = IR_GLOAD, .ty = TY_ANY, .a = sym });
 		break;
 	case GETUPVALUE: result = uref(state, bp, x.c); break;
-	case CALL:
+	case CALL: case CALL_INTERPR:
 		LispObject fun_value = bp[x.a];
 		switch (lisp_type(fun_value)) {
 		case LISP_CFUNCTION: result = record_c_call(state, x); break;
@@ -904,7 +933,7 @@ static void do_record(void *userdata) {
 		default:
 		}
 		break;
-	case TAIL_CALL:
+	case TAIL_CALL: case TAIL_CALL_INTERPR:
 		fun_value = bp[x.a];
 		bool is_cfn = lisp_type(fun_value) == LISP_CFUNCTION;
 		if (is_cfn) { state->bp[x.a] = record_c_call(state, x); goto do_ret; }
@@ -926,7 +955,7 @@ static void do_record(void *userdata) {
 			uint16_t trace_num = state->num_traces++;
 			(*state->lisp_ctx->traces)[trace_num] = trace;
 			pc[-1] = (struct Instruction) { .op = TAIL_JIT_CALL, .a = pc[-1].a, .b = trace_num };
-			throw(1);
+			throw(2);
 		}
 		break;
 	case MOV: result = sload(state, x.c); break;
@@ -963,5 +992,7 @@ static void do_record(void *userdata) {
 
 bool jit_record(struct JitState *state, struct Instruction *pc) {
 	state->pc = pc;
-	return !pcall(state, do_record);
+	unsigned res = pcall(state, do_record);
+	if (res == 1) penalize(state);
+	return !res;
 }

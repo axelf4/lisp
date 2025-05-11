@@ -223,6 +223,8 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 	X(CALL) /* R(A) <- R(A)(R(A+2), ..., R(A+2+C-1)) */ \
 	X(TAIL_CALL) \
 	X(TAIL_JIT_CALL) \
+	X(CALL_INTERPR) /* Like CALL but blacklisted from being JIT:ed. */ \
+	X(TAIL_CALL_INTERPR) \
 	X(MOV) /* R(A) <- R(C) */ \
 	X(JMP) /* PC += sB */ \
 	X(JNIL) /* If NILP(R(A)) then PC += sB */ \
@@ -293,7 +295,7 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 
 void jit_free(struct JitState *state);
 
-bool jit_init(struct JitState *state, struct Closure *f);
+bool jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc);
 
 /** Records instruction preceding @a pc prior to it being executed. */
 bool jit_record(struct JitState *state, struct Instruction *pc);

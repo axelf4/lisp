@@ -30,7 +30,8 @@ static void disassemble_range(size_t n, struct Instruction xs[static n], int ind
 			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
 		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
 		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
-		case CALL: case TAIL_CALL:
+		case CALL: case TAIL_CALL: case TAIL_JIT_CALL:
+		case CALL_INTERPR: case TAIL_CALL_INTERPR:
 			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
 				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
 			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);
@@ -164,8 +165,8 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 			*hotcount = ctx->hotcounts + hash % LENGTH(ctx->hotcounts);	\
 		if (!ckd_sub(hotcount, *hotcount, n)) break;					\
 		*hotcount = JIT_THRESHOLD;										\
-		if (dispatch_table != recording_dispatch_table					\
-			&& jit_init(ctx->jit_state, (closure)))						\
+		if (ins.op < CALL_INTERPR && dispatch_table != recording_dispatch_table \
+			&& jit_init(ctx->jit_state, (closure), pc))					\
 			dispatch_table = recording_dispatch_table;					\
 } while(0)
 #else
@@ -247,6 +248,8 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		default: die("Bad function");
 		}
 	}
+	DEFINE_OP(CALL_INTERPR) { JMP_TO_LABEL(CALL); }
+	DEFINE_OP(TAIL_CALL_INTERPR) { JMP_TO_LABEL(TAIL_CALL); }
 
 	DEFINE_OP(MOV) { bp[ins.a] = bp[ins.c]; NEXT; }
 	DEFINE_OP(JMP) { pc += ins.b; NEXT; }
