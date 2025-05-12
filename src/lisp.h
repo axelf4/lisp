@@ -53,6 +53,7 @@
 typedef uintptr_t LispObject;
 typedef struct GcRef Lobj;
 
+/** Lisp object variants. */
 enum LispObjectType : unsigned char {
 	LISP_PAIR,
 	LISP_SYMBOL,
