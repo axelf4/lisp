@@ -202,7 +202,7 @@ int main() {
 				if (b < 0.6 * (double) UINT64_MAX) {
 					heap->mark_color ^= !heap->is_major_gc;
 					heap->is_major_gc = true;
-					heap->defrag |= b < 0.3 * (double) UINT64_MAX;
+					heap->is_defrag |= b < 0.3 * (double) UINT64_MAX;
 				}
 				if (!validate_heap(heap)) goto err_free_heap;
 				break;

@@ -69,7 +69,7 @@ struct GcHeap {
 	struct GcBlock **free, **recycled;
 	size_t free_len, recycled_len;
 
-	bool mark_color, inhibit_gc, defrag, is_major_gc;
+	bool mark_color, inhibit_gc, is_defrag, is_major_gc;
 	char *object_map; ///< Bitset of object start positions.
 	struct TraceStack { size_t length, capacity; void **items; } trace_stack;
 	struct GcBlock blocks[NUM_BLOCKS];
@@ -91,7 +91,7 @@ struct GcHeap *gc_new() {
 	munmap(p, (char *) heap - p);
 	munmap(heap + 1, p + sizeof *heap + alignment - 1 - (char *) (heap + 1));
 
-	heap->mark_color = heap->inhibit_gc = heap->defrag = heap->is_major_gc = false;
+	heap->mark_color = heap->inhibit_gc = heap->is_defrag = heap->is_major_gc = false;
 	heap->trace_stack = (struct TraceStack) {};
 	heap->free = NULL;
 	if (!((heap->object_map = calloc(1, OBJECT_MAP_SIZE))
@@ -203,7 +203,6 @@ void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
 
 void *gc_trace(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
-	// Forwarding pointer
 	struct GcRef *fwd = (struct GcRef *) ALIGN_UP(hdr + 1, alignof(struct GcRef));
 	if ((hdr->flags & GC_MARK) == heap->mark_color) // Already traced
 		return hdr->flags & GC_FORWARDED ? (void *) GC_DECOMPRESS(heap, *fwd) : p;
@@ -216,7 +215,7 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	if (block->flag && (size = gc_object_size(p, &alignment),
 			q = gc_alloc(heap, alignment, size))) {
 		memcpy(q, p, size);
-		*fwd = GC_COMPRESS(p = q);
+		*fwd = GC_COMPRESS(p = q); // Leave forwarding pointer
 		hdr->flags |= GC_FORWARDED;
 	} else object_map_add(heap, p);
 
@@ -318,7 +317,7 @@ volatile void *gc_nop_sink;
 void garbage_collect(struct GcHeap *heap) {
 	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
 	if (heap->is_major_gc) {
-		if (heap->defrag) select_defrag_candidates(heap);
+		if (heap->is_defrag) select_defrag_candidates(heap);
 		// TODO Cyclical line marks (see MMTk) need not be reset, but
 		// would complicate gc_mark().
 		struct GcBlock *head = (struct GcBlock *) ((uintptr_t) heap->ptr.cursor & ~(sizeof *head - 1));
@@ -364,6 +363,6 @@ void garbage_collect(struct GcHeap *heap) {
 
 	if (!(heap->is_major_gc = heap->free_len <= NUM_BLOCKS / 4))
 		heap->mark_color = !heap->mark_color;
-	heap->defrag = heap->free_len <= 2 * MIN_FREE;
+	heap->is_defrag = heap->free_len <= 2 * MIN_FREE;
 	heap->inhibit_gc = false;
 }

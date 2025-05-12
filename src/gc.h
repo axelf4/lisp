@@ -104,7 +104,15 @@ void garbage_collect(struct GcHeap *heap);
 /** @name Embedder API */ ///@{
 
 void gc_object_visit(struct GcHeap *heap, void *p);
+
+/** Returns the size and alignment of the GC object.
+ *
+ * @param p The GC object.
+ * @param[out] alignment The minimum byte alignment.
+ * @return The byte size.
+ */
 size_t gc_object_size(void *p, size_t *alignment);
+
 /** Traces all explicit GC roots. */
 void gc_trace_roots(struct GcHeap *heap);
 
