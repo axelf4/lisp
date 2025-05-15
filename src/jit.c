@@ -781,6 +781,8 @@ static void penalize(struct JitState *state) {
 			x->closure = NULL;
 			state->origin_pc->op += CALL_INTERPR - CALL; // Blacklist
 		}
+
+		// state->lisp_ctx->hotcounts[state->hotcount_idx] = 2;
 		return;
 	}
 
