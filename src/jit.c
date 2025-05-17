@@ -185,6 +185,13 @@ static IrRef emit(struct JitState *state, union SsaInstruction x) {
 	return x.ty << IR_REF_TYPE_SHIFT | ref;
 }
 
+/** Normalizes a commutative instruction. */
+static union SsaInstruction comm_swap(union SsaInstruction x) {
+	// Swap lower refs (constants in particular) to the right
+	if (x.a < x.b) { Ref tmp = x.a; x.a = x.b; x.b = tmp; }
+	return x;
+}
+
 /** Emits @a x after peephole optimizations and CSE. */
 static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
 	union SsaInstruction o;
@@ -192,16 +199,15 @@ static IrRef emit_folded(struct JitState *state, union SsaInstruction x) {
 	case IR_NOP: return 0;
 	case IR_SLOAD: return state->slots[x.a];
 	case IR_EQ: case IR_NEQ:
-		assert(!IS_VAR_REF(x.b));
-		if (IS_VAR_REF(x.a)) break;
-		if ((x.a == x.b) == (x.op == IR_EQ)) return 0;
-		throw(1);
-	case IR_ULOAD: case IR_GLOAD: break; // TODO Check if set since last load
+		if (x.a == x.b) { if (x.op == IR_NEQ) rec_err(state); return 0; }
+		x = comm_swap(x);
+		if (!IS_VAR_REF(x.a)) rec_err(state);
+		break;
+	case IR_GLOAD: case IR_ULOAD: break; // Forward loads of globals/upvalues
 	default: goto out_no_cse;
 
 	case IR_ADD:
-		// Normalize by shifting constant to the left operand
-		if (!IS_VAR_REF(x.a)) { Ref tmp = x.a; x.a = x.b; x.b = tmp; }
+		x = comm_swap(x);
 		if (IR_GET(state, x.b).v == TAG_SMI(0)) return x.a;
 		if (!IS_VAR_REF(x.a)) return emit_const(state, LISP_INTEGER,
 			IR_GET(state, x.a).v + IR_GET(state, x.b).v);
