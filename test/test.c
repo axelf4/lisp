@@ -139,6 +139,16 @@ static void test_eval(void **state) {
   (mult 4 3 0))"), TAG_SMI(12));
 }
 
+static void test_man_or_boy(void **state) {
+	struct LispCtx *ctx = *state;
+	const char *s =
+		"(let (a (fn (k x1 x2 x3 x4 x5)\n"
+		"          (let (b (fn () (set k (+ k -1)) (a k b x1 x2 x3 x4)))\n"
+		"            (if (< k 1) (+ (x4) (x5)) (b)))))\n"
+		"  (a 10 (fn () 1) (fn () -1) (fn () -1) (fn () 1) (fn () 0)))";
+	assert_lisp_equal(ctx, eval(ctx, s), TAG_SMI(-67));
+}
+
 static int setup(void **state) {
 	return !((*state = gc_new()) && lisp_init(*state));
 }
@@ -160,6 +170,7 @@ int main() {
 		cmocka_unit_test(test_reader),
 		cmocka_unit_test(test_reader_ignores_whitespace),
 		cmocka_unit_test(test_eval),
+		cmocka_unit_test(test_man_or_boy),
 	};
 	return cmocka_run_group_tests(tests, setup, teardown);
 }
