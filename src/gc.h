@@ -28,6 +28,7 @@
 #define GC_LINE_SIZE 0x100
 #define GC_BLOCK_SIZE 0x8000
 #define GC_LINE_COUNT (GC_BLOCK_SIZE / GC_LINE_SIZE - 1)
+#define GC_BLOCK(p) ((struct GcBlock *) ((uintptr_t) (p) & ~(sizeof(struct GcBlock) - 1)))
 
 #ifndef USE_COMPRESSED_PTRS
 #define USE_COMPRESSED_PTRS __LP64__
@@ -92,7 +93,7 @@ void gc_pin(struct GcHeap *heap, void *p);
 /** Marks the lines containing the given pointee. */
 static inline void gc_mark(size_t len, const char p[static len]) {
 	const char *end = p + len;
-	struct GcBlock *block = (struct GcBlock *) ((uintptr_t) p & ~(sizeof *block - 1));
+	struct GcBlock *block = GC_BLOCK(p);
 	unsigned line = (p - block->data) / GC_LINE_SIZE;
 	// The end of the object may extend into another line implicitly
 	// due to conservative marking.
