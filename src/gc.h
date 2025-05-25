@@ -28,7 +28,6 @@
 #define GC_LINE_SIZE 0x100
 #define GC_BLOCK_SIZE 0x8000
 #define GC_LINE_COUNT (GC_BLOCK_SIZE / GC_LINE_SIZE - 1)
-#define GC_BLOCK(p) ((struct GcBlock *) ((uintptr_t) (p) & ~(sizeof(struct GcBlock) - 1)))
 
 #ifndef USE_COMPRESSED_PTRS
 #define USE_COMPRESSED_PTRS __LP64__
@@ -51,6 +50,7 @@ struct GcRef {
 #endif
 
 #define GC_ALIGNMENT (sizeof(struct GcRef))
+#define GC_BLOCK(p) ((struct GcBlock *) ((uintptr_t) (p) & ~(sizeof(struct GcBlock) - 1)))
 
 struct GcObjectHeader { unsigned char flags; /**< GC flags. */ };
 
@@ -105,7 +105,15 @@ void garbage_collect(struct GcHeap *heap);
 /** @name Embedder API */ ///@{
 
 void gc_object_visit(struct GcHeap *heap, void *p);
+
+/** Returns the size and alignment of the GC object.
+ *
+ * @param p The GC object.
+ * @param[out] alignment The minimum byte alignment.
+ * @return The byte size.
+ */
 size_t gc_object_size(void *p, size_t *alignment);
+
 /** Traces all explicit GC roots. */
 void gc_trace_roots(struct GcHeap *heap);
 

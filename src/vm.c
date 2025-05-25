@@ -1,4 +1,7 @@
-/** Register-based bytecode virtual machine. */
+/** Register-based bytecode virtual machine.
+ *
+ * f
+ */
 
 #include <stdckdint.h>
 #include <stddef.h>
@@ -11,53 +14,7 @@
 
 #define UPVALUE_LOCAL 0x80 ///< The upvalue captures a local instead of an upvalue.
 
-static_assert(sizeof(LispObject) % alignof(struct Instruction) == 0);
-
-#ifdef DEBUG
-static void disassemble_range(size_t n, struct Instruction xs[static n], int indent) {
-	for (size_t i = 0; i < n;) {
-		printf("%*s%.4zu ", indent, "", i);
-		struct Instruction x = xs[i++];
-#define GET_CONST (*(LispObject *) (xs + i - x.b))
-		switch (x.op) {
-		case RET: printf("RET %" PRIu8 "\n", x.a); break;
-		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", x.a); break;
-		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIuPTR "\n", x.a, GET_CONST); break;
-		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
-		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", x.a,
-			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
-		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", x.a,
-			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
-		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
-		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
-		case CALL: case TAIL_CALL: case TAIL_JIT_CALL:
-		case CALL_INTERPR: case TAIL_CALL_INTERPR:
-			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
-				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
-			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);
-			puts(")");
-			break;
-		case MOV: printf("MOV %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
-		case JMP: printf("JMP => %.4zu\n", i + x.b); break;
-		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4zu\n", x.a, i + x.b); break;
-		case CLOS:
-			struct Prototype *proto = (struct Prototype *) (xs + i);
-			printf("CLOS %" PRIu8 " <- (arity: %" PRIu8 ") (num_upvals: %" PRIu8 "):\n",
-				x.a, proto->arity, proto->num_upvalues);
-			size_t metadata_size = sizeof *proto + proto->num_upvalues * sizeof(uint8_t) + sizeof x - 1;
-			disassemble_range(x.b - metadata_size / sizeof x, proto->body, indent + 2);
-			i += x.b;
-			break;
-		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", x.a); break;
-		default: unreachable();
-		}
-	}
-}
-static void disassemble(struct Chunk *chunk) {
-	puts("Disassembling chunk:");
-	disassemble_range(chunk->count, chunk_instructions(chunk), 0);
-}
-#endif
+static_assert(sizeof(LispObject) % sizeof(struct Instruction) == 0);
 
 static struct Upvalue *capture_upvalue(struct LispCtx *ctx, LispObject *local) {
 	struct Upvalue **p = &ctx->upvalues;
@@ -166,7 +123,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		if (!ckd_sub(hotcount, *hotcount, n)) break;					\
 		*hotcount = JIT_THRESHOLD;										\
 		if (ins.op < CALL_INTERPR && dispatch_table != recording_dispatch_table \
-			&& jit_init(ctx->jit_state, (closure), pc))					\
+			&& jit_init(ctx->jit_state, closure, pc))					\
 			dispatch_table = recording_dispatch_table;					\
 } while(0)
 #else
@@ -365,7 +322,6 @@ struct ConstantEntry {
 static uint64_t constant_hash(struct ConstantEntry x) {
 	return fxhash_finish(fxhash(0, x.obj));
 }
-
 static bool constant_equal(struct ConstantEntry a, struct ConstantEntry b) {
 	return a.obj == b.obj;
 }
@@ -713,6 +669,52 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 	free(ctx.ins);
 	return chunk;
 }
+
+#ifdef DEBUG
+static void disassemble_range(size_t n, struct Instruction xs[static n], int indent) {
+	for (size_t i = 0; i < n;) {
+		printf("%*s%.4zu ", indent, "", i);
+		struct Instruction x = xs[i++];
+#define GET_CONST (*(LispObject *) (xs + i - x.b))
+		switch (x.op) {
+		case RET: printf("RET %" PRIu8 "\n", x.a); break;
+		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", x.a); break;
+		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIuPTR "\n", x.a, GET_CONST); break;
+		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
+		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", x.a,
+			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
+		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", x.a,
+			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
+		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
+		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
+		case CALL: case TAIL_CALL: case TAIL_JIT_CALL:
+		case CALL_INTERPR: case TAIL_CALL_INTERPR:
+			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
+				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
+			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);
+			puts(")");
+			break;
+		case MOV: printf("MOV %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
+		case JMP: printf("JMP => %.4zu\n", i + x.b); break;
+		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4zu\n", x.a, i + x.b); break;
+		case CLOS:
+			struct Prototype *proto = (struct Prototype *) (xs + i);
+			printf("CLOS %" PRIu8 " <- (arity: %" PRIu8 ") (num_upvals: %" PRIu8 "):\n",
+				x.a, proto->arity, proto->num_upvalues);
+			size_t metadata_size = sizeof *proto + proto->num_upvalues * sizeof(uint8_t) + sizeof x - 1;
+			disassemble_range(x.b - metadata_size / sizeof x, proto->body, indent + 2);
+			i += x.b;
+			break;
+		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", x.a); break;
+		default: unreachable();
+		}
+	}
+}
+static void disassemble(struct Chunk *chunk) {
+	puts("Disassembling chunk:");
+	disassemble_range(chunk->count, chunk_instructions(chunk), 0);
+}
+#endif
 
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
