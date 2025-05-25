@@ -288,6 +288,7 @@ bool lisp_init(struct LispCtx *ctx) {
 	stack[1] = (uintptr_t) NULL; // No return address for first call frame
 
 	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
+	ctx->upvalues = NULL;
 
 	ctx->symbol_tbl = tbl_new();
 #ifdef LISP_GENERATED_FILE
@@ -312,15 +313,13 @@ bool lisp_init(struct LispCtx *ctx) {
 
 #if ENABLE_JIT
 	if (!(ctx->traces = calloc(1, sizeof *ctx->traces))) goto err_free_stack;
-	if (!(ctx->jit_state = jit_new(ctx))) goto err_free_traces;
+	if (!(ctx->jit_state = jit_new())) goto err_free_traces;
 	ctx->current_trace = NULL;
-#endif
-
-	ctx->upvalues = NULL;
 	return true;
-#if ENABLE_JIT
 err_free_traces:
 	free(ctx->traces);
+#else
+	return true;
 #endif
 err_free_stack:
 	munmap(stack, size + guard_size);
