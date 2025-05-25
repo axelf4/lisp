@@ -61,6 +61,7 @@
 typedef uintptr_t LispObject;
 typedef struct GcRef Lobj;
 
+/** Lisp object variants. */
 enum LispObjectType : unsigned char {
 	LISP_PAIR,
 	LISP_SYMBOL,
@@ -126,7 +127,7 @@ struct LispCtx {
 		guard_end;
 	struct LispObjectHeader nil;
 	struct Table symbol_tbl;
-	struct Upvalue *upvalues;
+	struct Upvalue *upvalues; ///< Open upvalues.
 
 #if ENABLE_JIT
 	unsigned char hotcounts[64];
