@@ -27,10 +27,10 @@
  * control-flow analysis:
  *
  *             | pending vars.   |
- *     *-*     v         *--v    |
- *     |_|  *-*-*  close | *-*-* |
- *     |_|<-| | |   ==>  *-|x| | |
- *     | |  *-*-*          *-*-* |
+ *     +-+     v         *----v  |
+ *     |-|  +-+-+  close | +-+-+ |
+ *     |x|<-| | |   ==>  *-| |x| |
+ *     |-|  +-+-+          +-+-+ |
  *     stack   v                 v
  */
 
@@ -61,6 +61,7 @@
 typedef uintptr_t LispObject;
 typedef struct GcRef Lobj;
 
+/** Lisp object variant. */
 enum LispObjectType : unsigned char {
 	LISP_PAIR,
 	LISP_SYMBOL,
@@ -126,7 +127,7 @@ struct LispCtx {
 		guard_end;
 	struct LispObjectHeader nil;
 	struct Table symbol_tbl;
-	struct Upvalue *upvalues;
+	struct Upvalue *upvalues; ///< Open upvalues.
 
 #if ENABLE_JIT
 	unsigned char hotcounts[64];
@@ -302,14 +303,14 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 #define REG_LISP_CTX r15
 #define REG_PC rsi
 
-[[gnu::malloc]] struct JitState *jit_new(struct LispCtx *ctx);
+[[gnu::malloc]] struct JitState *jit_new();
 
 void jit_free(struct JitState *state);
 
-bool jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc);
+void jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc);
 
 /** Records instruction preceding @a pc prior to it being executed. */
-bool jit_record(struct JitState *state, struct Instruction *pc);
+bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);
 
 uint8_t trace_arity(struct LispTrace *trace);
 

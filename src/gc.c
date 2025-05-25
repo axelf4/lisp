@@ -71,7 +71,7 @@ struct GcHeap {
 
 	bool mark_color, inhibit_gc, is_defrag, is_major_gc;
 	char *object_map; ///< Bitset of object start positions.
-	struct TraceStack { size_t length, capacity; void **items; } trace_stack;
+	struct MarkStack { size_t length, capacity; void **items; } mark_stack;
 	struct GcBlock blocks[NUM_BLOCKS];
 };
 
@@ -92,7 +92,7 @@ struct GcHeap *gc_new() {
 	munmap(heap + 1, p + sizeof *heap + alignment - 1 - (char *) (heap + 1));
 
 	heap->mark_color = heap->inhibit_gc = heap->is_defrag = heap->is_major_gc = false;
-	heap->trace_stack = (struct TraceStack) {};
+	heap->mark_stack = (struct MarkStack) {};
 	heap->free = NULL;
 	if (!((heap->object_map = calloc(1, OBJECT_MAP_SIZE))
 			&& (heap->free = malloc(2 * NUM_BLOCKS * sizeof *heap->free)))) {
@@ -118,7 +118,7 @@ struct GcHeap *gc_new() {
 }
 
 void gc_free(struct GcHeap *heap) {
-	free(heap->trace_stack.items);
+	free(heap->mark_stack.items);
 	free(heap->free);
 	free(heap->object_map);
 	munmap(heap, sizeof *heap);
@@ -183,8 +183,8 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 	return p;
 }
 
-[[gnu::noinline]] static void trace_stack_grow(struct GcHeap *heap) {
-	struct TraceStack *stack = &heap->trace_stack;
+[[gnu::cold]] static void mark_stack_grow(struct GcHeap *heap) {
+	struct MarkStack *stack = &heap->mark_stack;
 	size_t new_capacity = stack->capacity ? 2 * stack->capacity : 8;
 	void **items;
 	if (!(items = realloc(stack->items, new_capacity * sizeof *items)))
@@ -193,15 +193,15 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 	stack->capacity = new_capacity;
 }
 
-static void trace_stack_push(struct GcHeap *heap, void *x) {
-	if (UNLIKELY(heap->trace_stack.length >= heap->trace_stack.capacity))
-		trace_stack_grow(heap);
-	heap->trace_stack.items[heap->trace_stack.length++] = x;
+static void mark_stack_push(struct GcHeap *heap, void *x) {
+	if (heap->mark_stack.length >= heap->mark_stack.capacity)
+		mark_stack_grow(heap);
+	heap->mark_stack.items[heap->mark_stack.length++] = x;
 }
 
 void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
 	src->flags &= ~GC_UNLOGGED;
-	trace_stack_push(heap, src); // Add to remembered set
+	mark_stack_push(heap, src); // Add to remembered set
 }
 
 void *gc_trace(struct GcHeap *heap, void *p) {
@@ -212,17 +212,16 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
 	// Opportunistic evacuation if block is a defragmentation candidate
-	struct GcBlock *block = GC_BLOCK(p);
 	size_t alignment, size;
 	void *q;
-	if (block->flag && (size = gc_object_size(p, &alignment),
+	if (GC_BLOCK(p)->flag && (size = gc_object_size(p, &alignment),
 			q = gc_alloc(heap, alignment, size))) {
 		memcpy(q, p, size);
 		*fwd = GC_COMPRESS(p = q); // Leave forwarding pointer
 		hdr->flags |= GC_FORWARDED;
 	} else object_map_add(heap, p);
 
-	trace_stack_push(heap, p);
+	mark_stack_push(heap, p);
 	return p;
 }
 
@@ -231,7 +230,7 @@ void gc_pin(struct GcHeap *heap, void *p) {
 	assert(!(hdr->flags & GC_FORWARDED) && "Already forwarded");
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 	object_map_add(heap, p);
-	trace_stack_push(heap, p);
+	mark_stack_push(heap, p);
 }
 
 extern void *__libc_stack_end; ///< Highest used stack address.
@@ -327,11 +326,11 @@ void garbage_collect(struct GcHeap *heap) {
 		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
 			if (block->flag == 2) block->flag = 0;
 			else memset(block->line_marks, 0, sizeof block->line_marks);
-		heap->trace_stack.length = 0; // Ignore remembered set
+		heap->mark_stack.length = 0; // Ignore remembered set
 	}
 	// Unlog remembered set
-	for (size_t i = 0; i < heap->trace_stack.length; ++i)
-		((struct GcObjectHeader *) heap->trace_stack.items[i])->flags |= GC_UNLOGGED;
+	for (size_t i = 0; i < heap->mark_stack.length; ++i)
+		((struct GcObjectHeader *) heap->mark_stack.items[i])->flags |= GC_UNLOGGED;
 	// Alternate liveness color to skip zeroing object marks
 	heap->mark_color = !heap->mark_color;
 
@@ -351,8 +350,8 @@ void garbage_collect(struct GcHeap *heap) {
 
 	if (heap->is_major_gc) memset(heap->object_map, 0, OBJECT_MAP_SIZE);
 	gc_trace_roots(heap);
-	while (heap->trace_stack.length) // Trace live objects
-		gc_object_visit(heap, heap->trace_stack.items[--heap->trace_stack.length]);
+	while (heap->mark_stack.length) // Trace live objects
+		gc_object_visit(heap, heap->mark_stack.items[--heap->mark_stack.length]);
 
 	heap->ptr = heap->overflow_ptr = NULL_BUMP_PTR(heap->blocks);
 	heap->free_len = heap->recycled_len = 0;

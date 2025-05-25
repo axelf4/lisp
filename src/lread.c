@@ -27,10 +27,9 @@ static bool is_ident(char c) { return !(char_table[(unsigned char) c]
 /** Skips whitespace and comments. */
 static void skip_whitespace(const char **s) {
 	for (const char *x = *s; ;) {
-		if (*x == ';') { ++x; while (*x != '\n' && *x) ++x; continue; }
+		if (*x == ';') { do ++x; while (*x != '\n' && *x); continue; }
 		if (!is_space(*x)) { *s = x; break; }
-		++x;
-		while (is_space(*x)) ++x;
+		do ++x; while (is_space(*x));
 	}
 }
 

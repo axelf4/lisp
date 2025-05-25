@@ -1,4 +1,9 @@
-/** Tracing just-in-time compiler. */
+/** Tracing just-in-time compiler.
+ *
+ * @see GAL, Andreas, et al. Trace-based just-in-time type
+ *      specialization for dynamic languages. ACM Sigplan Notices,
+ *      2009, 44.6: 465-478.
+ */
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -79,9 +84,13 @@ struct Snapshot {
 	/// Number of instructions recorded when this snapshot was taken.
 	uint16_t ir_start,
 		offset; ///< Offset into @ref JitState::stack_entries.
-	uint8_t num_entries, base_offset;
+	uint8_t num_entries, ///< Number of stack entries.
+		base_offset;
 	struct GcRef pc; ///< Instruction pointer after this point.
 };
+#define FOR_SNAPSHOT_ENTRIES(snapshot, entries, entry) \
+	for (struct SnapshotEntry *entry = (entries) + (snapshot)->offset, \
+				*_end = entry + (snapshot)->num_entries; entry < _end; ++entry)
 
 enum TraceLink {
 	/* TRACE_LINK_NONE, ///< No link yet, the trace is incomplete. */
@@ -98,10 +107,9 @@ struct LispTrace {
 uint8_t trace_arity(struct LispTrace *trace) { return trace->arity; }
 
 enum RecordStatus : unsigned char {
-	REC_OK, ///< Incomplete but OK trace recording.
+	REC_OK, ///< Incomplete trace recording.
 	/// Abort the trace recording, e.g., due to NYI (not yet implemented).
 	REC_NYI,
-	REC_DONE,
 };
 
 /** Closure JIT penalty FIFO-cache slot. */
@@ -113,19 +121,17 @@ struct Penalty {
 /** In-progress trace recording. */
 struct JitState {
 	uint16_t len, num_consts;
-	uint8_t num_snapshots, num_stack_entries,
-		base_offset, max_slot;
+	uint8_t num_snapshots, num_stack_entries, max_slot, base_offset;
 	bool need_snapshot;
-	enum RecordStatus rec_status;
-	IrRef slots[0x100], ///< Array of IR references for each VM register.
-		*bp; ///< Pointer into @ref #slots at the current frame offset.
+	enum RecordStatus status;
+	IrRef *bp, ///< Pointer into @ref #slots at the current frame offset.
+		slots[0x100]; ///< Array of IR references for each VM register.
 	Ref chain[IR_NUM_OPS];
 
 	struct Instruction *pc;
 	struct Closure *origin; ///< The closure that triggered the recording.
 	struct Instruction *origin_pc;
 
-	struct LispCtx *lisp_ctx;
 	uint16_t num_traces;
 	unsigned char next_penalty_slot;
 
@@ -138,7 +144,7 @@ struct JitState {
 };
 
 [[gnu::cold]]
-static void rec_err(struct JitState *state) { state->rec_status = REC_NYI; }
+static void rec_err(struct JitState *state) { state->status = REC_NYI; }
 
 static void take_snapshot(struct JitState *state) {
 	if (!state->need_snapshot) return;
@@ -152,7 +158,7 @@ static void take_snapshot(struct JitState *state) {
 		.ir_start = state->len, .offset = state->num_stack_entries,
 		.base_offset = state->base_offset, .pc = GC_COMPRESS(state->pc - 1),
 	};
-	for (uint8_t i = 0; i <= max_slot; ++i) {
+	for (unsigned i = 0; i <= max_slot; ++i) {
 		IrRef ref = state->slots[i];
 		if (!ref) continue;
 		union SsaInstruction x = IR_GET(state, ref);
@@ -219,15 +225,14 @@ static IrRef emit_opt(struct JitState *state, union SsaInstruction x) {
 out_no_cse: return emit(state, x);
 }
 
-/** Emits a stack load instruction unless the stack slot content is already loaded. */
-static IrRef sload(struct JitState *state, int slot) {
-	IrRef ref = state->bp[slot];
-	if (LIKELY(ref)) return ref; // Already loaded
+[[gnu::noinline]] static IrRef sload(struct JitState *state, int slot) {
 	take_snapshot(state); // Type guard may be added
 	state->max_slot = MAX(state->max_slot, slot);
 	return state->bp[slot] = emit(state, (union SsaInstruction)
 		{ .op = IR_SLOAD, .ty = TY_ANY, .a = state->base_offset + slot });
 }
+/** Emits a load of stack slot @a i unless it is already loaded. */
+#define SLOT(state, i) ((state)->bp[i] ? (state)->bp[i] : sload(state, i))
 
 /** Emits an instruction to load the given upvalue. */
 static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
@@ -236,18 +241,18 @@ static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
 	if (!upvalue->is_closed) {
 		// In a nested frame the upvalue may be available on the stack
 		ptrdiff_t slot = upvalue->location - (bp - state->base_offset);
-		if (slot >= 0) return sload(state, slot - state->base_offset);
+		if (slot >= 0) return SLOT(state, slot - state->base_offset);
 	}
 	take_snapshot(state);
 	return emit_opt(state, (union SsaInstruction) { .op = IR_ULOAD,
-			.ty = TY_ANY, .a = sload(state, /* this closure */ 0), .b = idx });
+			.ty = TY_ANY, .a = SLOT(state, /* this closure */ 0), .b = idx });
 }
 
 /** Coerces @a ref to @a ty.
  *
  * @return Whether @a ty was a subtype of the type of @a ref.
  */
-static bool assert_type(struct JitState *state, IrRef *ref, uint8_t ty) {
+static bool guard_type(struct JitState *state, IrRef *ref, uint8_t ty) {
 	uint8_t ty2 = *ref >> IR_REF_TYPE_SHIFT;
 	if (ty2 == ty) return true;
 	// If ty </: ref->ty, then type error is imminent
@@ -256,13 +261,13 @@ static bool assert_type(struct JitState *state, IrRef *ref, uint8_t ty) {
 	return ty2 == TY_ANY;
 }
 
-static void assert_value(struct JitState *state, IrRef *ref, LispObject value) {
+static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 	if (!IS_VAR(*ref)) return;
 	enum LispObjectType ty = lisp_type(value);
 	take_snapshot(state);
 	emit_opt(state, (union SsaInstruction)
 		{ .op = IR_EQ, .ty = ty, .a = *ref, .b = emit_const(state, ty, value) });
-	assert_type(state, ref, ty);
+	guard_type(state, ref, ty);
 }
 
 static bool has_side_effects(enum SsaOp x) {
@@ -274,8 +279,7 @@ static void dce(struct JitState *state) {
 	// Mark virtuals escaping into snapshots
 	for (struct Snapshot *snap = state->snapshots;
 			snap < state->snapshots + state->num_snapshots; ++snap)
-		for (struct SnapshotEntry *entry = state->stack_entries + snap->offset,
-					*end = entry + snap->num_entries; entry < end; ++entry)
+		FOR_SNAPSHOT_ENTRIES(snap, state->stack_entries, entry)
 			if (IS_VAR(entry->ref)) IR_GET(state, entry->ref).ty |= IR_MARK;
 	Ref *pchain[IR_NUM_OPS];
 	for (unsigned i = 0; i < IR_NUM_OPS; ++i) pchain[i] = state->chain + i;
@@ -341,7 +345,7 @@ static void peel_loop(struct JitState *state) {
 			++snap;
 		}
 
-		union SsaInstruction insn = state->trace[MAX_CONSTS + i];
+		union SsaInstruction insn = IR_GET(state, IR_BIAS + i);
 		if (IS_VAR(insn.a)) insn.a = subst[insn.a - IR_BIAS];
 		if (IS_VAR(insn.b)) insn.b = subst[insn.b - IR_BIAS];
 
@@ -355,13 +359,16 @@ static void peel_loop(struct JitState *state) {
 			}
 			// In case of type-instability, need to emit conversion
 			// since later instructions expect the previous type.
-			if (insn.ty != TY_ANY && !assert_type(state, &ref, insn.ty)) rec_err(state);
+			if (insn.ty != TY_ANY && !guard_type(state, &ref, insn.ty))
+				rec_err(state);
 		}
 	}
 
 	for (unsigned i = 0; i < num_phis; ++i) { // Emit φ-functions
 		Ref lref = phis[i], rref = subst[lref - IR_BIAS];
-		if (lref == rref) continue; // Invariant φ
+		// TODO φ:s whose arguments are the same or other redundant
+		// φ:s are in turn redundant and eliminable.
+		if (lref == rref) continue; // Redundant φ
 		emit(state, (union SsaInstruction)
 			{ .op = IR_PHI, .ty = IR_GET(state, lref).ty, .a = lref, .b = rref });
 	}
@@ -373,16 +380,16 @@ static void peel_loop(struct JitState *state) {
 } side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
 	struct LispTrace *trace = ctx->current_trace;
 	uint8_t exit_num = *regs;
-	union SsaInstruction *instructions = (union SsaInstruction *) trace->data;
-	struct Snapshot *snapshots
-		= (struct Snapshot *) (instructions + trace->num_consts + trace->len),
+	union SsaInstruction *insns = (union SsaInstruction *) trace->data;
+	struct Snapshot
+		*snapshots = (struct Snapshot *) (insns + trace->num_consts + trace->len),
 		*snapshot = snapshots + exit_num;
-	struct SnapshotEntry *snapshot_entries
+	struct SnapshotEntry *entries
 		= (struct SnapshotEntry *) (snapshots + trace->num_snapshots);
 	printf("Side exit %" PRIu8 "\n", exit_num);
-	for (struct SnapshotEntry *e = snapshot_entries + snapshot->offset,
-				*end = e + snapshot->num_entries; e < end; ++e) {
-		union SsaInstruction insn = instructions[trace->num_consts + e->ref - IR_BIAS];
+	ctx->current_trace = NULL;
+	FOR_SNAPSHOT_ENTRIES(snapshot, entries, e) {
+		union SsaInstruction insn = insns[trace->num_consts + e->ref - IR_BIAS];
 		ctx->bp[e->slot] = IS_VAR(e->ref)
 			? regs[insn.spill_slot ? insn.spill_slot : -insn.reg - 1]
 			: insn.v;
@@ -441,12 +448,11 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 	if (IS_VAR(ref)) {
 		union SsaInstruction *x = &IR_GET(ctx->trace, ref);
 		assert(has_reg(*x) && "Evicting unallocated virtual?");
-		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, x->reg);
-		if (!x->spill_slot
-			&& !(x->spill_slot = ++ctx->num_spill_slots)) // Allocate spill slot
-			rec_err(ctx->trace); // Out of spill slots
 		reg = x->reg;
+		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, reg);
 		x->reg |= REG_NONE;
+		if (!x->spill_slot && !(x->spill_slot = ++ctx->num_spill_slots))
+			rec_err(ctx->trace); // Out of spill slots
 		// Reload from stack
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, (x->spill_slot - 1) * sizeof x->v);
 	} else { // (Re-)materialize constant
@@ -614,10 +620,10 @@ static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
 	else reg_use(ctx, x.a, 1 << dst);
 }
 
-static struct LispTrace *assemble_trace(struct JitState *trace) {
+static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitState *trace) {
 	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_insn.reg = -1,
 		.snapshot_idx = trace->num_snapshots - 1, };
-	if (!asm_init(&ctx.assembler)) die("asm_init failed");
+	if (!LIKELY(asm_init(&ctx.assembler))) return NULL;
 	// Emit side-exit trampolines
 	void side_exit_handler();
 	asm_write32(&ctx.assembler, REL32(ctx.assembler.p, side_exit_handler));
@@ -633,7 +639,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 
 	// Initialize registers as unallocated
 	for (unsigned i = 0; i < trace->len; ++i) {
-		union SsaInstruction *x = trace->trace + MAX_CONSTS + i;
+		union SsaInstruction *x = &IR_GET(trace, IR_BIAS + i);
 		x->reg = -1;
 		x->spill_slot = 0;
 	}
@@ -655,7 +661,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			break;
 		case IR_GLOAD:
 			struct LispSymbol *sym = UNTAG_OBJ(IR_GET(trace, x.a).v);
-			int32_t p = (char *) &sym->value - (char *) trace->lisp_ctx;
+			int32_t p = (char *) &sym->value - (char *) lisp_ctx;
 			reg = reg_def(&ctx, ref, -1);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, p);
 			break;
@@ -688,8 +694,9 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 		case IR_PHI:
 			assert(IS_VAR(x.a) && IS_VAR(x.b) && "Variant ref cannot be constant");
 			union SsaInstruction *in = &IR_GET(trace, x.a), *out = &IR_GET(trace, x.b);
+			assert(!has_reg(*in));
 			assert(stdc_count_ones(ctx.available) > 1 && "Out of φ registers");
-			// Pick φ registers in opposite direction to reduce collisions
+			// Pick φ registers from opposite end to reduce collisions
 			enum Register dst = stdc_bit_width(ctx.available) - 1;
 			if (LIKELY(!has_reg(*out))) reg_use(&ctx, x.b, 1 << dst);
 			else { // Outgoing variable already has a location: Move from out to in
@@ -712,18 +719,18 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 		union SsaInstruction in = IR_GET(ctx.trace, ctx.phis_refs[reg]);
 		if (in.spill_slot && !(in.ty & IR_MARK)) rec_err(trace); // Spilled outside loop
 	}
-	reload(&ctx, REF_BP);
+	if (has_reg(ctx.bp_insn)) reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
 	ctx.num_spill_slots += ctx.num_spill_slots % 2 == 0; // 16-byte align stack
 	asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, ctx.num_spill_slots * sizeof(void *));
 
-	if (trace->rec_status != REC_OK) return NULL;
 	struct LispTrace *result;
-	if (!(result = malloc(sizeof *result
+	if (UNLIKELY(trace->status != REC_OK)
+		|| !(result = malloc(sizeof *result
 				+ (trace->num_consts + trace->len) * sizeof *trace->trace
 				+ trace->num_snapshots * sizeof *trace->snapshots
 				+ trace->num_stack_entries * sizeof *trace->stack_entries)))
-		die("malloc failed");
+		return NULL;
 	*result = (struct LispTrace) {
 		.f = asm_assemble(&ctx.assembler),
 		.len = trace->len, .num_consts = trace->num_consts,
@@ -732,9 +739,8 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 		.num_spill_slots = ctx.num_spill_slots,
 	};
 	char *p = result->data;
-	size_t size;
-	memcpy(p, trace->trace + MAX_CONSTS - trace->num_consts,
-		size = (trace->num_consts + trace->len) * sizeof *trace->trace);
+	size_t size = (trace->num_consts + trace->len) * sizeof *trace->trace;
+	memcpy(p, trace->trace + MAX_CONSTS - trace->num_consts, size);
 	p += size;
 	memcpy(p, trace->snapshots, size = trace->num_snapshots * sizeof *trace->snapshots);
 	p += size;
@@ -743,19 +749,18 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 }
 
 static void penalize(struct JitState *state) {
-	for (struct Penalty *x = state->penalties,
-				*end = x + LENGTH(state->penalties); x < end; ++x) {
-		if (x->closure != state->origin) continue;
-
-		if (!--x->value) {
-			x->closure = NULL;
-			state->origin_pc->op += CALL_INTERPR - CALL; // Blacklist
-		}
-		return;
-	}
+	struct Penalty *slot = state->penalties, *end = slot + LENGTH(state->penalties);
+	do if (slot->closure == state->origin) goto out_found; while (++slot < end);
 
 	state->penalties[state->next_penalty_slot++ % LENGTH(state->penalties)]
 		= (struct Penalty) { .closure = state->origin, .value = 16 };
+	return;
+
+out_found:
+	if (!--slot->value) {
+		slot->closure = NULL;
+		state->origin_pc->op += CALL_INTERPR - CALL; // Blacklist
+	}
 }
 
 #ifdef DEBUG
@@ -781,19 +786,19 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		= { "AxB", "sym", "str", "cfn", "clo", NULL, NULL, "nil", "int", "___" };
 
 	puts("---- TRACE IR");
-	for (unsigned i = 0, snap_idx = 0; i < state->len; ++i) {
+	for (unsigned i = 0, snap_idx = 0; ; ++i) {
 		struct Snapshot *snap = state->snapshots + snap_idx;
 		if (snap_idx < state->num_snapshots && i >= snap->ir_start) {
 			printf("....         SNAP  #%-3u [ ", snap_idx++);
 			unsigned j = 0;
-			for (struct SnapshotEntry *entry = state->stack_entries + snap->offset,
-						*end = entry + snap->num_entries; entry < end; ++entry) {
+			FOR_SNAPSHOT_ENTRIES(snap, state->stack_entries, entry) {
 				while (j++ < entry->slot) printf("---- ");
 				print_ref(state, entry->ref);
 				putchar(' ');
 			}
 			puts("]");
 		}
+		if (i >= state->len) break;
 
 		union SsaInstruction x = state->trace[MAX_CONSTS + i];
 		printf("%.4u %s %3u ", i, type_names[x.ty & ~IR_MARK], x.reg);
@@ -849,10 +854,9 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 }
 #endif
 
-struct JitState *jit_new(struct LispCtx *ctx) {
+struct JitState *jit_new() {
 	struct JitState *state;
 	if (!(state = malloc(sizeof *state))) return NULL;
-	state->lisp_ctx = ctx;
 	state->num_traces = 0;
 	state->next_penalty_slot = 0;
 	memset(state->penalties, 0, sizeof state->penalties);
@@ -863,37 +867,34 @@ void jit_free(struct JitState *state) {
 	free(state);
 }
 
-bool jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc) {
+void jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc) {
 	puts("Starting trace recording");
-	if (UNLIKELY(state->num_traces >= LENGTH(*state->lisp_ctx->traces))) return false;
 	memset(state, 0, offsetof(struct JitState, pc));
 	state->origin = f;
 	state->origin_pc = pc - 1;
 	state->bp = state->slots;
 	state->need_snapshot = true;
-	return true;
 }
 
-static IrRef record_c_call(struct JitState *state, struct Instruction x) {
-	IrRef ref = sload(state, x.a);
-
-	LispObject f_value = state->lisp_ctx->bp[x.a];
+static IrRef record_c_call(struct JitState *state, uintptr_t *bp, struct Instruction x) {
+	IrRef ref = SLOT(state, x.a);
+	LispObject f_value = bp[x.a];
 	struct LispCFunction *f = UNTAG_OBJ(f_value);
 	if (!strcmp(f->name, "+")) {
-		assert_value(state, &ref, f_value);
-		IrRef a = sload(state, x.a + 2), b = sload(state, x.a + 2 + 1);
-		assert_type(state, &a, LISP_INTEGER);
-		assert_type(state, &b, LISP_INTEGER);
+		guard_value(state, &ref, f_value);
+		IrRef a = SLOT(state, x.a + 2), b = SLOT(state, x.a + 2 + 1);
+		guard_type(state, &a, LISP_INTEGER);
+		guard_type(state, &b, LISP_INTEGER);
 		return emit_opt(state, (union SsaInstruction)
 			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
 	}
 
-	assert_type(state, &ref, LISP_CFUNCTION);
+	guard_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
 	IrRef result = emit(state, (union SsaInstruction)
 		{ .op = IR_CALL, .ty = TY_ANY, .a = ref, .b = x.c });
 	for (unsigned i = 0; i < x.c; ++i) {
-		IrRef arg = sload(state, x.a + 2 + i);
+		IrRef arg = SLOT(state, x.a + 2 + i);
 		emit(state, (union SsaInstruction)
 			{ .op = IR_CALLARG, .ty = arg >> IR_REF_TYPE_SHIFT, .a = arg });
 	}
@@ -902,12 +903,12 @@ static IrRef record_c_call(struct JitState *state, struct Instruction x) {
 	return result;
 }
 
-bool jit_record(struct JitState *state, struct Instruction *pc) {
-	uintptr_t *bp = state->lisp_ctx->bp;
+bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
+	struct JitState *state = ctx->jit_state;
 	struct Instruction x = (state->pc = pc)[-1];
 	IrRef result = 0;
 	switch (x.op) {
-	case LOAD_NIL: result = emit_const(state, LISP_NIL, NIL(state->lisp_ctx)); break;
+	case LOAD_NIL: result = emit_const(state, LISP_NIL, NIL(ctx)); break;
 	case LOAD_OBJ:
 		LispObject obj = *(LispObject *) (pc - x.b);
 		result = emit_const(state, lisp_type(obj), obj);
@@ -925,10 +926,11 @@ bool jit_record(struct JitState *state, struct Instruction *pc) {
 	case CALL: case CALL_INTERPR:
 		LispObject fn_value = bp[x.a];
 		switch (lisp_type(fn_value)) {
-		case LISP_CFUNCTION: result = record_c_call(state, x); break;
+		case LISP_CFUNCTION: result = record_c_call(state, bp, x); break;
 		case LISP_CLOSURE:
 			// Specialize to the function value in question
-			assert_value(state, (IrRef[]) { sload(state, x.a) }, fn_value);
+			// TODO Guard on prototype only
+			guard_value(state, (IrRef[]) { SLOT(state, x.a) }, fn_value);
 			struct Prototype *proto = ((struct Closure *) UNTAG_OBJ(fn_value))->prototype;
 			if (proto->arity & PROTO_VARIADIC
 				|| fn_value == TAG_OBJ(state->origin)) /* NYI */ rec_err(state);
@@ -942,39 +944,39 @@ bool jit_record(struct JitState *state, struct Instruction *pc) {
 	case TAIL_CALL: case TAIL_CALL_INTERPR:
 		fn_value = bp[x.a];
 		bool is_cfn = lisp_type(fn_value) == LISP_CFUNCTION;
-		if (is_cfn) { state->bp[x.a] = record_c_call(state, x); goto do_ret; }
-		// Specialize to the function value in question
-		// TODO Guard on prototype only
-		IrRef cur = *state->bp, ref = *state->bp = sload(state, x.a);
-		assert_value(state, &ref, fn_value);
+		if (is_cfn) { state->bp[x.a] = record_c_call(state, bp, x); goto do_ret; }
+		if (/* Need reload? */ fn_value != *bp) *state->bp = state->bp[x.a];
 		// Move arguments down to current frame
 		memmove(state->bp + 2, state->bp + x.a + 2, x.c * sizeof *state->bp);
 		state->max_slot = 2 + x.c - 1;
+		// Specialize to the function value in question
+		guard_value(state, state->bp, fn_value);
 		if (fn_value == TAG_OBJ(state->origin)) {
-			*state->bp = cur; // Avoid reloading closure
 			peel_loop(state);
 			struct LispTrace *trace;
-			if (!(trace = assemble_trace(state))) break;
+			if (!(trace = assemble_trace(ctx, state))) break;
 #ifdef DEBUG
 			puts("Reached loop start! Trace:\n");
 			print_trace(state, TRACE_LINK_LOOP);
 #endif
+			if (UNLIKELY(state->num_traces >= LENGTH(*ctx->traces)))
+				return false;
 			uint16_t trace_num = state->num_traces++;
-			(*state->lisp_ctx->traces)[trace_num] = trace;
+			(*ctx->traces)[trace_num] = trace;
 			pc[-1] = (struct Instruction) { .op = TAIL_JIT_CALL, .a = x.a, .b = trace_num };
-			state->rec_status = REC_DONE;
+			return false;
 		}
 		break;
-	case MOV: result = sload(state, x.c); break;
+	case MOV: result = SLOT(state, x.c); break;
 	case JMP: break;
 	case JNIL:
-		ref = sload(state, x.a);
+		IrRef ref = SLOT(state, x.a);
 		uint8_t ty = ref >> IR_REF_TYPE_SHIFT;
 		if (ty != TY_ANY) break; // Constant NIL comparison is a no-op
-		IrRef nil = emit_const(state, LISP_NIL, NIL(state->lisp_ctx));
+		IrRef nil = emit_const(state, LISP_NIL, NIL(ctx));
 		take_snapshot(state);
 		emit_opt(state, (union SsaInstruction)
-			{ .op = IR_EQ ^ !NILP(state->lisp_ctx, bp[x.a]), .ty = ty, .a = ref, .b = nil });
+			{ .op = IR_EQ ^ !NILP(ctx, bp[x.a]), .ty = ty, .a = ref, .b = nil });
 		break;
 	case RET: do_ret:
 		if (state->base_offset) {
@@ -996,6 +998,6 @@ bool jit_record(struct JitState *state, struct Instruction *pc) {
 		state->max_slot = MAX(state->max_slot, x.a);
 		state->bp[x.a] = result;
 	}
-	if (state->rec_status == REC_NYI) penalize(state);
-	return state->rec_status == REC_OK;
+	if (state->status == REC_NYI) penalize(state);
+	return state->status == REC_OK;
 }

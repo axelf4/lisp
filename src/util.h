@@ -9,7 +9,7 @@
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
 /** Number of elements in the array. */
-#define LENGTH(...) (sizeof (__VA_ARGS__) / sizeof *(__VA_ARGS__))
+#define LENGTH(x) (sizeof (x) / sizeof *(x))
 
 #define _STR(x) #x
 #define STR(x) _STR(x)
