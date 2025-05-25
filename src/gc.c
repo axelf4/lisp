@@ -212,10 +212,9 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
 	// Opportunistic evacuation if block is a defragmentation candidate
-	struct GcBlock *block = GC_BLOCK(p);
 	size_t alignment, size;
 	void *q;
-	if (block->flag && (size = gc_object_size(p, &alignment),
+	if (GC_BLOCK(p)->flag && (size = gc_object_size(p, &alignment),
 			q = gc_alloc(heap, alignment, size))) {
 		memcpy(q, p, size);
 		*fwd = GC_COMPRESS(p = q); // Leave forwarding pointer
