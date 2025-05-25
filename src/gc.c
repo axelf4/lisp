@@ -183,7 +183,7 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 	return p;
 }
 
-[[gnu::noinline]] static void trace_stack_grow(struct GcHeap *heap) {
+[[gnu::cold]] static void trace_stack_grow(struct GcHeap *heap) {
 	struct TraceStack *stack = &heap->trace_stack;
 	size_t new_capacity = stack->capacity ? 2 * stack->capacity : 8;
 	void **items;
@@ -194,7 +194,7 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 }
 
 static void trace_stack_push(struct GcHeap *heap, void *x) {
-	if (UNLIKELY(heap->trace_stack.length >= heap->trace_stack.capacity))
+	if (heap->trace_stack.length >= heap->trace_stack.capacity)
 		trace_stack_grow(heap);
 	heap->trace_stack.items[heap->trace_stack.length++] = x;
 }
@@ -212,10 +212,9 @@ void *gc_trace(struct GcHeap *heap, void *p) {
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
 	// Opportunistic evacuation if block is a defragmentation candidate
-	struct GcBlock *block = GC_BLOCK(p);
 	size_t alignment, size;
 	void *q;
-	if (block->flag && (size = gc_object_size(p, &alignment),
+	if (GC_BLOCK(p)->flag && (size = gc_object_size(p, &alignment),
 			q = gc_alloc(heap, alignment, size))) {
 		memcpy(q, p, size);
 		*fwd = GC_COMPRESS(p = q); // Leave forwarding pointer
