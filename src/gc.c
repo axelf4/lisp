@@ -183,17 +183,20 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 	return p;
 }
 
+[[gnu::noinline]] static void trace_stack_grow(struct GcHeap *heap) {
+	struct TraceStack *stack = &heap->trace_stack;
+	size_t new_capacity = stack->capacity ? 2 * stack->capacity : 8;
+	void **items;
+	if (!(items = realloc(stack->items, new_capacity * sizeof *items)))
+		die("malloc failed");
+	stack->items = items;
+	stack->capacity = new_capacity;
+}
+
 static void trace_stack_push(struct GcHeap *heap, void *x) {
-	struct TraceStack *vec = &heap->trace_stack;
-	if (UNLIKELY(vec->length >= vec->capacity)) {
-		size_t new_capacity = vec->capacity ? 2 * vec->capacity : 4;
-		void **items;
-		if (!(items = realloc(vec->items, new_capacity * sizeof *items)))
-			die("malloc failed");
-		vec->items = items;
-		vec->capacity = new_capacity;
-	}
-	vec->items[vec->length++] = x;
+	if (UNLIKELY(heap->trace_stack.length >= heap->trace_stack.capacity))
+		trace_stack_grow(heap);
+	heap->trace_stack.items[heap->trace_stack.length++] = x;
 }
 
 void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
