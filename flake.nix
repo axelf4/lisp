@@ -1,11 +1,12 @@
 {
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }: let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
+    stdenv = pkgs.gcc15Stdenv;
   in {
-    packages.${system}.default = pkgs.gcc14Stdenv.mkDerivation {
+    packages.${system}.default = stdenv.mkDerivation {
       name = "lisp";
       src = builtins.path { path = ./.; name = "lisp"; };
 
@@ -16,11 +17,11 @@
       doCheck = true;
 
       hardeningDisable = [ "all" ];
-      cmakeFlags = [ "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE" ];
+      cmakeFlags = [ "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE" "-DWITH_TAIL_CALL_INTERP=ON" ];
       env.CFLAGS = "-march=x86-64-v3";
     };
 
-    devShells.${system}.default = pkgs.mkShell.override { stdenv = pkgs.gcc14Stdenv; } {
+    devShells.${system}.default = pkgs.mkShell.override { inherit stdenv; } {
       inputsFrom = [ self.packages.${system}.default ];
       packages = with pkgs; [ doxygen valgrind ];
 
