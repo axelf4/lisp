@@ -76,8 +76,7 @@ enum Register : uint8_t {
 
 enum {
 	XI_XORr = 0x31,
-	XI_CMP = 0x39,
-	XI_MOVrr = 0x89,
+	XI_MOVmr = 0x89,
 	XI_MOVrm = 0x8b,
 	XI_MOVri = 0xb8,
 	XI_MOVmi = 0xc7,
@@ -93,7 +92,7 @@ static inline void asm_rr(struct Assembler *ctx, bool w, uint8_t op,
 	*--ctx->p = op;
 	EMIT_REX(ctx, w, reg, 0, rm);
 }
-#define asm_mov_reg_reg(ctx, dst, src) asm_rr(ctx, 1, XI_MOVrr, src, dst)
+#define asm_mov(ctx, dst, src) asm_rr(ctx, 1, XI_MOVmr, src, dst)
 
 /** Emits @a op with operands @a reg and `[%base+disp]`.
  *
@@ -125,6 +124,8 @@ static inline void asm_loadu64(struct Assembler *ctx, enum Register r, uint64_t 
 }
 
 enum ImmGrp1 { XG_ADD, XG_SUB = 5, XG_CMP = 7, };
+
+#define IMM_GRP1_TO_MR(op) (0x8 * (op) + 1)
 
 /** Emits an Immediate Group 1 instruction with a register as 2nd operand. */
 static inline void asm_grp1_imm(struct Assembler *ctx, bool w, enum ImmGrp1 reg,
