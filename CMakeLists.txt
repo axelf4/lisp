@@ -32,18 +32,18 @@ if(WITH_CHECKPOINT_RESTORE)
   install(TARGETS restore LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} NAMELINK_SKIP)
 endif()
 
-add_executable(lisp-codegen EXCLUDE_FROM_ALL src/lisp-codegen.c)
+add_executable(lisp_codegen EXCLUDE_FROM_ALL src/lisp_codegen.c)
 add_custom_command(
-  OUTPUT ${PROJECT_BINARY_DIR}/lisp-generated.h
-  DEPENDS lisp-codegen
-  COMMAND lisp-codegen ${PROJECT_BINARY_DIR}/lisp-generated.h)
+  OUTPUT ${PROJECT_BINARY_DIR}/lisp_generated.h
+  DEPENDS lisp_codegen
+  COMMAND lisp_codegen ${PROJECT_BINARY_DIR}/lisp_generated.h)
 
 add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c
-  $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp-generated.h>
+  $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp_generated.h>
   $<$<BOOL:${WITH_JIT}>:src/jit.c>
   $<$<BOOL:${WITH_CHECKPOINT_RESTORE}>:src/criu.c>)
 target_compile_definitions(lisplib PUBLIC
-  $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp-generated.h">
+  $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp_generated.h">
   ENABLE_JIT=$<BOOL:${WITH_JIT}>)
 target_compile_definitions(lisplib PRIVATE
   HAVE_COMPUTED_GOTO=$<BOOL:${HAVE_COMPUTED_GOTO}>
