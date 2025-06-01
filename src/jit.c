@@ -245,10 +245,17 @@ static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
 			.ty = TY_ANY, .a = sload(state, /* this closure */ 0), .b = idx });
 }
 
-static void assert_type(struct JitState *state, IrRef *ref, uint8_t ty) {
-	if (*ref >> IR_REF_TYPE_SHIFT == ty || !LIKELY(IS_VAR(*ref))) return;
+/** Coerces @a ref to @a ty.
+ *
+ * @return Whether @a ty was a subtype of the type of @a ref.
+ */
+static bool assert_type(struct JitState *state, IrRef *ref, uint8_t ty) {
+	uint8_t ty2 = *ref >> IR_REF_TYPE_SHIFT;
+	if (ty2 == ty) return true;
 	// If ty </: ref->ty, then type error is imminent
-	*ref = (IR_GET(state, *ref).ty = ty) << IR_REF_TYPE_SHIFT | (Ref) *ref;
+	if (IS_VAR(*ref))
+		*ref = (IR_GET(state, *ref).ty = ty) << IR_REF_TYPE_SHIFT | (Ref) *ref;
+	return ty2 == TY_ANY;
 }
 
 static void assert_value(struct JitState *state, IrRef *ref, LispObject value) {
@@ -297,7 +304,7 @@ static void dce(struct JitState *state) {
  *      p. 63-72.
  */
 static void peel_loop(struct JitState *state) {
-	unsigned preamble_len = state->len;
+	unsigned preamble_len = state->len, num_phis = 0;
 	// Separate preamble from loop body by LOOP instruction
 	emit(state, (union SsaInstruction) { .op = IR_LOOP, .ty = TY_ANY });
 	state->need_snapshot = true;
@@ -308,7 +315,6 @@ static void peel_loop(struct JitState *state) {
 
 	// Map of variables in the preamble onto variables of the peeled loop
 	Ref subst[MAX_TRACE_LEN], phis[12];
-	unsigned num_phis = 0;
 	for (unsigned i = 0; i < preamble_len; ++i) {
 		if (i >= snap->ir_start) { // Copy-substitute the next snapshot
 			struct Snapshot *s = state->snapshots + state->num_snapshots;
@@ -351,7 +357,7 @@ static void peel_loop(struct JitState *state) {
 			}
 			// In case of type-instability, need to emit conversion
 			// since later instructions expect the previous type.
-			assert(ref >> IR_REF_TYPE_SHIFT == insn.ty && "TODO Type-instability");
+			if (insn.ty != TY_ANY && !assert_type(state, &ref, insn.ty)) rec_err(state);
 		}
 	}
 
