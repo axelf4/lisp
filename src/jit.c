@@ -37,6 +37,8 @@ enum SsaOp : uint8_t {
 	IR_NOP,
 
 	IR_ADD,
+	IR_CAR,
+	IR_CDR,
 
 	IR_NUM_OPS
 };
@@ -211,6 +213,8 @@ static IrRef emit_opt(struct JitState *state, union SsaInstruction x) {
 		if (!IS_VAR(x.a)) return emit_const(state, LISP_INTEGER,
 			IR_GET(state, x.a).v + IR_GET(state, x.b).v);
 		break;
+
+	case IR_CAR: case IR_CDR: break; // TODO setc[ad]r
 	}
 	// Common Subexpression Elimination (CSE)
 	for (Ref ref = state->chain[x.op]; ref; ref = o.prev) {
@@ -708,6 +712,21 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 
 		case IR_ADD: asm_arith(&ctx, XG_ADD, ref); break;
 
+		case IR_CAR: {
+			enum Register dst = reg_def(&ctx, ref, -1), src = reg_use(&ctx, x.a, -1);
+			asm_rr(&ctx.assembler, 1, IMM_GRP1_TO_MR(XG_ADD), dst, REG_LISP_CTX);
+			asm_rmrd(&ctx.assembler, 0, XI_MOVmr, dst, src,
+				offsetof(struct LispPair, car) - 1);
+			break;
+		}
+		case IR_CDR: {
+			enum Register dst = reg_def(&ctx, ref, -1), src = reg_use(&ctx, x.a, -1);
+			asm_rr(&ctx.assembler, 1, IMM_GRP1_TO_MR(XG_ADD), dst, REG_LISP_CTX);
+			asm_rmrd(&ctx.assembler, 0, XI_MOVmr, dst, src,
+				offsetof(struct LispPair, cdr) - 1);
+			break;
+		}
+
 		default: unreachable();
 		}
 	}
@@ -852,6 +871,16 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			print_ref(state, x.b);
 			putchar('\n');
 			break;
+		case IR_CAR:
+			printf("CAR   ");
+			print_ref(state, x.a);
+			putchar('\n');
+			break;
+		case IR_CDR:
+			printf("CDR   ");
+			print_ref(state, x.a);
+			putchar('\n');
+			break;
 		}
 	}
 	switch (link) {
@@ -887,16 +916,34 @@ bool jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc)
 
 static IrRef record_c_call(struct JitState *state, struct Instruction x) {
 	IrRef ref = sload(state, x.a);
-
 	LispObject f_value = state->lisp_ctx->bp[x.a];
 	struct LispCFunction *f = UNTAG_OBJ(f_value);
-	if (!strcmp(f->name, "+")) {
+
+	struct {
+		const char *name;
+		enum SsaOp op;
+		uint8_t ty, arg1_ty, arg2_ty;
+	} intrinsics[] = {
+		{ "+", IR_ADD, LISP_INTEGER, LISP_INTEGER, LISP_INTEGER },
+		{ "car", IR_CAR, TY_ANY, LISP_PAIR, -1 },
+		{ "cdr", IR_CDR, TY_ANY, LISP_PAIR, -1 },
+		{}
+	}, *intrinsic = intrinsics;
+	for (; intrinsic->name; ++intrinsic) {
+		if (strcmp(f->name, intrinsic->name)) continue;
 		assert_value(state, &ref, f_value);
-		IrRef a = sload(state, x.a + 2), b = sload(state, x.a + 2 + 1);
-		assert_type(state, &a, LISP_INTEGER);
-		assert_type(state, &b, LISP_INTEGER);
-		return emit_opt(state, (union SsaInstruction)
-			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
+		IrRef a = 0, b = 0;
+
+		if (intrinsic->arg1_ty == (uint8_t) -1) goto out;
+		a = sload(state, x.a + 2);
+		if (intrinsic->arg1_ty != TY_ANY) assert_type(state, &a, intrinsic->arg1_ty);
+
+		if (intrinsic->arg2_ty == (uint8_t) -1) goto out;
+		b = sload(state, x.a + 2 + 1);
+		if (intrinsic->arg2_ty != TY_ANY) assert_type(state, &b, intrinsic->arg2_ty);
+
+	out: return emit_opt(state, (union SsaInstruction)
+		{ .op = intrinsic->op, .ty = intrinsic->ty, .a = a, .b = b });
 	}
 
 	assert_type(state, &ref, LISP_CFUNCTION);
