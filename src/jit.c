@@ -171,7 +171,7 @@ static void take_snapshot(struct JitState *state) {
 static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
 	Ref i = IR_BIAS;
 	while (i-- > IR_BIAS - state->num_consts)
-		if (GC_COMPRESS(IR_GET(state, i).v).p == GC_COMPRESS(x).p) goto out;
+		if (LISP_EQ(IR_GET(state, i).v, x)) goto out;
 	if (state->num_consts >= MAX_CONSTS) { rec_err(state); return 0; }
 	IR_GET(state, i = IR_BIAS - ++state->num_consts).v = x;
 out: return ty << IR_REF_TYPE_SHIFT | i;
@@ -657,9 +657,9 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, bp, x.a * sizeof x.v);
 			break;
 		case IR_GLOAD:
+			struct LispSymbol *sym = UNTAG_OBJ(IR_GET(trace, x.a).v);
+			int32_t p = (char *) &sym->value - (char *) trace->lisp_ctx;
 			reg = reg_def(&ctx, ref, -1);
-			int32_t p = (char *) UNTAG_OBJ(IR_GET(trace, x.a).v) - (char *) trace->lisp_ctx
-				+ offsetof(struct LispSymbol, value);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, p);
 			break;
 		case IR_ULOAD: {
@@ -770,20 +770,20 @@ static void penalize(struct JitState *state) {
 }
 
 #ifdef DEBUG
-static void print_ir_ref(struct JitState *state, uint8_t ty, Ref ref) {
+static void print_ref(struct JitState *state, Ref ref) {
 	if (IS_VAR(ref)) { printf("%.4u", ref - IR_BIAS); return; }
-	union SsaInstruction x = IR_GET(state, ref);
-	switch (ty & ~IR_MARK) {
-	case TY_ANY:
-		if (NILP(x.v)) { case LISP_NIL: printf("nil "); break; }
-		[[fallthrough]];
-	case LISP_CFUNCTION: case LISP_CLOSURE: printf("%#" PRIxPTR, x.v); break;
+	LispObject v = IR_GET(state, ref).v;
+	switch (lisp_type(v)) {
+	case LISP_NIL: printf("nil "); break;
+	case LISP_INTEGER: printf("%+" PRIi32, UNTAG_SMI(v)); break;
 	case LISP_SYMBOL:
-		struct LispSymbol *sym = UNTAG_OBJ(x.v);
+		struct LispSymbol *sym = UNTAG_OBJ(v);
 		printf("[%.*s]", (int) sym->len, sym->name);
 		break;
-	case LISP_INTEGER: printf("%+" PRIi32, UNTAG_SMI(x.v)); break;
-	default: printf("const(ty: %" PRIu8 ")", ty); break;
+	case LISP_CFUNCTION:
+		printf("<%s>", ((struct LispCFunction *) UNTAG_OBJ(v))->name);
+		break;
+	case LISP_CLOSURE: default: printf("%#" PRIxPTR, v); break;
 	}
 }
 
@@ -800,7 +800,7 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			for (struct SnapshotEntry *entry = state->stack_entries + snap->offset,
 						*end = entry + snap->num_entries; entry < end; ++entry) {
 				while (j++ < entry->slot) printf("---- ");
-				print_ir_ref(state, entry->ty, entry->ref);
+				print_ref(state, entry->ref);
 				putchar(' ');
 			}
 			puts("]");
@@ -811,26 +811,26 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		switch (x.op) {
 		case IR_EQ: printf("EQ    ");
 			if (false) case IR_NEQ: printf("NEQ   ");
-			print_ir_ref(state, x.ty, x.a);
+			print_ref(state, x.a);
 			printf("  ");
-			print_ir_ref(state, x.ty, x.b);
+			print_ref(state, x.b);
 			putchar('\n');
 			break;
 		case IR_SLOAD: printf("SLOAD #%" PRIu16 "\n", x.a); break;
 		case IR_GLOAD:
-			printf("GLOAD "); print_ir_ref(state, LISP_SYMBOL, x.a); putchar('\n'); break;
+			printf("GLOAD "); print_ref(state, x.a); putchar('\n'); break;
 		case IR_ULOAD:
 			printf("ULOAD #%" PRIu16 " from ", x.b);
-			print_ir_ref(state, LISP_CLOSURE, x.a);
+			print_ref(state, x.a);
 			putchar('\n');
 			break;
 		case IR_CALL: printf("CALL  ");
-			print_ir_ref(state, x.ty, x.a);
+			print_ref(state, x.a);
 			printf("  (");
 			for (Ref j = 0; j < x.b; ++j) {
 				union SsaInstruction arg = state->trace[MAX_CONSTS + ++i];
 				if (j) printf(" ");
-				print_ir_ref(state, arg.ty, arg.a);
+				print_ref(state, arg.a);
 			}
 			puts(")");
 			break;
@@ -838,18 +838,18 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		case IR_LOOP: puts("LOOP ------------"); break;
 		case IR_PHI:
 			printf("PHI   ");
-			print_ir_ref(state, x.ty, x.a);
+			print_ref(state, x.a);
 			printf("  ");
-			print_ir_ref(state, x.ty, x.b);
+			print_ref(state, x.b);
 			putchar('\n');
 			break;
 		case IR_NOP: puts("NOP"); break;
 
 		case IR_ADD:
 			printf("ADD   ");
-			print_ir_ref(state, x.ty, x.a);
+			print_ref(state, x.a);
 			printf("  ");
-			print_ir_ref(state, x.ty, x.b);
+			print_ref(state, x.b);
 			putchar('\n');
 			break;
 		}
@@ -918,7 +918,7 @@ bool jit_record(struct JitState *state, struct Instruction *pc) {
 	struct Instruction x = (state->pc = pc)[-1];
 	IrRef result = 0;
 	switch (x.op) {
-	case LOAD_NIL: result = emit_const(state, LISP_NIL, NIL); break;
+	case LOAD_NIL: result = emit_const(state, LISP_NIL, NIL(state->lisp_ctx)); break;
 	case LOAD_OBJ:
 		LispObject obj = *(LispObject *) (pc - x.b);
 		result = emit_const(state, lisp_type(obj), obj);
@@ -982,10 +982,10 @@ bool jit_record(struct JitState *state, struct Instruction *pc) {
 		ref = sload(state, x.a);
 		uint8_t ty = ref >> IR_REF_TYPE_SHIFT;
 		if (ty != TY_ANY) break; // Constant NIL comparison is a no-op
-		IrRef nil = emit_const(state, LISP_NIL, NIL);
+		IrRef nil = emit_const(state, LISP_NIL, NIL(state->lisp_ctx));
 		take_snapshot(state);
 		emit_opt(state, (union SsaInstruction)
-			{ .op = IR_EQ ^ !NILP(bp[x.a]), .ty = ty, .a = ref, .b = nil });
+			{ .op = IR_EQ ^ !NILP(state->lisp_ctx, bp[x.a]), .ty = ty, .a = ref, .b = nil });
 		break;
 	case RET: do_ret:
 		if (state->base_offset) {

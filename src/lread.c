@@ -86,7 +86,7 @@ val_beg_no_ws:
 	if (**s == '(') {
 		++*s;
 		skip_whitespace(s);
-		if (UNLIKELY(**s == ')')) { ++*s; value = NIL; goto val_end; }
+		if (UNLIKELY(**s == ')')) { ++*s; value = NIL(ctx); goto val_end; }
 		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
 		len = 0;
 		goto val_beg_no_ws;
@@ -107,7 +107,7 @@ val_end:
 	enum ContainerType ctn_ty = ctn->tag % (1 << TYPE_BITS);
 	if (ctn_ty == CTN_PREFIX) {
 		len = (--p)->tag >> TYPE_BITS;
-		value = cons(ctx, (--p)->value, cons(ctx, value, NIL));
+		value = cons(ctx, (--p)->value, cons(ctx, value, NIL(ctx)));
 		goto val_end;
 	}
 	p++->value = value;
@@ -115,7 +115,7 @@ val_end:
 	skip_whitespace(s);
 	if (**s == ')') {
 		++*s;
-		value = ctn_ty == CTN_DOTTED ? --len, --p, value : NIL;
+		value = ctn_ty == CTN_DOTTED ? --len, --p, value : NIL(ctx);
 		do value = cons(ctx, (--p)->value, value); while (--len);
 		len = (--p)->tag >> TYPE_BITS; // Pop container from stack
 		goto val_end;

@@ -45,9 +45,10 @@ static void test_hash_table(void **) {
 }
 
 static void test_gc_traces_live_object(void **state) {
-	LispObject obj = cons(*state, TAG_SMI(1), NIL);
+	struct LispCtx *ctx = *state;
+	LispObject obj = cons(*state, TAG_SMI(1), NIL(ctx));
 	garbage_collect(*state);
-	assert_int_equal(UNTAG_SMI(car(*state, obj)), 1);
+	assert_int_equal(UNTAG_SMI(car(ctx, obj)), 1);
 }
 
 static void test_rope(void **) {
@@ -116,7 +117,7 @@ static void test_reader_ignores_whitespace(void **state) {
 	struct LispCtx *ctx = *state;
 	assert_read_whole_equal(ctx, " ( x 0\n . ' y ) ",
 		cons(ctx, intern(ctx, 1, "x"), cons(ctx, 0,
-				cons(ctx, LISP_CONST(ctx, fquote), cons(ctx, intern(ctx, 1, "y"), NIL)))));
+				cons(ctx, LISP_CONST(ctx, fquote), cons(ctx, intern(ctx, 1, "y"), NIL(ctx))))));
 }
 
 static LispObject eval(struct LispCtx *ctx, const char *s) {

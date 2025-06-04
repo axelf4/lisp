@@ -76,7 +76,7 @@ static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *proto,
 	uint8_t n, LispObject *bp) {
 	uint8_t nargs = proto->arity & ~PROTO_VARIADIC;
 	if (proto->arity & PROTO_VARIADIC) {
-		LispObject rest = NIL;
+		LispObject rest = NIL(ctx);
 		while (n > nargs) rest = cons(ctx, bp[2 + --n], rest);
 		bp[2 + n++] = rest;
 		++nargs;
@@ -182,7 +182,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
 		NEXT;
 	}
-	DEFINE_OP(LOAD_NIL) { bp[ins.a] = NIL; NEXT; }
+	DEFINE_OP(LOAD_NIL) { bp[ins.a] = NIL(ctx); NEXT; }
 	DEFINE_OP(LOAD_OBJ) { bp[ins.a] = LOAD_CONST; NEXT; }
 	DEFINE_OP(LOAD_SHORT) { bp[ins.a] = TAG_SMI((int16_t) ins.b); NEXT; }
 	DEFINE_OP(GETGLOBAL) {
@@ -253,7 +253,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 
 	DEFINE_OP(MOV) { bp[ins.a] = bp[ins.c]; NEXT; }
 	DEFINE_OP(JMP) { pc += ins.b; NEXT; }
-	DEFINE_OP(JNIL) { if (NILP(bp[ins.a])) JMP_TO_LABEL(JMP); NEXT; }
+	DEFINE_OP(JNIL) { if (NILP(ctx, bp[ins.a])) JMP_TO_LABEL(JMP); NEXT; }
 	DEFINE_OP(CLOS) {
 		struct Prototype *proto = (struct Prototype *) pc;
 		struct Closure *closure = gc_alloc(
@@ -324,7 +324,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	switch (lisp_type(function)) {
 	case LISP_CFUNCTION:
 		struct LispCFunction *fun = UNTAG_OBJ(function);
-		if (!(n == fun->nargs && NILP(args[n]))) die("TODO");
+		if (!(n == fun->nargs && NILP(ctx, args[n]))) die("TODO");
 		return fun->f(ctx, n, args);
 	case LISP_CLOSURE: break;
 	default: throw(1);
@@ -337,9 +337,9 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
 
 	LispObject xs = args[n];
-	while (n < m && !NILP(xs)) ctx->bp[2 + n++] = pop(ctx, &xs);
+	while (n < m && !NILP(ctx, xs)) ctx->bp[2 + n++] = pop(ctx, &xs);
 	while (n > m) xs = cons(ctx, args[--n], xs);
-	if (n < m || !(is_variadic || NILP(xs))) die("Wrong number of arguments");
+	if (n < m || !(is_variadic || NILP(ctx, xs))) die("Wrong number of arguments");
 	ctx->bp[2 + m] = xs;
 
 	return run(ctx, proto->body);
@@ -479,7 +479,7 @@ static void emit_load_obj(struct ByteCompCtx *ctx, LispObject x, struct Destinat
 	if (dst.discarded) return;
 	struct Instruction ins;
 	int i;
-	if (NILP(x)) ins = (struct Instruction) { .op = LOAD_NIL, .a = dst.reg };
+	if (NILP(ctx->lisp_ctx, x)) ins = (struct Instruction) { .op = LOAD_NIL, .a = dst.reg };
 	else if (lisp_type(x) == LISP_INTEGER
 		&& INT16_MIN <= (i = UNTAG_SMI(x)) && i <= INT16_MAX)
 		ins = (struct Instruction) { .op = LOAD_SHORT, .a = dst.reg, .b = i };
@@ -500,9 +500,9 @@ static enum CompileResult compile_progn(struct ByteCompCtx *ctx, LispObject x, s
 		if (!listp(x)) throw(COMP_EXPECTED_LIST);
 		LispObject form = pop(ctx->lisp_ctx, &x);
 		struct Destination d = dst;
-		if (!NILP(x)) { d.discarded = true; d.is_return = false; }
+		if (!NILP(ctx->lisp_ctx, x)) { d.discarded = true; d.is_return = false; }
 		res = compile_form(ctx, form, d);
-	} while (!NILP(x));
+	} while (!NILP(ctx->lisp_ctx, x));
 	return res;
 }
 
@@ -555,10 +555,10 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->count += sizeof(struct Prototype) / sizeof *ctx->ins;
 
 			uint8_t num_args = 0;
-			while (!NILP(args)) {
+			while (!NILP(ctx->lisp_ctx, args)) {
 				LispObject sym;
 				if (consp(args)) { sym = pop(lisp_ctx, &args); ++num_args; }
-				else { sym = args; args = NIL; num_args |= PROTO_VARIADIC; }
+				else { sym = args; args = NIL(ctx->lisp_ctx); num_args |= PROTO_VARIADIC; }
 				if (lisp_type(sym) != LISP_SYMBOL) throw(COMP_INVALID_VARIABLE);
 				ctx->vars[ctx->num_vars++]
 					= (struct Local) { .symbol = GC_COMPRESS(sym), .slot = ctx->num_regs++ };
@@ -591,7 +591,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		case LISP_KW_LET: {
 			uint8_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
 			LispObject defs = pop(lisp_ctx, &x);
-			while (!NILP(defs)) {
+			while (!NILP(ctx->lisp_ctx, defs)) {
 				LispObject var = pop(lisp_ctx, &defs), init = pop(lisp_ctx, &defs);
 				Register reg = ctx->num_regs;
 				ctx->vars[ctx->num_vars++] = (struct Local)
@@ -633,9 +633,9 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			compile_form(ctx, pop(lisp_ctx, &x), (struct Destination) { .reg = dst.reg });
 			size_t jmp = ctx->count;
 			emit(ctx, (struct Instruction) { .op = JNIL, .a = dst.reg });
-			if (NILP(x)) throw(COMP_EXPECTED_CONSEQUENT);
+			if (NILP(ctx->lisp_ctx, x)) throw(COMP_EXPECTED_CONSEQUENT);
 			bool noreturn = compile_form(ctx, pop(lisp_ctx, &x), dst); // Emit consequent
-			if (!NILP(x)) { // Emit alternative
+			if (!NILP(ctx->lisp_ctx, x)) { // Emit alternative
 				emit(ctx, (struct Instruction) { .op = JMP });
 				ctx->ins[jmp].b = ctx->count - (jmp + 1);
 				jmp = ctx->count - 1;
@@ -656,7 +656,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			uint8_t prev_num_regs = ctx->num_regs, num_args = 0;
 			Register reg = dst.reg == ctx->num_regs - 1 ? dst.reg : ctx->num_regs++;
 			++ctx->num_regs; // Reserve register for PC
-			while (!NILP(x)) {
+			while (!NILP(ctx->lisp_ctx, x)) {
 				if (!consp(x)) throw(COMP_EXPECTED_LIST);
 				++num_args;
 				compile_form(ctx, pop(lisp_ctx, &x), (struct Destination) { .reg = ctx->num_regs++ });

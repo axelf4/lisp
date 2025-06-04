@@ -37,6 +37,7 @@
 #ifndef LISP_H
 #define LISP_H
 
+#include <stddef.h>
 #include <signal.h>
 #include "gc.h"
 #include "tbl.h"
@@ -47,8 +48,15 @@
 #define TAG_OBJ(p) ((LispObject) (p) + 1)
 #define UNTAG_OBJ(x) ((void *) ((x) - 1))
 
-#define NIL TAG_OBJ(NULL)
-#define NILP(x) (GC_COMPRESS(x).p == NIL)
+/** Returns whether @a a and @a b are referentially equal. */
+#define LISP_EQ(a, b) (GC_COMPRESS(a).p == GC_COMPRESS(b).p)
+
+#define NIL(ctx) TAG_OBJ(&(ctx)->nil)
+#if USE_COMPRESSED_PTRS
+#define NILP(ctx, x) LISP_EQ(x, TAG_OBJ(offsetof(struct LispCtx, nil)))
+#else
+#define NILP(ctx, x) LISP_EQ(x, NIL(ctx))
+#endif
 
 typedef uintptr_t LispObject;
 typedef struct GcRef Lobj;
@@ -71,9 +79,7 @@ struct LispObjectHeader {
 };
 
 static inline enum LispObjectType lisp_type(LispObject p) {
-	return NILP(p) ? LISP_NIL
-		: IS_SMI(p) ? LISP_INTEGER
-		: ((struct LispObjectHeader *) UNTAG_OBJ(p))->tag;
+	return IS_SMI(p) ? LISP_INTEGER : ((struct LispObjectHeader *) UNTAG_OBJ(p))->tag;
 }
 
 /** Interned string with a value slot. */
@@ -118,6 +124,7 @@ struct JitState;
 struct LispCtx {
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
+	struct LispObjectHeader nil;
 	struct Table symbol_tbl;
 	struct Upvalue *upvalues;
 
@@ -195,14 +202,17 @@ void lisp_free(struct LispCtx *);
 
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
-static inline bool listp(LispObject x) { return NILP(x) || consp(x); }
+static inline bool listp(LispObject x) {
+	enum LispObjectType ty = lisp_type(x);
+	return ty == LISP_NIL || ty == LISP_PAIR;
+}
 
 static inline LispObject car(struct LispCtx *ctx, LispObject x) {
-	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *) UNTAG_OBJ(x))->car) : NIL;
+	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *) UNTAG_OBJ(x))->car) : NIL(ctx);
 }
 
 static inline LispObject cdr(struct LispCtx *ctx, LispObject x) {
-	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *) UNTAG_OBJ(x))->cdr) : NIL;
+	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *) UNTAG_OBJ(x))->cdr) : NIL(ctx);
 }
 
 static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {

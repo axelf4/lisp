@@ -54,7 +54,7 @@ struct LispString {
 };
 
 LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
-	if (len == 3 && memcmp(s, "nil", 3) == 0) return NIL;
+	if (len == 3 && memcmp(s, "nil", 3) == 0) return NIL(ctx);
 
 	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct LispSymbol key = { .len = len, .name = s }, **entry;
@@ -66,7 +66,7 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 		name->s[len] = '\0';
 		*entry = gc_alloc(heap, alignof(struct LispSymbol), sizeof **entry);
 		**entry = (struct LispSymbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
-			.name = name->s, .len = len, .value = NIL, };
+			.name = name->s, .len = len, .value = NIL(ctx), };
 	}
 	return TAG_OBJ(*entry);
 }
@@ -79,7 +79,7 @@ void lisp_print(struct LispCtx *ctx, LispObject x) {
 		putchar('(');
 		do lisp_print(ctx, car(ctx, x));
 		while (consp(x = cdr(ctx, x)) && (putchar(' '), true));
-		if (!NILP(x)) { fputs(" . ", stdout); lisp_print(ctx, x); }
+		if (!NILP(ctx, x)) { fputs(" . ", stdout); lisp_print(ctx, x); }
 		putchar(')');
 		break;
 	case LISP_SYMBOL:
@@ -95,7 +95,7 @@ void lisp_print(struct LispCtx *ctx, LispObject x) {
 }
 
 bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b) {
-	if (GC_COMPRESS(a).p == GC_COMPRESS(b).p) return true;
+	if (LISP_EQ(a, b)) return true;
 	enum LispObjectType ty = lisp_type(a);
 	if (lisp_type(b) != ty) return false;
 	switch (ty) {
@@ -135,16 +135,17 @@ static size_t chunk_size(struct Chunk *x) {
 }
 
 static void lisp_trace(struct GcHeap *heap, LispObject *p) {
-	if (!(IS_SMI(*p) || NILP(*p))) *p = TAG_OBJ(gc_trace(heap, UNTAG_OBJ(*p)));
+	if (!IS_SMI(*p)) *p = TAG_OBJ(gc_trace(heap, UNTAG_OBJ(*p)));
 }
 static void lisp_trace_compressed(struct GcHeap *heap, Lobj *p) {
-	if (IS_SMI(p->p) || NILP(p->p)) return;
+	if (IS_SMI(p->p)) return;
 	*p = GC_COMPRESS(TAG_OBJ(gc_trace(heap, UNTAG_OBJ(GC_DECOMPRESS(heap, *p)))));
 }
 
 void gc_object_visit(struct GcHeap *heap, void *p) {
 	switch (((struct LispObjectHeader *) p)->tag) {
-	case LISP_INTEGER: case LISP_NIL: default: unreachable();
+	case LISP_INTEGER: default: unreachable();
+	case LISP_NIL: break;
 	case LISP_PAIR:
 		struct LispPair *pair = p;
 		gc_mark(sizeof *pair, p);
@@ -218,6 +219,7 @@ size_t gc_object_size(void *p, size_t *alignment) {
 void gc_trace_roots(struct GcHeap *heap) {
 	struct LispCtx *ctx = (struct LispCtx *) heap;
 
+	gc_pin(heap, &ctx->nil);
 #define X(var, _) gc_pin(heap, UNTAG_OBJ(LISP_CONST(ctx, var)));
 	FOR_SYMBOL_CONSTS(X)
 #undef X
@@ -234,7 +236,7 @@ DEFUN("eval", eval, (struct LispCtx *ctx, LispObject form)) { return lisp_eval(c
 DEFUN("print", print, (struct LispCtx *ctx, LispObject x)) {
 	lisp_print(ctx, x);
 	putchar('\n');
-	return NIL;
+	return NIL(ctx);
 }
 
 DEFUN("cons", cons, (struct LispCtx *ctx, LispObject car, LispObject cdr)) {
@@ -255,7 +257,7 @@ DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
 
 DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
-	return (int32_t) a < (int32_t) b ? LISP_CONST(ctx, t) : NIL;
+	return (int32_t) a < (int32_t) b ? LISP_CONST(ctx, t) : NIL(ctx);
 }
 
 bool lisp_init(struct LispCtx *ctx) {
@@ -271,8 +273,10 @@ bool lisp_init(struct LispCtx *ctx) {
 				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) goto err;
 	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) goto err_free_stack;
 	ctx->guard_end = (uintptr_t) stack + size + guard_size;
-	*stack = NIL;
+	*stack = NIL(ctx);
 	stack[1] = (uintptr_t) NULL; // No return address for first call frame
+
+	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
 
 	ctx->symbol_tbl = tbl_new();
 #ifdef LISP_GENERATED_FILE
