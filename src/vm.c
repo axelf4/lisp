@@ -432,18 +432,16 @@ static struct VarRef {
 	return (struct VarRef) { .type = VAR_GLOBAL };
 }
 
-static void chunk_reserve(struct ByteCompCtx *ctx, size_t additional) {
-	size_t n = ctx->count + additional;
-	if (LIKELY(n <= ctx->capacity)) return;
-	size_t new_capacity = MAX(ctx->capacity ? 2 * ctx->capacity : 32, n);
-	struct Instruction *ins;
-	if (!(ins = realloc(ctx->ins, new_capacity * sizeof *ins))) die("malloc failed");
-	ctx->ins = ins;
+[[gnu::cold]] static void chunk_grow(struct ByteCompCtx *ctx) {
+	size_t new_capacity = ctx->capacity ? 2 * ctx->capacity : 32;
+	struct Instruction *xs;
+	if (!(xs = realloc(ctx->ins, new_capacity * sizeof *xs))) die("malloc failed");
+	ctx->ins = xs;
 	ctx->capacity = new_capacity;
 }
 
 static void emit(struct ByteCompCtx *ctx, struct Instruction ins) {
-	chunk_reserve(ctx, 1);
+	if (ctx->count >= ctx->capacity) chunk_grow(ctx);
 	ctx->ins[ctx->count++] = ins;
 }
 
@@ -544,12 +542,10 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->fn = &fun;
 			ctx->num_regs = 2; // Reserve closure and PC registers
 
-			chunk_reserve(ctx, 1 + (alignof(struct Prototype) - 1 + sizeof(struct Prototype))
-				/ sizeof *ctx->ins);
 			static_assert(IS_POWER_OF_TWO(sizeof *ctx->ins));
 			while ((ctx->count + 1) * sizeof *ctx->ins % alignof(struct Prototype))
-				ctx->ins[ctx->count++] = (struct Instruction) { .op = JMP }; // Align with NOPs
-			ctx->ins[ctx->count++] = (struct Instruction) { .op = CLOS, .a = dst.reg };
+				emit(ctx, (struct Instruction) { .op = JMP }); // Align with NOPs
+			emit(ctx, (struct Instruction) { .op = CLOS, .a = dst.reg });
 			size_t proto_beg = ctx->count;
 			ctx->count += sizeof(struct Prototype) / sizeof *ctx->ins;
 
@@ -577,7 +573,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 			size_t upvalues_size = fun.num_upvalues * sizeof *fun.upvalues,
 				data_size = (upvalues_size + sizeof *ctx->ins - 1) / sizeof *ctx->ins;
-			chunk_reserve(ctx, data_size);
+			if (ctx->capacity < ctx->count + data_size) chunk_grow(ctx);
 			memcpy((char *) (ctx->ins + (ctx->count += data_size)) - upvalues_size,
 				fun.upvalues, fun.num_upvalues * sizeof *fun.upvalues); // Write upvalues
 			ctx->ins[proto_beg - 1].b = ctx->count - proto_beg; // Write prototype size
