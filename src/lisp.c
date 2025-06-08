@@ -228,6 +228,9 @@ void gc_trace_roots(struct GcHeap *heap) {
 	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
 		*sym = gc_trace(heap, *sym);
 
+	for (struct Upvalue **uv = &ctx->upvalues; *uv; uv = &(*uv)->next)
+		*uv = gc_trace(heap, *uv);
+
 	// TODO Trace the stack
 }
 
@@ -305,6 +308,7 @@ bool lisp_init(struct LispCtx *ctx) {
 	ctx->current_trace = NULL;
 #endif
 
+	ctx->upvalues = NULL;
 	return true;
 #if ENABLE_JIT
 err_free_traces:

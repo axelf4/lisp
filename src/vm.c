@@ -154,7 +154,6 @@ static struct Handler { LispTailCallFunc *hnd; }
 static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 	uintptr_t *bp = ctx->bp;
 	bp[1] = (uintptr_t) NULL; // TODO Reentrancy
-	ctx->upvalues = NULL;
 #if ENABLE_JIT
 #define JIT_THRESHOLD 4
 	memset(ctx->hotcounts, JIT_THRESHOLD, sizeof ctx->hotcounts);
