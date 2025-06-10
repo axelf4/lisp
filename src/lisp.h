@@ -172,6 +172,7 @@ enum LispReadError {
 	LISP_READ_EOF,
 	LISP_READ_EMPTY,
 	LISP_READ_EXPECTED_RPAREN,
+	LISP_READ_INT_TOO_LARGE, ///< Integer literal is too large to be represented.
 	LISP_READ_TRAILING,
 };
 

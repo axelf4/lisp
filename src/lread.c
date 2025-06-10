@@ -34,20 +34,21 @@ static void skip_whitespace(const char **s) {
 	}
 }
 
-static bool read_integer(const char **s, LispObject *result) {
+static enum LispReadError read_int(const char **s, LispObject *result) {
 	bool is_neg = false;
 	switch (**s) {
 	case '-': is_neg = true; [[fallthrough]];
 	case '+': ++*s;
 	}
-	if (!is_digit(**s)) return false;
+	if (!is_digit(**s)) return LISP_READ_TRAILING;
 	const char *beg = *s;
 	uint32_t i = **s - '0', d;
 	while ((d = *++*s - '0') <= 9) i = 10 * i + d;
-	if (is_ident(**s)) return false;
-	if (*s - beg > INT31_SAFE_DIG) throw(1); // TODO Precise overflow check
+	if (is_ident(**s)) return LISP_READ_TRAILING;
+	// TODO Precise overflow check
+	if (*s - beg > INT31_SAFE_DIG) return LISP_READ_INT_TOO_LARGE;
 	*result = TAG_SMI(is_neg ? -i : i);
-	return true;
+	return LISP_READ_OK;
 }
 
 static bool read_prefix(struct LispCtx *ctx, const char **s, LispObject *result) {
@@ -82,7 +83,6 @@ val_beg:
 	skip_whitespace(s);
 val_beg_no_ws:
 	LispObject value;
-	const char *start = *s;
 	if (**s == '(') {
 		++*s;
 		skip_whitespace(s);
@@ -95,11 +95,14 @@ val_beg_no_ws:
 		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_PREFIX };
 		len = 0;
 		goto val_beg;
-	} else if (!read_integer(s, &value)) {
+	}
+	const char *beg = *s;
+	enum LispReadError err;
+	if ((err = read_int(s, &value))) {
+		if (UNLIKELY(err == LISP_READ_INT_TOO_LARGE)) return err;
 		while (is_ident(**s)) ++*s;
-		if (UNLIKELY(*s == start))
-			return p > stack ? LISP_READ_EOF : LISP_READ_EMPTY;
-		value = intern(ctx, *s - start, start); // Read a symbol
+		if (UNLIKELY(*s == beg)) return p > stack ? LISP_READ_EOF : LISP_READ_EMPTY;
+		value = intern(ctx, *s - beg, beg);
 	}
 val_end:
 	if (p == stack) { *result = value; return LISP_READ_OK; } // No remaining nesting
