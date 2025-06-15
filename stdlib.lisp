@@ -18,19 +18,19 @@
           ;; TODO (append '(xs...) '(ys...) ...) -> (append '(xs... ys...) ...)
           (if xs (let (x (car xs)
                        acc-fn2 (if (= (car x) 'unquote-splicing) 'append (if tail 'list* 'list)) ; TODO cons
-                       cont? (= (= acc-fn 'append) (= acc-fn2 'append))
-                       tail2 (if (if cont? acc-fn) (progn (set acc-fn2 acc-fn) tail)
+                       cont? (if acc-fn (= (= acc-fn 'append) (= acc-fn2 'append)))
+                       tail2 (if cont? (progn (set acc-fn2 acc-fn) tail)
                                (if tail (list (if acc-fn (cons acc-fn tail) tail)))))
                    ;; Push elements in groups of same type
                    (listify (cdr xs) acc-fn2 (cons (cdr x) tail2)))
-            (let (expr (if acc-fn (cons acc-fn tail) tail))
-              (cons (if (= (car expr) 'quote) 'quote 'unquote) expr))))
+            (cons acc-fn tail)))
         join-quote
         (fn (xs tail)
           (if (if (= (car (car xs)) 'quote) (= (car tail) 'quote))
               (join-quote (cdr xs)
                           (list 'quote (cons (car (cdr (cdr (car xs)))) (car (cdr tail)))))
-            (listify xs nil (if (= tail ''()) () tail))))
+            (if xs (cons 'unquote (listify xs nil (if (= tail ''()) () tail)))
+              (cons (if (= (car tail) 'quote) 'quote 'unquote) tail))))
         ;; Processes the body of a quasiquote.
         ;;
         ;; LEVEL is the nesting level. Returns (TAG . FORM) where TAG
@@ -48,10 +48,9 @@
                               (if (if (consp xs)
                                       (not (member (car xs) '(unquote quasiquote))))
                                   (g (cons (f level (car xs)) acc) (cdr xs))
-                                (let (tail (cdr (f level xs)))
-                                  (if (if (= tail ''()) (= (car (car acc)) 'unquote-splicing))
-                                      (join-quote (cdr acc) (cdr (car acc)))
-                                    (join-quote acc tail))))))
+                                (if (if xs nil (= (car (car acc)) 'unquote-splicing))
+                                    (join-quote (cdr acc) (cdr (car acc)))
+                                  (join-quote acc (cdr (f level xs)))))))
                       (g () x))))
               (list 'quote 'quote x))))
     (cdr (f 0 structure))))
