@@ -17,7 +17,7 @@
         (fn (xs acc-fn tail)
           ;; TODO (append '(xs...) '(ys...) ...) -> (append '(xs... ys...) ...)
           (if xs (let (x (car xs)
-                       acc-fn2 (if (= (car x) 'unquote-splicing) 'append (if tail 'list* 'list)) ; TODO cons
+                       acc-fn2 (if (= (car x) 'unquote-splicing) 'append (if tail 'cons* 'list)) ; TODO cons
                        cont? (if acc-fn (= (= acc-fn 'append) (= acc-fn2 'append)))
                        tail2 (if cont? (progn (set acc-fn2 acc-fn) tail)
                                (if tail (list (if acc-fn (cons acc-fn tail) tail)))))
@@ -59,7 +59,7 @@
 
 (defmacro (def x . body)
   (cons 'set (if (consp x)
-                 ;; `(,(car x) (let (,(car x) (fn ,(cdr x) . ,body)) ,(car x)))
+                 ;; `(,(car x) (let (,(car x) (fn ,(cdr x) . ,body)) ,(car x))) ; no cons* yet
                  (list (car x) (cons 'fn (cons (cdr x) body)))
                (cons x body))))
 
@@ -68,8 +68,9 @@
 (def (member elt list)
   (if list (if (= (car list) elt) list (member elt (cdr list)))))
 
-(def (list* x . xs)
+(def (cons* x . xs)
   (let (f (fn (x xs) (if xs (cons x (f (car xs) (cdr xs))) x))) (f x xs)))
+
 (def (append . xs)
   (let (append2 (fn (a b) (if a (cons (car a) (append2 (cdr a) b)) b))
         concatenate
