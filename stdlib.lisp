@@ -72,7 +72,12 @@
 (def (list* x . xs)
   (let (f (fn (x xs) (if xs (cons x (f (car xs) (cdr xs))) x))) (f x xs)))
 (def (append . xs)
-  (let (f (fn (xs rest)
-            (if xs (cons (car xs) (f (cdr xs) rest))
-              (if rest (f (car rest) (cdr rest))))))
-    (f (car xs) (cdr xs))))
+  (let (append2 (fn (a b) (if a (cons (car a) (append2 (cdr a) b)) b))
+        concatenate
+        (fn (lst)
+          (if (consp lst)
+              (let (x (car lst) xs (cdr lst))
+                (if xs (append2 x (concatenate xs))
+                  x)) ; Avoid recursing down the list to append nothing
+            lst)))
+    (concatenate xs)))
