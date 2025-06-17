@@ -242,6 +242,10 @@ DEFUN("print", print, (struct LispCtx *ctx, LispObject x)) {
 	return NIL(ctx);
 }
 
+DEFUN("=", equal, (struct LispCtx *ctx, LispObject a, LispObject b)) {
+	return lisp_eq(ctx, a, b) ? LISP_CONST(ctx, t) : NIL(ctx);
+}
+
 DEFUN("cons", cons, (struct LispCtx *ctx, LispObject car, LispObject cdr)) {
 	return cons(ctx, car, cdr);
 }
@@ -292,7 +296,7 @@ bool lisp_init(struct LispCtx *ctx) {
 
 	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct LispCFunction *cfuns[]
-		= { &Seval, &Sprint, &Scons, &Scar, &Scdr, &Sadd, &Slt, };
+		= { &Seval, &Sprint, &Sequal, &Scons, &Scar, &Scdr, &Sadd, &Slt, };
 	for (size_t i = 0; i < LENGTH(cfuns); ++i) {
 		struct LispCFunction *x = gc_alloc(heap, alignof(struct LispCFunction), sizeof *x);
 		struct GcObjectHeader hdr = x->hdr.hdr;
