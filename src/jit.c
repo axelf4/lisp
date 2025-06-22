@@ -452,12 +452,11 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 	if (IS_VAR(ref)) {
 		union SsaInstruction *x = &IR_GET(ctx->trace, ref);
 		assert(has_reg(*x) && "Evicting unallocated virtual?");
-		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, x->reg);
-		if (!x->spill_slot
-			&& !(x->spill_slot = ++ctx->num_spill_slots)) // Allocate spill slot
-			rec_err(ctx->trace); // Out of spill slots
 		reg = x->reg;
+		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, reg);
 		x->reg |= REG_NONE;
+		if (!x->spill_slot && !(x->spill_slot = ++ctx->num_spill_slots))
+			rec_err(ctx->trace); // Out of spill slots
 		// Reload from stack
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, (x->spill_slot - 1) * sizeof x->v);
 	} else { // (Re-)materialize constant
@@ -655,8 +654,15 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 
 	for (unsigned i = trace->len; i--;) {
 		if (UNLIKELY(trace->status != REC_OK)) return NULL;
-		if (i < trace->snapshots[ctx.snapshot_idx].ir_start && ctx.snapshot_idx)
-			--ctx.snapshot_idx;
+		if (i < trace->snapshots[ctx.snapshot_idx].ir_start && ctx.snapshot_idx) {
+			struct Snapshot *s = trace->snapshots + --ctx.snapshot_idx;
+			// Allocate registers for virtuals escaping into snapshot
+			FOR_SNAPSHOT_ENTRIES(s, trace->stack_entries, e) {
+				union SsaInstruction *x = &IR_GET(trace, e->ref);
+				if (!IS_VAR(e->ref) || has_reg(*x) || x->spill_slot) continue;
+				reg_use(&ctx, e->ref, -1);
+			}
+		}
 
 		Ref ref = IR_BIAS + i;
 		union SsaInstruction x = IR_GET(trace, ref);
@@ -700,6 +706,7 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 		case IR_PHI:
 			assert(IS_VAR(x.a) && IS_VAR(x.b) && "Variant ref cannot be constant");
 			union SsaInstruction *in = &IR_GET(trace, x.a), *out = &IR_GET(trace, x.b);
+			assert(!has_reg(*in));
 			assert(stdc_count_ones(ctx.available) > 1 && "Out of φ registers");
 			// Pick φ registers from opposite end to reduce collisions
 			enum Register dst = stdc_bit_width(ctx.available) - 1;
