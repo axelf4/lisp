@@ -76,12 +76,16 @@ enum Register : uint8_t {
 
 enum {
 	XI_XORr = 0x31,
+	XI_PUSHib = 0x6a,
 	XI_MOVmr = 0x89,
 	XI_MOVrm = 0x8b,
 	XI_MOVri = 0xb8,
 	XI_MOVmi = 0xc7,
-	XI_RET = 0xc3,
 	XI_LEA = 0x8d,
+	XI_RET = 0xc3,
+	XI_JMP = 0xe9,
+	XI_JMPs = 0xeb,
+	XI_Jcc = 0x80,
 	XI_GRP5 = 0xff,
 };
 
@@ -146,6 +150,54 @@ enum Cc {
 static inline enum Cc cc_negate(enum Cc x) { return x ^ 1; }
 
 static inline void asm_ret(struct Assembler *ctx) { *--ctx->p = XI_RET; }
+
+/** x86(-64) instruction length disassembler. */
+static inline unsigned asm_insn_len(const uint8_t p[static 1]) {
+	const unsigned char lut1[256] = {
+		[0x0f] = 0x20,
+		[IMM_GRP1_TO_MR(XG_ADD)] = 0x02, [IMM_GRP1_TO_MR(XG_SUB)] = 0x02, [IMM_GRP1_TO_MR(XG_CMP)] = 0x02,
+		[XI_XORr] = 0x52, [XI_PUSHib] = 0x02,
+		// REX
+		[0x40] = 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+		[/* REX.W */ 0x48] = 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
+		[0x66] = 0x42, [0x67] = 0x41,
+		[0x81] = 0x06, [0x83] = 0x03,
+
+		[XI_MOVmr] = 0x52, [XI_MOVrm] = 0x52, [XI_LEA] = 0x52,
+		[XI_MOVri] = 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
+		[XI_MOVmi] = 0x56,
+
+		[XI_RET] = 0x01, [XI_JMP] = 0x05, [XI_JMPs] = 0x02,
+		[XI_GRP5] = 0x52,
+	}, lut2[256] = {
+		[0x38] = 0x30, [0x3a] = 0x30,
+		[XI_Jcc] = 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
+		0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
+	};
+
+	unsigned char prefixes = 0, acc = 0;
+do_prefix: unsigned char x = lut1[*p];
+do_loop:
+	switch (x >> 4) {
+	case 0: return acc + x + (prefixes & 4);
+	case 2: x = lut2[*++p]; goto do_loop; // >=2-byte opcode
+	case 3: ++p; goto do_modrm; // 3-byte opcode
+	case 4: prefixes |= x; ++acc; ++p; goto do_prefix; // Legacy/REX prefix
+	case 5: do_modrm: // ModR/M
+		acc += x & 0xf;
+		uint8_t modrm = *++p, mod = modrm >> 6, rm = modrm & 7;
+		switch (mod) {
+		case MOD_DISP0: break;
+		case MOD_DISP8: ++acc; break;
+		case MOD_DISP32: acc += 4; break;
+		case MOD_REG: return acc;
+		}
+		if (rm == rsp) { rm = /* SIB */ p[1] & 7; ++acc; }
+		if (mod == MOD_DISP0 && rm == 5) acc += 4;
+		return acc;
+	default: unreachable();
+	}
+}
 #else
 #error Unknown architecture
 #endif

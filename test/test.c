@@ -94,6 +94,22 @@ static void test_asm(void **) {
 #endif
 }
 
+static void test_insn_len_disasm(void **) {
+#ifdef __x86_64__
+	assert_int_equal(asm_insn_len((uint8_t[]) { XI_XORr, MODRM(MOD_REG, rax, rax) }), 2);
+	assert_int_equal(asm_insn_len((uint8_t[]) { XI_XORr, MODRM(MOD_REG, rax, rax) }), 2);
+	assert_int_equal(asm_insn_len((uint8_t[]) { XI_PUSHib, 0 }), 2);
+	assert_int_equal(asm_insn_len((uint8_t[]) { XI_JMP, 0, 0, 0, 0 }), 5);
+	assert_int_equal(asm_insn_len((uint8_t[]) { 0x0f, XI_Jcc | CC_E, 0, 0, 0, 0 }), 6);
+
+	assert_int_equal(asm_insn_len((uint8_t[])
+			{ REX(1, 0, 0, 0), XI_MOVmi, MODRM(MOD_DISP32, 0, rsp), SIB(0, rsp, rsp),
+			  0, 0, 0, 0, 0, 0, 0, 0 }), 12);
+#else
+	skip();
+#endif
+}
+
 static void assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b) {
 	assert_true(lisp_eq(ctx, a, b));
 }
@@ -168,6 +184,7 @@ int main() {
 		cmocka_unit_test(test_rope),
 		cmocka_unit_test(test_phf_is_bijective),
 		cmocka_unit_test(test_asm),
+		cmocka_unit_test(test_insn_len_disasm),
 		cmocka_unit_test(test_reader),
 		cmocka_unit_test(test_reader_ignores_whitespace),
 		cmocka_unit_test(test_eval),

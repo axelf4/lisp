@@ -532,7 +532,7 @@ static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
 	// Emit conditional jump to side exit trampoline
 	uint8_t *target = ctx->assembler.buf + MCODE_CAPACITY - 5 - 2 - 4 * ctx->snapshot_idx;
 	asm_write32(&ctx->assembler, REL32(ctx->assembler.p, target));
-	*--ctx->assembler.p = /* Jcc */ 0x80 | cc;
+	*--ctx->assembler.p = XI_Jcc | cc;
 	*--ctx->assembler.p = 0x0f;
 }
 
@@ -625,14 +625,14 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	// Emit side-exit trampolines
 	void side_exit_handler();
 	asm_write32(&ctx.assembler, REL32(ctx.assembler.p, side_exit_handler));
-	*--ctx.assembler.p = /* JMP */ 0xe9;
+	*--ctx.assembler.p = XI_JMP;
 	for (unsigned i = 0; i < MAX_SNAPSHOTS; ++i) {
 		if (i) {
 			*--ctx.assembler.p = (4 * i - 2) & 0x7f; // Chain jumps if i>=32
-			*--ctx.assembler.p = /* JMP */ 0xeb;
+			*--ctx.assembler.p = XI_JMPs;
 		}
 		*--ctx.assembler.p = i;
-		*--ctx.assembler.p = /* PUSH */ 0x6a;
+		*--ctx.assembler.p = XI_PUSHib;
 	}
 
 	// Initialize registers as unallocated
