@@ -288,13 +288,17 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		ctx->bp = bp; // Synchronize bp
 		register struct LispCtx *ctx2 __asm__ (STR(REG_LISP_CTX)) = ctx;
 		register struct Instruction *pc2 __asm__ (STR(REG_PC));
-		int8_t base_offset;
+		uint32_t out;
 		__asm__ volatile ("call %[f]"
-			: "=r" (pc2), "=d" (base_offset)
+			: "=r" (pc2), "=d" (out)
 			: "r" (ctx2), [f] "rm" (*(void (**)()) trace)
-			: "rax", "rcx", "rdi", "r8", "r9", "r10", "r11", "cc", "memory");
+			: "rax", "rcx", "rbx", "rdi",
+#if !PRESERVE_FRAME_POINTER
+			"rbp",
+#endif
+			"r8", "r9", "r10", "r11", "r12", "r13", "r14", "cc", "memory", "redzone");
 		pc = pc2;
-		bp += base_offset;
+		bp += out & 0xff;
 		NEXT;
 	}
 	DEFINE_OP(RECORD) {

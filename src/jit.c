@@ -93,7 +93,6 @@ struct LispTrace {
 	void (*f)();
 	uint16_t len, num_consts;
 	uint8_t num_snapshots, num_spill_slots, arity;
-	uint32_t clobbers;
 	alignas(union SsaInstruction) char data[];
 };
 
@@ -372,7 +371,6 @@ static void peel_loop(struct JitState *state) {
 [[gnu::used]] static struct SideExitResult {
 	struct Instruction *pc;
 	uint8_t base_offset, num_spill_slots;
-	uint32_t clobbers;
 } side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
 	struct LispTrace *trace = ctx->current_trace;
 	uint8_t exit_num = *regs;
@@ -395,7 +393,7 @@ static void peel_loop(struct JitState *state) {
 	}
 	struct Instruction *pc = (struct Instruction *) GC_DECOMPRESS(ctx, snapshot->pc);
 	return (struct SideExitResult) { pc, snapshot->base_offset,
-		trace->num_spill_slots, trace->clobbers };
+		trace->num_spill_slots };
 }
 
 __asm__ (
@@ -409,19 +407,17 @@ __asm__ (
 	"mov " STR(REG_PC) ", rax\n\t"
 	"movzx eax, dh\n\t"
 	"lea rsp, [rsp+8*(16+1+rax)]\n\t" // Pop stack
-	// Restore callee-saved registers
-	"bt rdx, 3+32; jnc 0f; pop rbx; 0:\n\t"
-	"bt rdx, 5+32; jnc 0f; pop rbp; 0:\n\t"
-	"bt rdx, 12+32; jnc 0f; pop r12; 0:\n\t"
-	"bt rdx, 13+32; jnc 0f; pop r13; 0:\n\t"
-	"bt rdx, 14+32; jnc 0f; pop r14; 0:\n\t"
 	"ret");
 
 /* Reverse linear-scan register allocation. */
 
 #define REF_BP 0
 /** Initial set of allocatable registers. */
+#if PRESERVE_FRAME_POINTER
+#define REG_ALL (((1 << NUM_REGS) - 1) & ~(1 << rsp | 1 << rbp | 1 << REG_LISP_CTX))
+#else
 #define REG_ALL (((1 << NUM_REGS) - 1) & ~(1 << rsp | 1 << REG_LISP_CTX))
+#endif
 
 typedef uint32_t RegSet;
 static_assert(NUM_REGS <= CHAR_BIT * sizeof(RegSet));
@@ -718,15 +714,8 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 	}
 	reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
-	ctx.clobbers &= CALLEE_SAVED_REGS;
-	if ((stdc_count_ones(ctx.clobbers) + ctx.num_spill_slots) % 2 == 0)
-		++ctx.num_spill_slots; // Align stack to 16-byte boundary
+	ctx.num_spill_slots += ctx.num_spill_slots % 2 == 0; // 16-byte align stack
 	asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, ctx.num_spill_slots * sizeof(void *));
-	// Save callee-saved registers
-	FOR_ONES(reg, ctx.clobbers) {
-		*--ctx.assembler.p = /* PUSH */ 0x50 + (reg & 7);
-		EMIT_REX(&ctx.assembler, 0, 0, 0, reg);
-	}
 
 	if (trace->rec_status != REC_OK) return NULL;
 	struct LispTrace *result;
@@ -740,7 +729,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace) {
 		.len = trace->len, .num_consts = trace->num_consts,
 		.num_snapshots = trace->num_snapshots,
 		.arity = trace->origin->prototype->arity,
-		.num_spill_slots = ctx.num_spill_slots, .clobbers = ctx.clobbers,
+		.num_spill_slots = ctx.num_spill_slots,
 	};
 	char *p = result->data;
 	size_t size;
