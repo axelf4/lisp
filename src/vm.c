@@ -119,7 +119,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		if (!ckd_sub(hotcount, *hotcount, n)) break;					\
 		*hotcount = JIT_THRESHOLD;										\
 		if (ins.op < CALL_INTERPR && dispatch_table != recording_dispatch_table) { \
-			jit_init(ctx->jit_state, closure, pc);						\
+			jit_init_root(ctx->jit_state, closure, pc);					\
 			dispatch_table = recording_dispatch_table;					\
 		}																\
 } while(0)
@@ -254,6 +254,9 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 			"r8", "r9", "r10", "r11", "r12", "r13", "r14", "cc", "memory", "redzone");
 		pc = pc2;
 		bp += out & 0xff;
+#define JIT_SHOULD_RECORD (1u << 16)
+		// Maybe start recording side trace
+		if (out & JIT_SHOULD_RECORD) dispatch_table = recording_dispatch_table;
 		NEXT;
 	}
 	DEFINE_OP(RECORD) {

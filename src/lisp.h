@@ -307,7 +307,7 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 
 void jit_free(struct JitState *state);
 
-void jit_init(struct JitState *state, struct Closure *f, struct Instruction *pc);
+void jit_init_root(struct JitState *state, struct Closure *f, struct Instruction *pc);
 
 /** Records instruction preceding @a pc prior to it being executed. */
 bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);

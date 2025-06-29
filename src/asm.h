@@ -127,6 +127,14 @@ static inline void asm_loadu64(struct Assembler *ctx, enum Register r, uint64_t 
 	}
 }
 
+static inline void asm_mov_mi64(struct Assembler *ctx,
+	enum Register base, int32_t disp, uint64_t i) {
+	asm_write32(ctx, i >> 32);
+	asm_rmrd(ctx, 0, XI_MOVmi, 0, base, disp + sizeof(int32_t));
+	asm_write32(ctx, i);
+	asm_rmrd(ctx, 0, XI_MOVmi, 0, base, disp);
+}
+
 enum ImmGrp1 { XG_ADD, XG_SUB = 5, XG_CMP = 7, };
 
 #define IMM_GRP1_TO_MR(op) (0x8 * (op) + 1)
