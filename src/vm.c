@@ -237,26 +237,13 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 #if ENABLE_JIT
 	DEFINE_OP(TAIL_JIT_CALL) {
 		struct LispTrace *trace = ctx->current_trace = (*ctx->traces)[ins.b];
+		uint8_t arity = *(uint8_t *) trace;
 		LispObject *frame = bp + ins.a;
 		*bp = *frame;
-		memmove(bp + 2, frame + 2, trace_arity(trace) * sizeof *bp);
-		ctx->bp = bp; // Synchronize bp
-		register struct LispCtx *ctx2 __asm__ (STR(REG_LISP_CTX)) = ctx;
-		register struct Instruction *pc2 __asm__ (STR(REG_PC));
-		uint32_t out;
-		__asm__ volatile ("call %[f]"
-			: "=r" (pc2), "=d" (out)
-			: "r" (ctx2), [f] "rm" (*(void (**)()) trace)
-			: "rax", "rcx", "rbx", "rdi",
-#if !PRESERVE_FRAME_POINTER
-			"rbp",
-#endif
-			"r8", "r9", "r10", "r11", "r12", "r13", "r14", "cc", "memory", "redzone");
-		pc = pc2;
-		bp += out & 0xff;
-#define JIT_SHOULD_RECORD (1u << 16)
-		// Maybe start recording side trace
-		if (out & JIT_SHOULD_RECORD) dispatch_table = recording_dispatch_table;
+		memmove(bp + 2, frame + 2, arity * sizeof *bp);
+		bool should_record;
+		trace_exec(ctx, trace, &pc, &bp, &should_record);
+		dispatch_table = should_record ? recording_dispatch_table : main_dispatch_table;
 		NEXT;
 	}
 	DEFINE_OP(RECORD) {
