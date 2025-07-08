@@ -25,6 +25,15 @@
 #define IR_MARK 0x80 ///< Multi-purpose flag.
 #define REG_NONE 0x80 ///< Spilled or unallocated register flag.
 
+#define REF_BP 0
+#define REG_LISP_CTX r15
+/** Initial set of allocatable registers. */
+#if PRESERVE_FRAME_POINTER
+#define REG_ALL (((1 << NUM_REGS) - 1) & ~(1 << rsp | 1 << rbp | 1 << REG_LISP_CTX))
+#else
+#define REG_ALL (((1 << NUM_REGS) - 1) & ~(1 << rsp | 1 << REG_LISP_CTX))
+#endif
+
 enum {
 	TY_ANY = LISP_INTEGER + 1,
 	TY_RET_ADDR,
@@ -102,15 +111,13 @@ enum TraceLink {
 };
 
 struct LispTrace {
-	void (*f)();
+	uint8_t arity, num_snapshots, num_spill_slots;
 	uint16_t len, num_consts;
-	uint8_t num_snapshots, num_spill_slots, arity;
+	void (*f)();
 	uint32_t mcode_size,
 		mcode_tail; ///< Offset from #f to end of machine code block.
 	alignas(union SsaInstruction) char data[];
 };
-
-uint8_t trace_arity(struct LispTrace *trace) { return trace->arity; }
 
 enum RecordStatus : unsigned char {
 	REC_OK, ///< Incomplete trace recording.
@@ -455,28 +462,34 @@ static void peel_loop(struct JitState *state) {
 		trace->num_spill_slots, should_record };
 }
 
-__asm__ (
-	"side_exit_handler:\n\t"
-	// Push all GP registers
-	"push rax; push rcx; push rdx; push rbx; push rsp; push rbp; push rsi; push rdi\n\t"
-	"mov rdi, " STR(REG_LISP_CTX) "\n\t" // Pass Lisp context
-	"lea rsi, [rsp+8*8]\n\t"
-	"push r8; push r9; push r10; push r11; push r12; push r13; push r14; push r15\n\t"
-	"call side_exit_handler_inner\n\t"
-	"mov " STR(REG_PC) ", rax\n\t"
-	"movzx eax, dh\n\t"
-	"lea rsp, [rsp+8*(16+1+rax)]\n\t" // Pop stack
-	"ret");
+void trace_exec(struct LispCtx *ctx, struct LispTrace *trace,
+	struct Instruction *restrict *pc, LispObject **bp, bool *should_record) {
+	ctx->bp = *bp; // Synchronize bp
+	register struct LispCtx *ctx2 __asm__ (STR(REG_LISP_CTX)) = ctx;
+	uint32_t out;
+	__asm__ volatile ("jmp %[f]\n\t"
+		".p2align 4\n\t"
+		"side_exit_handler:\n\t"
+		// Push all GP registers
+		"push rax; push rcx; push rdx; push rbx; push rsp; push rbp; push rsi; push rdi\n\t"
+		"mov rdi, " STR(REG_LISP_CTX) "\n\t"
+		"lea rsi, [rsp+8*8]\n\t"
+		"push r8; push r9; push r10; push r11; push r12; push r13; push r14; push r15\n\t"
+		"call side_exit_handler_inner\n\t"
+		"movzx ecx, dh\n\t"
+		"lea rsp, [rsp+8*(16+1+rcx)]"
+		: "=a" (*pc), "=d" (out)
+		: "r" (ctx2), [f] "rm" (trace->f)
+		: "rcx", "rbx", "rsi", "rdi",
+#if !PRESERVE_FRAME_POINTER
+		"rbp",
+#endif
+		"r8", "r9", "r10", "r11", "r12", "r13", "r14", "cc", "memory", "redzone");
+	*bp = ctx->bp + (out & 0xff);
+	*should_record = out & 1 << 16;
+}
 
 /* Reverse linear-scan register allocation. */
-
-#define REF_BP 0
-/** Initial set of allocatable registers. */
-#if PRESERVE_FRAME_POINTER
-#define REG_ALL (((1 << NUM_REGS) - 1) & ~(1 << rsp | 1 << rbp | 1 << REG_LISP_CTX))
-#else
-#define REG_ALL (((1 << NUM_REGS) - 1) & ~(1 << rsp | 1 << REG_LISP_CTX))
-#endif
 
 typedef uint32_t RegSet;
 static_assert(NUM_REGS <= CHAR_BIT * sizeof(RegSet));
@@ -813,7 +826,7 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 	}
 	if (has_reg(ctx.bp_insn)) reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
-	ctx.num_spill_slots += ctx.num_spill_slots % 2 == 0; // 16-byte align stack
+	ctx.num_spill_slots += ctx.num_spill_slots % 2; // 16-byte align stack
 	unsigned dsp = ctx.num_spill_slots - (trace->parent ? trace->parent->num_spill_slots : 0);
 	if (dsp) asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, dsp * sizeof(void *));
 
