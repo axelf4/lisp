@@ -505,7 +505,8 @@ struct RegAlloc {
 	struct Assembler assembler;
 	struct JitState *trace;
 	RegSet available, clobbers, phi_regs;
-	uint8_t num_spill_slots, snapshot_idx;
+	unsigned num_spill_slots;
+	uint8_t snapshot_idx;
 	union SsaInstruction bp_insn; ///< Dummy virtual representing the BP.
 	/** The LuaJIT register cost model. */
 	alignas(32) Ref reg_costs[NUM_REGS];
@@ -524,8 +525,7 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 		reg = x->reg;
 		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, reg);
 		x->reg |= REG_NONE;
-		if (!x->spill_slot && !(x->spill_slot = ++ctx->num_spill_slots))
-			rec_err(ctx->trace); // Out of spill slots
+		if (!x->spill_slot) x->spill_slot = ++ctx->num_spill_slots;
 		// Reload from stack
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, (x->spill_slot - 1) * sizeof x->v);
 	} else { // (Re-)materialize constant
@@ -846,6 +846,7 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 	if (has_reg(ctx.bp_insn)) reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
 	ctx.num_spill_slots += ctx.num_spill_slots % 2; // 16-byte align stack
+	if (ctx.num_spill_slots > UINT8_MAX) rec_err(trace);
 	unsigned dsp = ctx.num_spill_slots - (trace->parent ? trace->parent->num_spill_slots : 0);
 	if (dsp) asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, dsp * sizeof(void *));
 
