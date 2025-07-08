@@ -301,7 +301,6 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 }
 
 #define REG_LISP_CTX r15
-#define REG_PC rsi
 
 [[gnu::malloc]] struct JitState *jit_new();
 
@@ -313,5 +312,8 @@ void jit_init_root(struct JitState *state, struct Closure *f, struct Instruction
 bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);
 
 uint8_t trace_arity(struct LispTrace *trace);
+
+void trace_exec(struct LispCtx *ctx, struct LispTrace *trace,
+	struct Instruction *restrict *pc, LispObject **bp, bool *should_record);
 
 #endif
