@@ -664,8 +664,8 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 		asm_rmrd(&ctx->assembler, 1, XI_MOVmr, arg_reg, args_reg, i * sizeof arg.v);
 		if (!IS_VAR(arg_ref)) asm_loadu64(&ctx->assembler, arg_reg, arg.v);
 	}
-	enum Register bp = reg_use(ctx, REF_BP, -1);
-	asm_rmrd(&ctx->assembler, 1, XI_LEA, args_reg, bp, 0x100 * sizeof x.v);
+	asm_rmrd(&ctx->assembler, 1, XI_LEA, args_reg, rsp, ctx->num_spill_slots * sizeof x.v);
+	ctx->num_spill_slots += x.b;
 }
 
 static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
