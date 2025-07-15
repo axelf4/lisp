@@ -1132,6 +1132,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		take_snapshot(state);
 		emit_opt(state, (union SsaInstruction)
 			{ .op = IR_EQ ^ !NILP(ctx, bp[x.a]), .ty = ty, .a = ref, .b = nil });
+		state->bp[x.a] = 0;
 		break;
 	case RET: do_ret:
 		if (state->base_offset) {
