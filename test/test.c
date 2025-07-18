@@ -125,7 +125,7 @@ static void test_reader(void **state) {
 	LispObject obj;
 	assert_int_equal(lisp_read_whole(ctx, "(0 .", &obj), LISP_READ_EOF);
 	assert_int_equal(lisp_read_whole(ctx, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
-	// Test lexing a symbol with a numeric prefix
+	assert_read_whole_equal(ctx, "42", TAG_SMI(42));
 	assert_read_whole_equal(ctx, "1x", intern(ctx, sizeof "1x" - 1, "1x"));
 }
 

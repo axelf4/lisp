@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include "lisp.h"
 
-/// Maximum number of digits for reading int31_t safely (no overflow).
+/** Maximum number of digits for reading int31_t safely (no overflow). */
 #define INT31_SAFE_DIG 9 // int31_t max is 1073741823, 10 digits
 
 /** Character type lookup table. */
@@ -63,19 +63,16 @@ static bool read_prefix(struct LispCtx *ctx, const char **s, LispObject *result)
 	}
 }
 
-#define TYPE_BITS 2
-
-union StackElement {
-	enum ContainerType : size_t {
-		CTN_LIST,
-		CTN_DOTTED,
-		CTN_PREFIX,
-	} tag; ///< The container type ORed with parent length shifted by TYPE_BITS.
-	LispObject value;
+#define TYPE_BITS 3
+// Type is ORed with parent length shifted by TYPE_BITS
+enum ContainerType {
+	CTN_LIST = 0 << 1,
+	CTN_DOTTED = 1 << 1,
+	CTN_PREFIX = 2 << 1,
 };
 
 enum LispReadError lisp_read(struct LispCtx *ctx, const char **s, LispObject *result) {
-	union StackElement stack[256], *p = stack;
+	uintptr_t *p = ctx->bp, *p0 = p;
 	size_t len = 0;
 
 val_beg:
@@ -86,43 +83,43 @@ val_beg_no_ws:
 		++*s;
 		skip_whitespace(s);
 		if (UNLIKELY(**s == ')')) { ++*s; value = NIL(ctx); goto val_end; }
-		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_LIST };
+		*p++ = len << TYPE_BITS | CTN_LIST;
 		len = 0;
 		goto val_beg_no_ws;
-	} else if (read_prefix(ctx, s, &p->value)) {
+	} else if (read_prefix(ctx, s, p)) {
 		++p;
-		*p++ = (union StackElement) { .tag = len << TYPE_BITS | CTN_PREFIX };
+		*p++ = len << TYPE_BITS | CTN_PREFIX;
 		len = 0;
 		goto val_beg;
 	}
 	const char *beg = *s;
 	enum LispReadError err;
 	if ((err = read_int(s, &value))) {
-		if (UNLIKELY(err == LISP_READ_INT_TOO_LARGE)) return err;
+		if (UNLIKELY(err != LISP_READ_TRAILING)) return err;
 		while (is_ident(**s)) ++*s;
-		if (UNLIKELY(*s == beg)) return p > stack ? LISP_READ_EOF : LISP_READ_EMPTY;
+		if (UNLIKELY(*s == beg)) return p > p0 ? LISP_READ_EOF : LISP_READ_EMPTY;
 		value = intern(ctx, *s - beg, beg);
 	}
 val_end:
-	if (p == stack) { *result = value; return LISP_READ_OK; } // No remaining nesting
-	union StackElement *ctn = p - ++len;
-	enum ContainerType ctn_ty = ctn->tag % (1 << TYPE_BITS);
+	if (p == p0) { *result = value; return LISP_READ_OK; } // No remaining nesting
+	uintptr_t *ctn = p - ++len;
+	enum ContainerType ctn_ty = *ctn % (1 << TYPE_BITS);
 	if (ctn_ty == CTN_PREFIX) {
-		len = (--p)->tag >> TYPE_BITS;
-		value = cons(ctx, (--p)->value, cons(ctx, value, NIL(ctx)));
+		len = *--p >> TYPE_BITS;
+		value = cons(ctx, *--p, cons(ctx, value, NIL(ctx)));
 		goto val_end;
 	}
-	p++->value = value;
+	*p++ = value;
 
 	skip_whitespace(s);
 	if (**s == ')') {
 		++*s;
 		value = ctn_ty == CTN_DOTTED ? --len, --p, value : NIL(ctx);
-		do value = cons(ctx, (--p)->value, value); while (--len);
-		len = (--p)->tag >> TYPE_BITS; // Pop container from stack
+		do value = cons(ctx, *--p, value); while (--len);
+		len = *--p >> TYPE_BITS; // Pop container from stack
 		goto val_end;
 	} else if (UNLIKELY(ctn_ty == CTN_DOTTED)) return LISP_READ_EXPECTED_RPAREN;
-	else if (**s == '.') { ++*s; ctn->tag |= CTN_DOTTED; goto val_beg; }
+	else if (**s == '.') { ++*s; *ctn |= CTN_DOTTED; goto val_beg; }
 	goto val_beg_no_ws;
 }
 

@@ -169,12 +169,11 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]);
 
 enum LispReadError {
 	LISP_READ_OK,
-	/// End of file during parsing.
-	LISP_READ_EOF,
-	LISP_READ_EMPTY,
-	LISP_READ_EXPECTED_RPAREN,
+	LISP_READ_EOF, ///< End of file during parsing.
+	LISP_READ_EMPTY, ///< Input was empty save for whitespace or comments.
+	LISP_READ_EXPECTED_RPAREN, ///< Expected closing parenthesis.
 	LISP_READ_INT_TOO_LARGE, ///< Integer literal is too large to be represented.
-	LISP_READ_TRAILING,
+	LISP_READ_TRAILING, ///< Initial datum followed by stray token(s).
 };
 
 enum LispReadError lisp_read(struct LispCtx *ctx, const char **s, LispObject *result);
