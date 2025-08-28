@@ -649,8 +649,14 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 	*--ctx.assembler.p = /* JMP */ 0xe9;
 
 	for (unsigned i = trace->len; i--;) {
-		if (i < trace->snapshots[ctx.snapshot_idx].ir_start && ctx.snapshot_idx)
-			--ctx.snapshot_idx;
+		if (i < trace->snapshots[ctx.snapshot_idx].ir_start && ctx.snapshot_idx) {
+			struct Snapshot *s = trace->snapshots + --ctx.snapshot_idx;
+			// Allocate registers for virtuals escaping into snapshot
+			FOR_SNAPSHOT_ENTRIES(s, trace->stack_entries, e) {
+				union SsaInstruction *x = &IR_GET(trace, e->ref);
+				if (IS_VAR(e->ref) && !x->spill_slot) reg_use(&ctx, e->ref, -1);
+			}
+		}
 
 		Ref ref = IR_BIAS + i;
 		union SsaInstruction x = IR_GET(trace, ref);
