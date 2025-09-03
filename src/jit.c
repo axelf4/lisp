@@ -345,13 +345,11 @@ static void dce(struct JitState *state) {
  */
 static void peel_loop(struct JitState *state) {
 	unsigned preamble_len = state->len, num_phis = 0;
-	// Separate preamble from loop body by LOOP instruction
-	emit(state, (union SsaInstruction) { .op = IR_LOOP, .ty = IR_MARK | TY_ANY });
-	state->need_snapshot = true;
 	struct Snapshot *snap = state->snapshots,
-		*loopsnap = (take_snapshot(state), snap + state->num_snapshots - 1);
-
-	dce(state);
+		*loopsnap = snap + state->num_snapshots - 1;
+	// Separate preamble from loop body by LOOP instruction
+	emit(state, (union SsaInstruction) { .op = IR_LOOP, .ty = TY_ANY });
+	++loopsnap->ir_start;
 
 	// Map of variables in the preamble onto variables of the peeled loop
 	Ref subst[MAX_TRACE_LEN], phis[12];
@@ -690,6 +688,11 @@ static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
 
 static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitState *trace,
 	enum TraceLink link_type) {
+	trace->need_snapshot = true;
+	take_snapshot(trace);
+	dce(trace);
+	if (link_type == TRACE_LINK_LOOP) peel_loop(trace);
+
 	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_insn.reg = -1,
 		.snapshot_idx = trace->num_snapshots - 1,
 		.num_spill_slots = trace->parent ? trace->parent->num_spill_slots : 0 };
@@ -1088,7 +1091,6 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		// Specialize to the function value in question
 		guard_value(state, state->bp, fn_value);
 		if (fn_value == TAG_OBJ(state->origin)) {
-			peel_loop(state);
 			struct LispTrace *trace;
 			if (!(trace = assemble_trace(ctx, state, TRACE_LINK_LOOP))) break;
 #ifdef DEBUG
@@ -1111,10 +1113,6 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		// Move arguments down to current frame
 		memmove(state->bp + 2, state->bp + x.a + 2, arity * sizeof *state->bp);
 		state->max_slot = 2 + arity - 1;
-
-		state->need_snapshot = true;
-		take_snapshot(state);
-		dce(state);
 
 		struct LispTrace *trace;
 		if (!(trace = assemble_trace(ctx, state, TRACE_LINK_ROOT))) break;
