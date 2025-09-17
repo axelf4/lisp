@@ -93,3 +93,4 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS lisp)
+install(FILES lisp-gdb.py TYPE BIN RENAME $<TARGET_FILE_NAME:lisp>-gdb.py)
