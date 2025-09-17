@@ -3,8 +3,6 @@
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <inttypes.h>
 #include <string.h>
 #include "lisp.h"
 #include "fxhash.h"
@@ -655,62 +653,7 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 	return chunk;
 }
 
-#ifdef DEBUG
-static void disassemble_range(size_t n, struct Instruction xs[static n], int indent) {
-	for (size_t i = 0; i < n;) {
-		printf("%*s%.4zu ", indent, "", i);
-		struct Instruction x = xs[i++];
-#define GET_CONST (*(LispObject *) (xs + i - x.b))
-		switch (x.op) {
-		case RET: printf("RET %" PRIu8 "\n", x.a); break;
-		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", x.a); break;
-		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIxPTR "\n", x.a, GET_CONST); break;
-		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
-		case GETGLOBAL:
-			struct LispSymbol *sym = UNTAG_OBJ(GET_CONST);
-			printf("GETGLOBAL %" PRIu8 " <- [%.*s]\n", x.a, sym->len, sym->name);
-			break;
-		case SETGLOBAL:
-			sym = UNTAG_OBJ(GET_CONST);
-			printf("SETGLOBAL %" PRIu8 " -> [%.*s]\n", x.a, sym->len, sym->name);
-			break;
-		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
-		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
-		case CALL: case TAIL_CALL:
-			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
-				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
-			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);
-			puts(")");
-			break;
-		case MOV: printf("MOV %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
-		case JMP: printf("JMP => %.4zu\n", i + x.b); break;
-		case JNIL: printf("JMP if %" PRIu8 " == NIL => %.4zu\n", x.a, i + x.b); break;
-		case CLOS:
-			struct Prototype *proto = (struct Prototype *) (xs + i);
-			printf("CLOS %" PRIu8 " <- (arity: %" PRIu8 ") (num_upvals: %" PRIu8 "):\n",
-				x.a, proto->arity, proto->num_upvalues);
-			size_t metadata_size = sizeof *proto + proto->num_upvalues * sizeof(uint8_t) + sizeof x - 1;
-			disassemble_range(x.b - metadata_size / sizeof x, proto->body, indent + 2);
-			i += x.b;
-			break;
-		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", x.a); break;
-#if ENABLE_JIT
-		case FHDR: case FHDR_INTERPR: case FHDR_JIT: puts("FHDR"); break;
-#endif
-		default: unreachable();
-		}
-	}
-}
-static void disassemble(struct Chunk *chunk) {
-	puts("Disassembling chunk:");
-	disassemble_range(chunk->count, chunk_instructions(chunk), 0);
-}
-#endif
-
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
-#ifdef DEBUG
-	disassemble(chunk);
-#endif
 	return run(ctx, chunk_instructions(chunk));
 }
