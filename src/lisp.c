@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <unistd.h>
 #include "fxhash.h"
 #include "util.h"
 
@@ -272,14 +271,12 @@ DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 }
 
 bool lisp_init(struct LispCtx *ctx) {
-	long page_size = sysconf(_SC_PAGESIZE);
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
 	// exception handlers not to immediately trigger another overflow.
 	uintptr_t *stack;
 #define STACK_LEN 0x1000
-	size_t size = STACK_LEN * sizeof *stack,
-		guard_size = (0xff * sizeof *stack + page_size - 1) & (page_size - 1);
+	size_t size = STACK_LEN * sizeof *stack, guard_size = 0xff * sizeof *stack;
 	if ((ctx->bp = stack = mmap(NULL, size + guard_size, PROT_NONE,
 				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) goto err;
 	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) goto err_free_stack;
