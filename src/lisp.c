@@ -7,6 +7,8 @@
 #include "fxhash.h"
 #include "util.h"
 
+#define STACK_LEN 0x1000
+
 #define COMMA ,
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
 #define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, 2, 1, 0)
@@ -164,8 +166,9 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 	case LISP_CLOSURE: {
 		struct Closure *x = p;
 		gc_mark(closure_size(x), p);
-		for (struct Upvalue **it = x->upvalues, **end = it + x->prototype->num_upvalues;
-				it < end; ++it) *it = gc_trace(heap, *it);
+		for (struct Upvalue **it = x->upvalues,
+					**end = it + x->prototype->num_upvalues; it < end; ++it)
+			*it = gc_trace(heap, *it);
 
 		char *chunk = gc_trace(heap, (char *) x->prototype - x->prototype->offset);
 		// Update prototype as chunk may have moved
@@ -230,7 +233,12 @@ void gc_trace_roots(struct GcHeap *heap) {
 	for (struct Upvalue **uv = &ctx->upvalues; *uv; uv = &(*uv)->next)
 		*uv = gc_trace(heap, *uv);
 
-	// TODO Trace the stack
+	// Trace stack
+	uintptr_t *end = (uintptr_t *) ctx->guard_end - 0xff,
+		*stack = end - STACK_LEN, *top = MIN(ctx->bp + 0x100, end);
+	for (uintptr_t *x = stack; x < top; ++x) lisp_trace(heap, x);
+	// Zero unused stack to not resurrect GCd object
+	memset(top, 0, end - top);
 }
 
 DEFUN("eval", eval, (struct LispCtx *ctx, LispObject form)) { return lisp_eval(ctx, form); }
@@ -275,7 +283,6 @@ bool lisp_init(struct LispCtx *ctx) {
 	// terminology) where the yellow zone is temporarily disabled for
 	// exception handlers not to immediately trigger another overflow.
 	uintptr_t *stack;
-#define STACK_LEN 0x1000
 	size_t size = STACK_LEN * sizeof *stack, guard_size = 0xff * sizeof *stack;
 	if ((ctx->bp = stack = mmap(NULL, size + guard_size, PROT_NONE,
 				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) goto err;
