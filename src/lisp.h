@@ -197,6 +197,8 @@ bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b);
 [[gnu::cold]]
 bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext, struct LispCtx *ctx);
 
+[[gnu::cold]] void lisp_interrupt(struct LispCtx *ctx);
+
 bool lisp_init(struct LispCtx *);
 
 void lisp_free(struct LispCtx *);

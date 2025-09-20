@@ -113,8 +113,6 @@ bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b) {
 }
 
 bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispCtx *ctx) {
-	// TODO Handle SIGINT by PROT_NONE mprotect:ing the stack and
-	// catching the resulting SIGSEGV.
 	if (sig == SIGSEGV) {
 		// Check if fault was within the stack guard pages
 		if ((uintptr_t) ctx->bp <= (uintptr_t) info->si_addr
@@ -124,6 +122,13 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 			throw(SIGSEGV); // Throw stack overflow exception
 	}
 	return false;
+}
+
+void lisp_interrupt(struct LispCtx *ctx) {
+	// TODO Handle SIGINT by PROT_NONE mprotect:ing the stack and
+	// catching the resulting SIGSEGV.
+	uintptr_t *stack = (uintptr_t *) ctx->guard_end - (STACK_LEN + 0xff);
+	mprotect(stack, (uintptr_t *) ctx->guard_end - stack, PROT_NONE);
 }
 
 static size_t string_size(struct LispString *x) { return sizeof *x + x->len; }
