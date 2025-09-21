@@ -1,13 +1,14 @@
 #include "util.h"
-#include <stdlib.h>
 #include <stdarg.h>
+#include <stddef.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 void die(const char *format, ...) {
-	va_list vargs;
-	va_start(vargs, format);
-	vfprintf(stderr, format, vargs);
-	va_end(vargs);
+	va_list ap;
+	va_start(ap, format);
+	vfprintf(stderr, format, ap);
+	va_end(ap);
 	fputc('\n', stderr);
 	exit(EXIT_FAILURE);
 }
@@ -42,8 +43,8 @@ unsigned pcall(void *x, void (*f)(void *)) {
 
 #include <unwind.h>
 
-/// Our exception class.
-#define CLASS 0x4c69737000000000ULL // Lisp\0\0\0\0
+/** Our exception class. */
+#define CLASS 0x4c69737000000000ull // Lisp\0\0\0\0
 
 static thread_local struct {
 	struct _Unwind_Exception exception;
@@ -69,22 +70,20 @@ static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 	if (actions & _UA_SEARCH_PHASE) return _URC_HANDLER_FOUND;
 	else if (actions & _UA_CLEANUP_PHASE) {
 		// Without unwind-protect or equivalent there is no cleanup to do
-		if (!(actions & _UA_HANDLER_FRAME)) return _URC_CONTINUE_UNWIND;
+		if (!(actions & _UA_HANDLER_FRAME) || actions & _UA_FORCE_UNWIND)
+			return _URC_CONTINUE_UNWIND;
 
 		unsigned errcode;
-		if ((exception_class & CLASS) == CLASS)
-			errcode = exception_class & 0xffffffff;
-		else { // Foreign exception
+		if ((exception_class ^ CLASS) >> 32) { // Foreign exception
 			_Unwind_DeleteException(exception_object);
 			errcode = -1;
-		}
+		} else errcode = exception_class & 0xffffffff;
 
 		void pcall_landing_pad();
 		_Unwind_SetIP(context, (_Unwind_Ptr) pcall_landing_pad);
 		_Unwind_SetGR(context, /* %rax */ 0, errcode);
 		return _URC_INSTALL_CONTEXT;
-	}
-	return _URC_FATAL_PHASE1_ERROR;
+	} else unreachable();
 }
 
 [[gnu::naked]] unsigned pcall(void *, void (*)(void *)) {

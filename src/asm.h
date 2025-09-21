@@ -67,7 +67,7 @@ enum Mod {
 enum Register : uint8_t {
   rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi,
   r8, r9, r10, r11, r12, r13, r14, r15,
-  NUM_REGS,
+  NUM_REGS
 };
 
 #define CALLEE_SAVED_REGS (1 << rbx | 1 << rsp | 1 << rbp \
@@ -134,9 +134,9 @@ static inline void asm_mov_mi64(struct Assembler *ctx,
 	asm_rmrd(ctx, 0, XI_MOVmi, 0, base, disp);
 }
 
-enum ImmGrp1 { XG_ADD, XG_SUB = 5, XG_CMP = 7, };
+enum ImmGrp1 { XG_ADD, XG_SUB = 5, XG_CMP = 7 };
 
-#define IMM_GRP1_TO_MR(op) (0x8 * (op) + 1)
+#define IMM_GRP1_MR(op) (8 * (op) + 1)
 
 /** Emits an Immediate Group 1 instruction with a register as 2nd operand. */
 static inline void asm_grp1_imm(struct Assembler *ctx, bool w, enum ImmGrp1 reg,
@@ -162,7 +162,7 @@ static inline void asm_ret(struct Assembler *ctx) { *--ctx->p = XI_RET; }
 static inline unsigned asm_insn_len(const uint8_t p[static 1]) {
 	const unsigned char lut1[256] = {
 		[0x0f] = 0x20,
-		[IMM_GRP1_TO_MR(XG_ADD)] = 0x02, [IMM_GRP1_TO_MR(XG_SUB)] = 0x02, [IMM_GRP1_TO_MR(XG_CMP)] = 0x02,
+		[IMM_GRP1_MR(XG_ADD)] = 0x02, [IMM_GRP1_MR(XG_SUB)] = 0x02, [IMM_GRP1_MR(XG_CMP)] = 0x02,
 		[XI_XORr] = 0x52, [XI_PUSHib] = 0x02,
 		// REX
 		[0x40] = 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,

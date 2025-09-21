@@ -222,6 +222,14 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 	return car(ctx, cell);
 }
 
+#if ENABLE_JIT
+#define FOR_JIT_OPS(X) \
+	X(TAIL_JIT_CALL) \
+	X(CALL_INTERPR) /* Like CALL but blacklisted from being JITed. */ \
+	X(TAIL_CALL_INTERPR)
+#else
+#define FOR_JIT_OPS(X)
+#endif
 #define FOR_OPS(X) \
 	X(RET) /* Return R(A) */ \
 	X(LOAD_NIL) /* R(A) <- NIL */ \
@@ -233,14 +241,12 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 	X(SETUPVALUE) /* U[C] <- R(A) */ \
 	X(CALL) /* R(A) <- R(A)(R(A+2), ..., R(A+2+C-1)) */ \
 	X(TAIL_CALL) \
-	X(TAIL_JIT_CALL) \
-	X(CALL_INTERPR) /* Like CALL but blacklisted from being JIT:ed. */ \
-	X(TAIL_CALL_INTERPR) \
 	X(MOV) /* R(A) <- R(C) */ \
 	X(JMP) /* PC += sB */ \
 	X(JNIL) /* If NILP(R(A)) then PC += sB */ \
 	X(CLOS) \
-	X(CLOSE_UPVALS) /* Close stack variables up to R(A). */
+	X(CLOSE_UPVALS) /* Close stack variables up to R(A). */ \
+	FOR_JIT_OPS(X)
 
 /** Bytecode operation code. */
 #define X(op) op,
@@ -308,7 +314,7 @@ void jit_init_root(struct JitState *state, struct Closure *f, struct Instruction
 /** Records instruction preceding @a pc prior to it being executed. */
 bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);
 
-void trace_exec(struct LispCtx *ctx, struct LispTrace *trace,
-	struct Instruction *restrict *pc, LispObject **bp, bool *should_record);
+bool trace_exec(struct LispCtx *ctx, struct LispTrace *trace,
+	struct Instruction *restrict *pc, LispObject **bp);
 
 #endif

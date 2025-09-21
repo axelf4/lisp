@@ -39,7 +39,7 @@ enum PhfError phf_build(const struct PhfParameters *params,
 	size_t n_prime = n / params->alpha;
 	if (IS_POWER_OF_TWO(n_prime)) ++n_prime; // Use all bits of entropy
 	// Map keys into m buckets
-	uint64_t m = params->c * n / stdc_bit_width(n) + 0.5; // Total number of buckets
+	uint64_t m = MAX(params->c * n / stdc_bit_width(n), 1); // Total number of buckets
 	struct Bucket { size_t size, start, i; } *buckets;
 	size_t *slots;
 	unsigned long *taken;

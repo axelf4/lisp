@@ -162,20 +162,19 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 
 	DEFINE_OP(CALL) {
 		LispObject *frame = bp + ins.a;
+		frame[1] = (uintptr_t) pc; // Link call-frames
 		switch (lisp_type(*frame)) {
 		case LISP_CFUNCTION:
 			struct LispCFunction *fn = UNTAG_OBJ(*frame);
-			1[ctx->bp = frame] = (uintptr_t) pc; // Synchronize bp and link call-frames
+			ctx->bp = frame; // Synchronize bp
 			*frame = fn->f(ctx, ins.c, frame + 2);
 			break;
 		case LISP_CLOSURE:
-			bp += ins.a;
-			struct Closure *closure = UNTAG_OBJ(*bp);
-			bind_rest(ctx, closure->prototype, ins.c, bp);
+			struct Closure *closure = UNTAG_OBJ(*frame);
+			bind_rest(ctx, closure->prototype, ins.c, bp = frame);
 
 			struct Instruction *to = closure->prototype->body;
 			DECR_HOTCOUNT(closure, to, 1);
-			bp[1] = (uintptr_t) pc;
 			pc = to;
 			break;
 		default: die("Bad function");
@@ -202,8 +201,6 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		default: die("Bad function");
 		}
 	}
-	DEFINE_OP(CALL_INTERPR) { JMP_TO_LABEL(CALL); }
-	DEFINE_OP(TAIL_CALL_INTERPR) { JMP_TO_LABEL(TAIL_CALL); }
 
 	DEFINE_OP(MOV) { bp[ins.a] = bp[ins.c]; NEXT; }
 	DEFINE_OP(JMP) { pc += ins.b; NEXT; }
@@ -235,14 +232,15 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		NEXT;
 	}
 #if ENABLE_JIT
+	DEFINE_OP(CALL_INTERPR) { JMP_TO_LABEL(CALL); }
+	DEFINE_OP(TAIL_CALL_INTERPR) { JMP_TO_LABEL(TAIL_CALL); }
 	DEFINE_OP(TAIL_JIT_CALL) {
 		struct LispTrace *trace = ctx->current_trace = (*ctx->traces)[ins.b];
 		uint8_t arity = *(uint8_t *) trace;
 		LispObject *frame = bp + ins.a;
 		*bp = *frame;
 		memmove(bp + 2, frame + 2, arity * sizeof *bp);
-		bool should_record;
-		trace_exec(ctx, trace, &pc, &bp, &should_record);
+		bool should_record = trace_exec(ctx, trace, &pc, &bp);
 		dispatch_table = should_record ? recording_dispatch_table : main_dispatch_table;
 		NEXT;
 	}
@@ -297,8 +295,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 
 #ifndef LISP_GENERATED_FILE
 static enum LispKeyword lisp_symbol_to_keyword(struct LispCtx *ctx, LispObject sym) {
-	Lobj x = GC_COMPRESS(sym);
-#define X(kw, var) x.p == LISP_CONST_COMPRESSED(ctx, var).p ? LISP_KW_ ## kw :
+#define X(kw, var) LISP_EQ(sym, LISP_CONST(ctx, var)) ? LISP_KW_ ## kw :
 	return FOR_KEYWORDS(X) LISP_NO_KEYWORD;
 #undef X
 }
@@ -335,16 +332,15 @@ struct FnState {
 };
 
 struct ByteCompCtx {
-	struct LispCtx *lisp_ctx;
-	struct FnState *fn;
 	uint8_t num_regs,
 		num_vars;
-	struct Local vars[MAX_LOCAL_VARS];
-	unsigned prototypes; ///< Linked list of function prototype offsets.
-
-	size_t count, capacity;
-	struct Instruction *ins;
+	unsigned len, capacity,
+		prototypes; ///< Linked list of function prototype offsets.
+	struct Instruction *insns;
 	struct Table constants;
+	struct FnState *fn;
+	struct LispCtx *lisp_ctx;
+	struct Local vars[MAX_LOCAL_VARS];
 };
 
 enum CompileError {
@@ -355,11 +351,12 @@ enum CompileError {
 	COMP_TOO_MANY_CONSTS,
 };
 
-static uint8_t resolve_upvalue(struct ByteCompCtx *ctx, struct FnState *fn, unsigned var) {
-	uint8_t upvalue = !fn->prev || var >= fn->prev->vars_start
-		? ctx->vars[var].is_captured = true, ctx->vars[var].slot | UV_INSTACK
-		: resolve_upvalue(ctx, fn->prev, var);
+static uint8_t resolve_upvalue(struct FnState *fn, uint8_t i, struct Local *var) {
+	uint8_t upvalue = i >= fn->prev->vars_start
+		? var->is_captured = true, var->slot | UV_INSTACK
+		: resolve_upvalue(fn->prev, i, var);
 	// Check if this closure already has the upvalue
+#pragma GCC novector
 	for (unsigned i = 0; i < fn->num_upvalues; ++i)
 		if (fn->upvalues[i] == upvalue) return i;
 	// Otherwise, create a new one
@@ -371,29 +368,31 @@ static struct VarRef {
 	enum VarRefType { VAR_LOCAL, VAR_UPVALUE, VAR_GLOBAL } type;
 	unsigned slot;
 } lookup(struct ByteCompCtx *ctx, LispObject sym) {
-	for (size_t i = ctx->num_vars; i--;)
-		if (ctx->vars[i].symbol.p == GC_COMPRESS(sym).p)
+	for (unsigned i = ctx->num_vars; i--;) {
+		struct Local *var = ctx->vars + i;
+		if (var->symbol.p == GC_COMPRESS(sym).p)
 			return i < ctx->fn->vars_start
-				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx, ctx->fn, i) }
-				: (struct VarRef) { VAR_LOCAL, ctx->vars[i].slot };
+				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx->fn, i, var) }
+				: (struct VarRef) { VAR_LOCAL, var->slot };
+	}
 	return (struct VarRef) { .type = VAR_GLOBAL };
 }
 
 [[gnu::cold]] static void chunk_grow(struct ByteCompCtx *ctx) {
 	size_t new_capacity = ctx->capacity ? 2 * ctx->capacity : 32;
 	struct Instruction *xs;
-	if (!(xs = realloc(ctx->ins, new_capacity * sizeof *xs))) die("malloc failed");
-	ctx->ins = xs;
+	if (!(xs = realloc(ctx->insns, new_capacity * sizeof *xs))) die("malloc failed");
+	ctx->insns = xs;
 	ctx->capacity = new_capacity;
 }
 
 static void emit(struct ByteCompCtx *ctx, struct Instruction ins) {
-	if (ctx->count >= ctx->capacity) chunk_grow(ctx);
-	ctx->ins[ctx->count++] = ins;
+	if (ctx->len >= ctx->capacity) chunk_grow(ctx);
+	ctx->insns[ctx->len++] = ins;
 }
 
 /** Emits instructions to move variables greater than or equal to @a var_limit to the heap. */
-static void emit_close_upvalues(struct ByteCompCtx *ctx, uint16_t vars_start, uint16_t regs_start) {
+static void emit_close_upvalues(struct ByteCompCtx *ctx, uint8_t vars_start, uint8_t regs_start) {
 	for (unsigned i = vars_start; i < ctx->num_vars; ++i)
 		if (ctx->vars[i].is_captured) {
 			emit(ctx, (struct Instruction) { .op = CLOSE_UPVALS, .a = regs_start });
@@ -407,7 +406,7 @@ static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
 		if (!entry) die("malloc failed");
 		entry->slot = ctx->constants.len;
 	}
-	size_t offset = (sizeof x / sizeof *ctx->ins) * entry->slot + ctx->count + 1;
+	size_t offset = (sizeof x / sizeof *ctx->insns) * entry->slot + ctx->len + 1;
 	if (offset > UINT16_MAX) throw(COMP_TOO_MANY_CONSTS);
 	return offset;
 }
@@ -494,12 +493,12 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->fn = &fn;
 			ctx->num_regs = 2; // Reserve closure and PC registers
 
-			static_assert(IS_POWER_OF_TWO(sizeof *ctx->ins));
-			while ((ctx->count + 1) * sizeof *ctx->ins % alignof(struct Prototype))
+			static_assert(IS_POWER_OF_TWO(sizeof *ctx->insns));
+			while ((ctx->len + 1) * sizeof *ctx->insns % alignof(struct Prototype))
 				emit(ctx, (struct Instruction) { .op = JMP }); // Align with NOPs
 			emit(ctx, (struct Instruction) { .op = CLOS, .a = dst.reg });
-			size_t proto_beg = ctx->count;
-			ctx->count += sizeof(struct Prototype) / sizeof *ctx->ins;
+			size_t proto_beg = ctx->len;
+			ctx->len += sizeof(struct Prototype) / sizeof *ctx->insns;
 
 			uint8_t num_args = 0;
 			while (!NILP(lisp_ctx, args)) {
@@ -517,18 +516,18 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				emit(ctx, (struct Instruction) { .op = RET, .a = reg });
 			}
 
-			*(struct Prototype *) (ctx->ins + proto_beg) = (struct Prototype) {
+			*(struct Prototype *) (ctx->insns + proto_beg) = (struct Prototype) {
 				.arity = num_args, .num_upvalues = fn.num_upvalues,
 				.offset = ctx->prototypes,
 			};
 			ctx->prototypes = proto_beg;
 
 			size_t upvalues_size = fn.num_upvalues * sizeof *fn.upvalues,
-				data_size = (upvalues_size + sizeof *ctx->ins - 1) / sizeof *ctx->ins;
-			if (ctx->capacity < ctx->count + data_size) chunk_grow(ctx);
-			memcpy((char *) (ctx->ins + (ctx->count += data_size)) - upvalues_size,
-				fn.upvalues, fn.num_upvalues * sizeof *fn.upvalues); // Write upvalues
-			ctx->ins[proto_beg - 1].b = ctx->count - proto_beg; // Write prototype size
+				data_size = (upvalues_size + sizeof *ctx->insns - 1) / sizeof *ctx->insns;
+			if (ctx->capacity < ctx->len + data_size) chunk_grow(ctx);
+			uint8_t *upvalues = (uint8_t *) (ctx->insns + (ctx->len += data_size)) - upvalues_size;
+			memcpy(upvalues, fn.upvalues, fn.num_upvalues * sizeof *fn.upvalues);
+			ctx->insns[proto_beg - 1].b = ctx->len - proto_beg; // Write prototype size
 
 			ctx->fn = fn.prev;
 			ctx->num_regs = fn.prev_num_regs;
@@ -577,21 +576,21 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		case LISP_KW_IF: {
 			// Emit condition
 			compile_form(ctx, pop(lisp_ctx, &x), (struct Destination) { .reg = dst.reg });
-			size_t jmp = ctx->count;
+			size_t jmp = ctx->len;
 			emit(ctx, (struct Instruction) { .op = JNIL, .a = dst.reg });
 			if (NILP(lisp_ctx, x)) throw(COMP_EXPECTED_CONSEQUENT);
 			bool noreturn = compile_form(ctx, pop(lisp_ctx, &x), dst); // Emit consequent
 			if (!NILP(lisp_ctx, x)) { // Emit alternative
 				emit(ctx, (struct Instruction) { .op = JMP });
-				ctx->ins[jmp].b = ctx->count - (jmp + 1);
-				jmp = ctx->count - 1;
+				ctx->insns[jmp].b = ctx->len - (jmp + 1);
+				jmp = ctx->len - 1;
 				noreturn &= compile_progn(ctx, x, dst);
 			} else noreturn = false;
-			ctx->ins[jmp].b = ctx->count - (jmp + 1);
+			ctx->insns[jmp].b = ctx->len - (jmp + 1);
 			if (noreturn) return COMP_NORETURN;
 			break;
 		}
-		default:
+		case LISP_NO_KEYWORD:
 			if (lisp_type(head) == LISP_SYMBOL
 				&& consp(((struct LispSymbol *) UNTAG_OBJ(head))->value)) {
 				LispObject macro = car(lisp_ctx, ((struct LispSymbol *) UNTAG_OBJ(head))->value);
@@ -621,6 +620,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 					emit(ctx, (struct Instruction) { .op = MOV, .a = dst.reg, .c = reg });
 			}
 			break;
+		default: unreachable();
 		}
 		break;
 	default: unreachable();
@@ -641,14 +641,14 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 
 	struct GcHeap *heap = (struct GcHeap *) lisp_ctx;
 	struct Chunk *chunk = gc_alloc(heap, alignof(struct Chunk), sizeof *chunk
-		+ ctx.constants.len * sizeof(LispObject) + ctx.count * sizeof *ctx.ins);
+		+ ctx.constants.len * sizeof(LispObject) + ctx.len * sizeof *ctx.insns);
 	*chunk = (struct Chunk) { { chunk->hdr.hdr, LISP_BYTECODE_CHUNK },
-		.num_consts = ctx.constants.len, .count = ctx.count, };
+		.num_consts = ctx.constants.len, .count = ctx.len, };
 	LispObject *consts = chunk_constants(chunk);
 	struct ConstantEntry *constant;
 	for (size_t i = 0; constant_tbl_iter_next(&ctx.constants, &i, &constant);)
 		consts[chunk->num_consts - constant->slot] = constant->obj;
-	memcpy(chunk_instructions(chunk), ctx.ins, ctx.count * sizeof *ctx.ins);
+	memcpy(chunk_instructions(chunk), ctx.insns, ctx.len * sizeof *ctx.insns);
 	for (size_t i = ctx.prototypes; i;) { // Patch prototype chunk offsets
 		struct Prototype *proto = (struct Prototype *) (chunk_instructions(chunk) + i);
 		i = proto->offset;
@@ -656,7 +656,7 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 	}
 
 	constant_tbl_free(&ctx.constants);
-	free(ctx.ins);
+	free(ctx.insns);
 	return chunk;
 }
 

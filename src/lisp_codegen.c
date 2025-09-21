@@ -50,14 +50,14 @@ out:
 		" > LISP_CONST(ctx, " STR(KW_LAST) ") - LISP_CONST(ctx, " STR(KW_FIRST) ")\n"
 		"\t\t|| lisp_type(sym) != LISP_SYMBOL) return LISP_NO_KEYWORD;\n"
 		"\tuint32_t key = sym - LISP_CONST(ctx, " STR(KW_FIRST) ");\n"
-		"\tswitch (phf(&keyword_phf, fxhash(%" PRIu64 ", key))) {\n"
-		"\t\tdefault: unreachable();\n",
+		"\tswitch (phf(&keyword_phf, fxhash(%" PRIu64 ", key))) {\n",
 		seed);
 	for (enum LispKeyword i = 0; i < LISP_NUM_KEYWORDS; ++i) {
 		size_t j = phf(&result, fxhash(seed, kw_symbols[i]));
 		fprintf(f, "\t\tcase %zu: return %d;\n", j, i);
 	}
-	fprintf(f, "\t}\n"
+	fprintf(f, "\t\tdefault: unreachable();\n"
+		"\t}\n"
 		"}\n");
 
 	phf_free(&result);

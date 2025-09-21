@@ -47,7 +47,7 @@ static inline size_t match_empty_or_deleted(size_t group) { return group & REPEA
 			/* Triangular probing */									\
 			bucket = (bucket + ++_probe_distance * sizeof group) & (table)->bucket_mask)
 
-#define CTRL_OFFSET(n) ALIGN_UP((n) * sizeof(KEY), MAX(alignof(KEY), alignof(Group)))
+#define CTRL_OFFSET(n) ALIGN_UP((n) * sizeof(KEY), alignof(Group))
 #define SET_CTRL(table, i, x) \
 	((table).ctrl[(((i) - sizeof(Group)) & (table).bucket_mask) + sizeof(Group)] \
 		= (table).ctrl[i] = (x))

@@ -18,7 +18,7 @@
 #define DEFUN(lname, cname, args, ...)									\
 	static LispObject __ ## cname args;									\
 	static LispObject F ## cname(struct LispCtx *ctx, size_t n, const LispObject __args[static n]) { \
-		if (n != NUM_ARGS args) throw(2);								\
+		if (n != NUM_ARGS args) throw(1);								\
 		return __ ## cname(ctx, MAP_ARGS args);							\
 	}																	\
 	static struct LispCFunction S ## cname = {							\
