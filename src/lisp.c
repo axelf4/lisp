@@ -61,10 +61,13 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	struct LispSymbol key = { .len = len, .name = s }, **entry;
 	if (!symbol_tbl_entry(&ctx->symbol_tbl, &key, &entry)) {
 		if (!entry) die("malloc failed");
+		*entry = (struct LispSymbol *) &ctx->nil;
+
 		struct LispString *name = gc_alloc(heap, alignof(struct LispString), sizeof *name + len + 1);
 		name->hdr.tag = LISP_STRING;
 		memcpy(name->s, s, name->len = len);
 		name->s[len] = '\0';
+
 		*entry = gc_alloc(heap, alignof(struct LispSymbol), sizeof **entry);
 		**entry = (struct LispSymbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
 			.name = name->s, .len = len, .value = NIL(ctx), };
