@@ -63,10 +63,9 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 		if (!entry) die("malloc failed");
 		*entry = (struct LispSymbol *) &ctx->nil;
 
-		struct LispString *name = gc_alloc(heap, alignof(struct LispString), sizeof *name + len + 1);
+		struct LispString *name = gc_alloc(heap, alignof(struct LispString), sizeof *name + len);
 		name->hdr.tag = LISP_STRING;
 		memcpy(name->s, s, name->len = len);
-		name->s[len] = '\0';
 
 		*entry = gc_alloc(heap, alignof(struct LispSymbol), sizeof **entry);
 		**entry = (struct LispSymbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
@@ -127,7 +126,7 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 	return false;
 }
 
-static size_t string_size(struct LispString *x) { return sizeof *x + x->len + 1; }
+static size_t string_size(struct LispString *x) { return sizeof *x + x->len; }
 
 static size_t closure_size(struct Closure *x) {
 	return sizeof *x + x->prototype->num_upvalues * sizeof *x->upvalues;

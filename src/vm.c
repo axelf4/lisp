@@ -671,10 +671,14 @@ static void disassemble_range(size_t n, struct Instruction xs[static n], int ind
 		case LOAD_NIL: printf("LOAD_NIL %" PRIu8 " <- NIL\n", x.a); break;
 		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIxPTR "\n", x.a, GET_CONST); break;
 		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
-		case GETGLOBAL: printf("GETGLOBAL %" PRIu8 " <- [%s]\n", x.a,
-			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
-		case SETGLOBAL: printf("SETGLOBAL %" PRIu8 " -> [%s]\n", x.a,
-			((struct LispSymbol *) UNTAG_OBJ(GET_CONST))->name); break;
+		case GETGLOBAL:
+			struct LispSymbol *sym = (struct LispSymbol *) UNTAG_OBJ(GET_CONST);
+			printf("GETGLOBAL %" PRIu8 " <- [%.*s]\n", x.a, sym->len, sym->name);
+			break;
+		case SETGLOBAL:
+			sym = (struct LispSymbol *) UNTAG_OBJ(GET_CONST);
+			printf("SETGLOBAL %" PRIu8 " -> [%.*s]\n", x.a, sym->len, sym->name);
+			break;
 		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
 		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
 		case CALL: case TAIL_CALL: case TAIL_JIT_CALL:

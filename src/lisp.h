@@ -86,8 +86,8 @@ static inline enum LispObjectType lisp_type(LispObject p) {
 /** Interned string with a value slot. */
 struct LispSymbol {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	unsigned int len; ///< Length of #name (excluding NULL terminator).
-	const char *name; ///< NULL-terminated name string.
+	unsigned int len; ///< Byte length of #name.
+	const char *name; ///< Name string (not NULL-terminated).
 	LispObject value;
 };
 

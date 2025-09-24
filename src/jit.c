@@ -923,7 +923,7 @@ static void print_ref(struct JitState *state, Ref ref) {
 	case LISP_INTEGER: printf("%+" PRIi32, UNTAG_SMI(v)); break;
 	case LISP_SYMBOL:
 		struct LispSymbol *sym = UNTAG_OBJ(v);
-		printf("[%.*s]", (int) sym->len, sym->name);
+		printf("[%.*s]", sym->len, sym->name);
 		break;
 	case LISP_CFUNCTION:
 		printf("<%s>", ((struct LispCFunction *) UNTAG_OBJ(v))->name);
