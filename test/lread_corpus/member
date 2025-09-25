@@ -1,0 +1,2 @@
+(def (member elt list)
+  (if list (if (= (car list) elt) list (member elt (cdr list)))))
