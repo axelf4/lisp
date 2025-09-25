@@ -26,7 +26,7 @@
 
     devShells.${system}.default = pkgs.mkShell.override { inherit stdenv; } {
       inputsFrom = [ self.packages.${system}.default ];
-      packages = with pkgs; [ doxygen valgrind lttng-tools lttng-ust ];
+      packages = with pkgs; [ doxygen valgrind aflplusplus lttng-tools lttng-ust ];
 
       env.NIX_ENFORCE_NO_NATIVE = 0;
     };
