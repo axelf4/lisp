@@ -4,6 +4,9 @@
 #define UTIL_H
 
 #include <stdbit.h>
+#ifndef LG_PAGE
+#include <unistd.h>
+#endif
 
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
@@ -71,5 +74,14 @@ unsigned pcall(void *x, void (*f)(void *));
 void checkpoint();
 
 [[noreturn]] void restore();
+
+/** Gets the page size in bytes. */
+static inline unsigned long page_size() {
+#ifdef LG_PAGE
+	return 1 << LG_PAGE;
+#else
+	return sysconf(_SC_PAGESIZE);
+#endif
+}
 
 #endif

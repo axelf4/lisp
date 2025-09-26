@@ -13,6 +13,7 @@ check_c_source_runs("#include <stdlib.h>
 int main(void) { void *ptr = &&foo; goto *ptr; return EXIT_FAILURE; foo: }"
   HAVE_COMPUTED_GOTO)
 
+set(LG_PAGE "Detect" CACHE STRING "Explicit log2 page size; \"Detect\" or \"Dynamic\".")
 option(WITH_JIT "Enable just-in-time compilation." ON)
 option(WITH_TAIL_CALL_INTERP "Enable tail-calling interpreter.")
 option(LISP_PRESERVE_FRAME_POINTER "Disable RBP usage as a general-purpose register.")
@@ -22,6 +23,18 @@ add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-masm=intel -Wall -Wextra -Wpedantic
 	-Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
+endif()
+
+if(LG_PAGE STREQUAL "Detect")
+  set(_source "#include <stdbit.h>
+#include <stdio.h>
+#include <unistd.h>
+int main() { printf(\"%u\", stdc_trailing_zeros((size_t) sysconf(_SC_PAGESIZE))); }")
+  try_run(GETPAGESIZE_EXITCODE GETPAGESIZE_COMPILED
+	SOURCE_FROM_VAR "src.c" _source RUN_OUTPUT_VARIABLE LG_PAGE)
+  if(NOT (GETPAGESIZE_COMPILED AND GETPAGESIZE_EXITCODE EQUAL 0))
+	message(FATAL_ERROR "Failed to detect page size.")
+  endif()
 endif()
 
 if(WITH_CHECKPOINT_RESTORE)
@@ -44,6 +57,7 @@ add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c s
   $<$<BOOL:${WITH_JIT}>:src/jit.c>
   $<$<BOOL:${WITH_CHECKPOINT_RESTORE}>:src/criu.c>)
 target_compile_definitions(lisplib PUBLIC
+  $<IF:$<STREQUAL:${LG_PAGE},Dynamic>,,LG_PAGE=${LG_PAGE}>
   $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp_generated.h">
   ENABLE_JIT=$<BOOL:${WITH_JIT}>)
 target_compile_definitions(lisplib PRIVATE

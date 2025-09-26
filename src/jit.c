@@ -875,11 +875,10 @@ static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTr
 	struct Snapshot
 		*snapshots = (struct Snapshot *) (insns + parent->num_consts + parent->len),
 		*snapshot = snapshots + exit_num;
-	long page_size = sysconf(_SC_PAGESIZE);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 	char *beg = (char *) parent->f, *end = beg + parent->mcode_size,
-		*page = (char *) ((uintptr_t) beg & ~(page_size - 1)),
+		*page = (char *) ((uintptr_t) beg & ~(page_size() - 1)),
 		*trampoline = EXIT_TRAMPOLINE(beg + parent->mcode_tail, exit_num);
 #pragma GCC diagnostic pop
 

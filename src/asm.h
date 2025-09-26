@@ -10,7 +10,6 @@
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/mman.h>
 #include "fxhash.h"
 #include "util.h"
@@ -237,8 +236,7 @@ static inline void asm_free(struct Assembler *ctx) {
 }
 
 static inline void (*asm_assemble(struct Assembler *ctx))() {
-	long page_size = sysconf(_SC_PAGESIZE);
-	uint8_t *beg = (uint8_t *) ((uintptr_t) ctx->p & ~(page_size - 1)),
+	uint8_t *beg = (uint8_t *) ((uintptr_t) ctx->p & ~(page_size() - 1)),
 		*end = ctx->buf + MCODE_CAPACITY;
 	if (mprotect(beg, end - beg, PROT_EXEC)) die("mprotect failed");
 #pragma GCC diagnostic push
