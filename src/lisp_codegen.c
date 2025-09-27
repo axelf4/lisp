@@ -59,6 +59,8 @@ out:
 	}
 	fprintf(f, "\t}\n"
 		"}\n");
+
+	phf_free(&result);
 	return true;
 }
 
