@@ -106,7 +106,7 @@ void garbage_collect(struct GcHeap *heap);
 
 void gc_object_visit(struct GcHeap *heap, void *p);
 
-/** Returns the size and alignment of the GC object.
+/** Gets the size and alignment of the GC object.
  *
  * @param p The GC object.
  * @param[out] alignment The minimum byte alignment.
