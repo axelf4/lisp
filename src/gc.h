@@ -50,7 +50,7 @@ struct GcRef {
 #endif
 
 #define GC_ALIGNMENT (sizeof(struct GcRef))
-#define GC_BLOCK(p) ((struct GcBlock *) ((uintptr_t) (p) & ~(sizeof(struct GcBlock) - 1)))
+#define GC_BLOCK(p) ((struct GcBlock *) ((uintptr_t) (p) & ~(GC_BLOCK_SIZE - 1)))
 
 struct GcObjectHeader { unsigned char flags; };
 

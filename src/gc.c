@@ -149,10 +149,10 @@ enum {
 static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size) {
 	struct BumpPointer *ptr = &heap->ptr;
 	if (size <= GC_LINE_SIZE) {
-		struct GcBlock *block = GC_BLOCK(ptr->limit);
-		if ((*ptr = next_gap(block, ptr->limit)).cursor) goto out_bump;
+		struct BumpPointer gap = next_gap(GC_BLOCK(ptr->limit), ptr->limit);
+		if (gap.cursor) { *ptr = gap; goto out_bump; }
 		if (heap->recycled_len) {
-			block = heap->recycled[--heap->recycled_len];
+			struct GcBlock *block = heap->recycled[--heap->recycled_len];
 			// Recycled blocks have gaps of >=1 line; enough for small objects
 			*ptr = next_gap(block, (&block->data)[1]);
 			goto out_bump;
@@ -234,7 +234,7 @@ void gc_pin(struct GcHeap *heap, void *p) {
 }
 
 extern void *__libc_stack_end; ///< Highest used stack address.
-static void scan_stack(struct GcHeap *heap) {
+[[gnu::no_sanitize_address]] static void scan_stack(struct GcHeap *heap) {
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
 	sp = (void *) ((uintptr_t) sp & ~(alignof(struct GcRef) - 1));
 	for (struct GcRef *p = sp; (void *) p <= base; ++p) {

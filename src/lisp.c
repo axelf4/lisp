@@ -236,6 +236,8 @@ void gc_trace_roots(struct GcHeap *heap) {
 	// Trace stack
 	uintptr_t *end = (uintptr_t *) ctx->guard_end - 0xff,
 		*stack = end - STACK_LEN, *top = MIN(ctx->bp + 0x100, end);
+	// Non-LispObjects, i.a. return addresses, masquerade as SMIs by
+	// >1-byte alignment.
 	for (uintptr_t *x = stack; x < top; ++x) lisp_trace(heap, x);
 	// Zero unused stack to not resurrect GCd object
 	memset(top, 0, end - top);
@@ -289,7 +291,6 @@ bool lisp_init(struct LispCtx *ctx) {
 	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) goto err_free_stack;
 	ctx->guard_end = (uintptr_t) stack + size + guard_size;
 	*stack = 0;
-	stack[1] = (uintptr_t) NULL; // No return address for first call frame
 
 	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
 	ctx->upvalues = NULL;
