@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <ucontext.h>
 #include "lisp.h"
+#include "lisp_tracepoint.h"
 
 #ifdef __SANITIZE_ADDRESS__
 #include <sanitizer/asan_interface.h>
@@ -318,6 +319,7 @@ volatile void *gc_nop_sink;
 
 void garbage_collect(struct GcHeap *heap) {
 	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
+	lttng_ust_tracepoint(lisp, garbage_collection, heap->is_major_gc + heap->is_defrag);
 	if (heap->is_major_gc) heap->mark_stack.length = 0; // Ignore remembered set
 	// Unlog remembered set
 	for (size_t i = 0; i < heap->mark_stack.length; ++i)

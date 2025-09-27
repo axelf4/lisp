@@ -10,6 +10,7 @@
 #include <assert.h>
 #include "lisp.h"
 #include "asm.h"
+#include "lisp_tracepoint.h"
 
 #define IR_BIAS 0x8000u
 #define IR_REF_TYPE_SHIFT 16
@@ -426,6 +427,7 @@ static void peel_loop(struct JitState *state) {
 	struct SnapshotEntry *entries
 		= (struct SnapshotEntry *) (snapshots + trace->num_snapshots);
 	printf("Side exit %" PRIu8 "\n", exit_num);
+	lttng_ust_tracepoint(lisp, side_exit, trace, exit_num);
 	assert(!snapshot->trace);
 	ctx->current_trace = NULL;
 	FOR_SNAPSHOT_ENTRIES(snapshot, entries, e) {
@@ -1135,7 +1137,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		}
 		[[fallthrough]];
 	default:
-		printf("Instruction %" PRIu8 " is NYI, aborting trace...\n", x.op);
+		lttng_ust_tracepoint(lisp, record_nyi, x.op);
 		rec_err(state);
 		break;
 	}

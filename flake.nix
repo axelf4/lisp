@@ -17,13 +17,16 @@
       doCheck = true;
 
       hardeningDisable = [ "all" ];
-      cmakeFlags = [ "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE" "-DWITH_TAIL_CALL_INTERP=ON" ];
+      cmakeFlags = [
+        "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE"
+        "-DWITH_TAIL_CALL_INTERP=ON"
+      ];
       env.CFLAGS = "-march=x86-64-v3 -fomit-frame-pointer";
     };
 
     devShells.${system}.default = pkgs.mkShell.override { inherit stdenv; } {
       inputsFrom = [ self.packages.${system}.default ];
-      packages = with pkgs; [ doxygen valgrind ];
+      packages = with pkgs; [ doxygen valgrind lttng-tools lttng-ust ];
 
       env.NIX_ENFORCE_NO_NATIVE = 0;
     };
