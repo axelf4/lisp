@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.31)
 project(lisp C)
 
 set(CMAKE_C_STANDARD 23)
@@ -49,8 +49,8 @@ endif()
 add_executable(lisp_codegen EXCLUDE_FROM_ALL src/lisp_codegen.c)
 add_custom_command(
   OUTPUT ${PROJECT_BINARY_DIR}/lisp_generated.h
-  DEPENDS lisp_codegen
-  COMMAND lisp_codegen ${PROJECT_BINARY_DIR}/lisp_generated.h)
+  COMMAND lisp_codegen ${PROJECT_BINARY_DIR}/lisp_generated.h
+  DEPENDS lisp_codegen VERBATIM CODEGEN)
 
 add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c src/util.c
   $<$<CONFIG:Release>:${PROJECT_BINARY_DIR}/lisp_generated.h>
