@@ -366,28 +366,6 @@ static IrRef emit_opt(struct JitState *state, union Node x) {
 out_no_cse: return emit(state, x);
 }
 
-[[gnu::noinline]] static IrRef sload(struct JitState *state, int slot) {
-	take_snapshot(state); // Type guard may be added
-	return state->bp[slot] = emit(state, (union Node)
-		{ .op = IR_SLOAD, .ty = TY_ANY, .a = state->base_offset + slot });
-}
-/** Emits a load of stack slot @a i unless it is already loaded. */
-#define SLOT(state, i) ((state)->bp[i] ? (state)->bp[i] : sload(state, i))
-
-/** Emits an instruction to load the given upvalue. */
-static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
-	struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx];
-	// TODO Track whether the upvalue is immutable and inlinable
-	if (IS_UV_OPEN(*upvalue)) {
-		// In a nested frame the upvalue may be available on the stack
-		ptrdiff_t slot = upvalue->location - (bp - state->base_offset);
-		if (slot >= 0) return SLOT(state, slot - state->base_offset);
-	}
-	take_snapshot(state);
-	return emit_opt(state, (union Node) { .op = IR_ULOAD,
-			.ty = TY_ANY, .a = SLOT(state, /* this closure */ 0), .b = idx });
-}
-
 /** Coerces @a ref to @a ty.
  *
  * @return Whether the type of @a ref was compatible with @a ty.
@@ -409,6 +387,27 @@ static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 	IrRef k = emit_const(state, ty, value);
 	emit_opt(state, (union Node) { .op = IR_EQ, ty, .a = *ref, .b = k });
 	*ref = k;
+}
+
+[[gnu::noinline]] static IrRef sload(struct JitState *state, int slot) {
+	take_snapshot(state); // Type guard may be added
+	return state->bp[slot] = emit(state, (union Node)
+		{ .op = IR_SLOAD, .ty = TY_ANY, .a = state->base_offset + slot });
+}
+/** Emits a load of stack slot @a i unless it is already loaded. */
+#define SLOT(state, i) ((state)->bp[i] ? (state)->bp[i] : sload(state, i))
+
+/** Emits an instruction to load the given upvalue. */
+static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
+	struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx];
+	IrRef fn = SLOT(state, 0);
+	if (!upvalue->is_mut) { // Inlineable?
+		guard_value(state, state->bp, /* this closure */ *bp);
+		LispObject v = *upvalue->location;
+		return emit_const(state, lisp_type(v), v);
+	}
+	take_snapshot(state);
+	return emit_opt(state, (union Node) {{ IR_ULOAD, TY_ANY, .a = fn, .b = idx }});
 }
 
 #define SUBST_GET(subst, ref) (*(Ref *) ((subst) + (ref) * sizeof(Ref)))
