@@ -9,11 +9,12 @@
 #include "lisp.h"
 #include "fxhash.h"
 
-#define UV_INSTACK 0x80 ///< The upvalue captures a local instead of an upvalue.
+#define UV_INSTACK 0x40 ///< The upvalue captures a local instead of an upvalue.
+#define UV_MUTABLE 0x80
 
 static_assert(sizeof(LispObject) % sizeof(struct Instruction) == 0);
 
-static struct Upvalue *capture_upvalue(struct LispCtx *ctx, LispObject *local) {
+static struct Upvalue *capture_upvalue(struct LispCtx *ctx, LispObject *local, bool is_mut) {
 	struct Upvalue **p = &ctx->upvalues;
 	while (*p && (*p)->location > local) p = &(*p)->next;
 	if (*p && (*p)->location == local) return *p;
@@ -21,7 +22,7 @@ static struct Upvalue *capture_upvalue(struct LispCtx *ctx, LispObject *local) {
 	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct Upvalue *new = gc_alloc(heap, alignof(struct Upvalue), sizeof *new);
 	*new = (struct Upvalue) { { new->hdr.hdr, LISP_UPVALUE },
-		.next = *p, .location = local };
+		.is_mut = is_mut, .next = *p, .location = local };
 	return *p = new;
 }
 

@@ -292,6 +292,7 @@ struct Prototype {
 
 struct Upvalue {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
+	bool is_mut;
 	union {
 		struct Upvalue *next; ///< Next unclosed in list sorted by stack locations.
 		LispObject value; ///< The closed over object.

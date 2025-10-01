@@ -375,7 +375,8 @@ out_no_cse: return emit(state, x);
 /** Emits an instruction to load the given upvalue. */
 static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
 	struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx];
-	// TODO Track whether the upvalue is immutable and inlinable
+	if (!upvalue->is_mut) // Inlineable?
+		return emit_const(state, lisp_type(upvalue->value), upvalue->value);
 	if (IS_UV_OPEN(*upvalue)) {
 		// In a nested frame the upvalue may be available on the stack
 		ptrdiff_t slot = upvalue->location - (bp - state->base_offset);
