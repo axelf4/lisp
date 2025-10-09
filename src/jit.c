@@ -42,6 +42,7 @@ enum {
 
 enum SsaOp : uint8_t {
 	// Comparisons are ordered such that flipping the LSB inverts them
+	IR_LT, IR_GE, IR_LE, IR_GT,
 	IR_EQ, IR_NEQ,
 	IR_CALL, ///< Call C function.
 	IR_CALLARG, ///< Argument for #IR_CALL.
@@ -227,6 +228,16 @@ static IrRef emit(struct JitState *state, union SsaInstruction x) {
 	return x.ty << IR_REF_TYPE_SHIFT | ref;
 }
 
+static bool cmp(LispObject a, enum SsaOp op, LispObject b) {
+	switch (op) {
+	case IR_LT: return a < b;
+	case IR_GE: return a >= b;
+	case IR_LE: return a <= b;
+	case IR_GT: return a > b;
+	default: unreachable();
+	}
+}
+
 /** Normalizes a commutative instruction. */
 static union SsaInstruction comm_swap(union SsaInstruction x) {
 	// Swap lower refs (constants in particular) to the right
@@ -246,6 +257,13 @@ static IrRef emit_opt(struct JitState *state, union SsaInstruction x) {
 		if (x.a == x.b) CONDFOLD(x.op == IR_EQ);
 		x = comm_swap(x);
 		if (!IS_VAR(x.a)) CONDFOLD(x.op != IR_EQ);
+		break;
+	case IR_LT: case IR_GE: case IR_LE: case IR_GT:
+		if (x.a == x.b) CONDFOLD(/* inclusive? */ x.op & 0b10);
+		if (x.a < x.b)
+			x = (union SsaInstruction) {{ x.op ^ 0b11, x.ty, x.b, x.a, {} }};
+		if (!IS_VAR(x.a))
+			CONDFOLD(cmp(IR_GET(state, x.a).v, x.op, IR_GET(state, x.b).v));
 		break;
 	case IR_GLOAD: case IR_ULOAD: break; // Forward loads of globals/upvalues
 	default: goto out_no_cse;
@@ -780,10 +798,10 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 			if (/* inherited spilled */ x.b) { if (has_reg(x)) reload(&ctx, ref); }
 			else reg_def(&ctx, ref, 1 << x.a);
 			break;
-		case IR_EQ:
-		case IR_NEQ:
+		case IR_EQ: case IR_NEQ: case IR_LT: case IR_GE: case IR_LE: case IR_GT:
 			assert(IS_VAR(x.a));
-			asm_guard(&ctx, x.op == IR_EQ ? CC_NE : CC_E);
+			enum Cc cc = x.op < IR_EQ ? CC_L + x.op - IR_LT : CC_E + x.op - IR_EQ;
+			asm_guard(&ctx, cc_negate(cc));
 			enum Register reg1 = reg_use(&ctx, x.a, -1);
 			if (IS_VAR(x.b)) {
 				enum Register reg2 = reg_use(&ctx, x.b, -1);
@@ -931,7 +949,10 @@ static void print_ref(struct JitState *state, Ref ref) {
 }
 
 static void print_trace(struct JitState *state, enum TraceLink link) {
-	const char *type_names[]
+	const char *ops[] = {
+		"LT", "GE", "LE", "GT", "EQ", "NEQ", [IR_PHI] = "PHI", NULL,
+		"ADD",
+	}, *type_names[]
 		= { "AxB", "sym", "str", "cfn", "clo", NULL, NULL, "nil", "int", "___" };
 
 	puts("---- TRACE IR");
@@ -952,13 +973,6 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		union SsaInstruction x = state->trace[MAX_CONSTS + i];
 		printf("%.4u %s %3u ", i, type_names[x.ty & ~IR_MARK], x.reg);
 		switch (x.op) {
-		case IR_EQ: printf("EQ    ");
-			if (false) case IR_NEQ: printf("NEQ   ");
-			print_ref(state, x.a);
-			printf("  ");
-			print_ref(state, x.b);
-			putchar('\n');
-			break;
 		case IR_SLOAD: printf("SLOAD #%" PRIu16 "\n", x.a); break;
 		case IR_GLOAD:
 			printf("GLOAD "); print_ref(state, x.a); putchar('\n'); break;
@@ -978,22 +992,15 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			}
 			puts(")");
 			break;
-		case IR_CALLARG: case IR_NUM_OPS: unreachable();
+		case IR_CALLARG: unreachable();
 		case IR_LOOP: puts("LOOP ------------"); break;
-		case IR_PHI:
-			printf("PHI   ");
-			print_ref(state, x.a);
-			printf("  ");
-			print_ref(state, x.b);
-			putchar('\n');
-			break;
 		case IR_NOP: puts("NOP"); break;
-
-		case IR_ADD:
-			printf("ADD   ");
-			print_ref(state, x.a);
-			printf("  ");
-			print_ref(state, x.b);
+		default:
+			printf("%-5s ", ops[x.op]);
+			if (x.a) {
+				print_ref(state, x.a);
+				if (x.b) { printf("  "); print_ref(state, x.b); }
+			}
 			putchar('\n');
 			break;
 		}
@@ -1005,18 +1012,25 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 }
 #endif
 
-static IrRef record_c_call(struct JitState *state, uintptr_t *bp, struct Instruction x) {
-	IrRef ref = SLOT(state, x.a);
-	LispObject f_value = bp[x.a];
-	struct LispCFunction *f = UNTAG_OBJ(f_value);
+static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_t *bp, struct Instruction x) {
+	IrRef ref = SLOT(state, x.a),
+		a = state->bp[x.a + 2], b = state->bp[x.a + 2 + 1];
+	struct LispCFunction *f = UNTAG_OBJ(bp[x.a]);
+	enum SsaOp cmp_op;
+
 	if (!strcmp(f->name, "+")) {
-		guard_value(state, &ref, f_value);
-		IrRef a = SLOT(state, x.a + 2), b = SLOT(state, x.a + 2 + 1);
 		guard_type(state, &a, LISP_INTEGER);
 		guard_type(state, &b, LISP_INTEGER);
 		return emit_opt(state, (union SsaInstruction)
 			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
-	}
+	} else if (!strcmp(f->name, "=")) {
+		cmp_op = IR_EQ;
+	do_record_cmp:
+		LispObject value = f->f(ctx, x.c, bp + x.a + 2);
+		emit_opt(state, (union SsaInstruction)
+			{ .op = cmp_op ^ NILP(ctx, value), .ty = TY_ANY, .a = a, .b = b });
+		return emit_const(state, lisp_type(value), value);
+	} else if (!strcmp(f->name, "<")) { cmp_op = IR_LT; goto do_record_cmp; }
 
 	guard_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
@@ -1055,7 +1069,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 	case CALL: case CALL_INTERPR:
 		LispObject fn_value = bp[x.a];
 		switch (lisp_type(fn_value)) {
-		case LISP_CFUNCTION: result = record_c_call(state, bp, x); break;
+		case LISP_CFUNCTION: result = record_c_call(ctx, state, bp, x); break;
 		case LISP_CLOSURE:
 			// Specialize to the function value in question
 			// TODO Guard on prototype only
@@ -1073,7 +1087,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 	case TAIL_CALL: case TAIL_CALL_INTERPR:
 		fn_value = bp[x.a];
 		bool is_cfn = lisp_type(fn_value) == LISP_CFUNCTION;
-		if (is_cfn) { state->bp[x.a] = record_c_call(state, bp, x); goto do_ret; }
+		if (is_cfn) { state->bp[x.a] = record_c_call(ctx, state, bp, x); goto do_ret; }
 		if (/* Need reload? */ fn_value != *bp) *state->bp = state->bp[x.a];
 		// Move arguments down to current frame
 		memmove(state->bp + 2, state->bp + x.a + 2, x.c * sizeof *state->bp);

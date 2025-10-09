@@ -152,6 +152,7 @@ enum Cc {
 	CC_O, ///< Overflow.
 	CC_E = 0x4, ///< Equal, Zero.
 	CC_NE, ///< Not equal, Not zero.
+	CC_L = 0xc, CC_GE, CC_LE, CC_G,
 };
 
 static inline enum Cc cc_negate(enum Cc x) { return x ^ 1; }
