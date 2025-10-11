@@ -58,7 +58,8 @@ PRESERVE_NONE typedef LispObject LispTailCallFunc(TAIL_CALL_PARAMS);
 #define DECLARE_HANDLER(op) HANDLER(op),
 #define HANDLER_PTR(op) { HANDLER(op) },
 #define RECORD_PTR(_) HANDLER_PTR(RECORD)
-static LispTailCallFunc FOR_OPS(DECLARE_HANDLER) HANDLER(RECORD);
+static LispTailCallFunc FOR_OPS(DECLARE_HANDLER) HANDLER(RECORD),
+	HANDLER(JIT_CALL) [[gnu::noinline]];
 static struct Handler { LispTailCallFunc *hnd; }
 	main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },
 	recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) };
@@ -234,15 +235,22 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 #if ENABLE_JIT
 	DEFINE_OP(CALL_INTERPR) { JMP_TO_LABEL(CALL); }
 	DEFINE_OP(TAIL_CALL_INTERPR) { JMP_TO_LABEL(TAIL_CALL); }
-	DEFINE_OP(TAIL_JIT_CALL) {
+	DEFINE_OP(JIT_CALL) {
 		struct LispTrace *trace = ctx->current_trace = (*ctx->traces)[ins.b];
+		ctx->bp = bp;
+		struct SideExitResult x = trace_exec(ctx, trace);
+		pc = x.pc;
+		bp = ctx->bp + x.base_offset;
+		dispatch_table = x.should_record ? recording_dispatch_table : main_dispatch_table;
+		NEXT;
+	}
+	DEFINE_OP(TAIL_JIT_CALL) {
+		struct LispTrace *trace = (*ctx->traces)[ins.b];
 		uint8_t arity = *(uint8_t *) trace;
 		LispObject *frame = bp + ins.a;
 		*bp = *frame;
 		memmove(bp + 2, frame + 2, arity * sizeof *bp);
-		bool should_record = trace_exec(ctx, trace, &pc, &bp);
-		dispatch_table = should_record ? recording_dispatch_table : main_dispatch_table;
-		NEXT;
+		JMP_TO_LABEL(JIT_CALL);
 	}
 	DEFINE_OP(RECORD) {
 		if (!jit_record(ctx, pc, bp)) {
