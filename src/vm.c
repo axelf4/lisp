@@ -39,7 +39,6 @@ static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *proto,
 	return nargs;
 }
 
-#pragma GCC diagnostic push
 #if ENABLE_TAIL_CALL_INTERP
 #ifdef __clang__
 #define PRESERVE_NONE [[clang::preserve_none]]
@@ -55,20 +54,21 @@ struct Handler;
 #define TAIL_CALL_ARGS ctx, pc, bp, ins, dispatch_table
 PRESERVE_NONE typedef LispObject LispTailCallFunc(TAIL_CALL_PARAMS);
 
-#pragma GCC diagnostic ignored "-Wmissing-braces"
-#define HANDLER_PTR(op) _tail_call_ ## op,
+#define HANDLER(op) _tail_call_ ## op
+#define DECLARE_HANDLER(op) HANDLER(op),
+#define HANDLER_PTR(op) { HANDLER(op) },
 #define RECORD_PTR(_) HANDLER_PTR(RECORD)
-static LispTailCallFunc FOR_OPS(HANDLER_PTR) _tail_call_RECORD;
+static LispTailCallFunc FOR_OPS(DECLARE_HANDLER) HANDLER(RECORD);
 static struct Handler { LispTailCallFunc *hnd; }
 	main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },
 	recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) };
 
-#define DEFINE_OP(op) } PRESERVE_NONE static LispObject _tail_call_ ## op(TAIL_CALL_PARAMS) {
+#define DEFINE_OP(op) } PRESERVE_NONE static LispObject HANDLER(op)(TAIL_CALL_PARAMS) {
 #define NEXT do { ins = *pc++;											\
 		[[clang::musttail]] return dispatch_table[ins.op].hnd(TAIL_CALL_ARGS); } \
 	while (0)
-#define JMP_TO_LABEL(name) do [[clang::musttail]] return \
-			_tail_call_ ## name(TAIL_CALL_ARGS); while (0)
+#define JMP_TO_LABEL(name) \
+	do [[clang::musttail]] return HANDLER(name)(TAIL_CALL_ARGS); while (0)
 #define DISPATCH_MAIN(op) do [[clang::musttail]] return \
 			main_dispatch_table[op].hnd(TAIL_CALL_ARGS); while (0)
 
@@ -78,8 +78,6 @@ static struct Handler { LispTailCallFunc *hnd; }
 	return dispatch_table[ins.op].hnd(TAIL_CALL_ARGS);
 #define VM_END
 #elif HAVE_COMPUTED_GOTO
-#pragma GCC diagnostic ignored "-Wpedantic"
-
 #define DEFINE_OP(op) op_ ## op:
 // Use token-threading to be able to swap dispatch table when recording
 #define NEXT do goto *dispatch_table[(ins = *pc++).op]; while (0)
@@ -87,12 +85,14 @@ static struct Handler { LispTailCallFunc *hnd; }
 #define DISPATCH_MAIN(op) do goto *main_dispatch_table[op]; while (0)
 
 #define HANDLER_PTR(op) &&op_ ## op,
-#define RECORD_PTR(op) &&op_RECORD,
-#define VM_BEGIN void *main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) }, \
-		*recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) },			\
-		**dispatch_table = main_dispatch_table;							\
+#define RECORD_PTR(_) HANDLER_PTR(RECORD)
+#define VM_BEGIN _Pragma("GCC diagnostic push")					\
+	_Pragma("GCC diagnostic ignored \"-Wpedantic\"")			\
+	void *main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },		\
+		*recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) },	\
+		**dispatch_table = main_dispatch_table;					\
 	struct Instruction ins; NEXT;
-#define VM_END
+#define VM_END _Pragma("GCC diagnostic pop")
 #elif ENABLE_JIT
 #error Switch-based dispatch does not support JIT trace recording
 #else
@@ -252,7 +252,6 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		DISPATCH_MAIN(ins.op);
 	}
 #endif
-#pragma GCC diagnostic pop
 	VM_END;
 }
 
