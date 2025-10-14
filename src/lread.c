@@ -126,6 +126,6 @@ val_end:
 enum LispReadError lisp_read_whole(struct LispCtx *ctx, const char *s, LispObject *result) {
 	enum LispReadError err;
 	return (err = lisp_read(ctx, &s, result)) ? err
-		: lisp_read(ctx, &s, &(LispObject) {}) == LISP_READ_EMPTY ? LISP_READ_OK
+		: lisp_read(ctx, &s, result) == LISP_READ_EMPTY ? LISP_READ_OK
 		: LISP_READ_TRAILING;
 }

@@ -13,20 +13,20 @@
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
 #define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, 2, 1, 0)
 #define MAP_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
-#define MAP_ARGS(...) MAP_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, *__args COMMA __args[1], *__args, )
+#define MAP_ARGS(...) MAP_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, *_args COMMA _args[1], *_args, )
 
 #define DEFUN(lname, cname, args, ...)									\
-	static LispObject __ ## cname args;									\
-	static LispObject F ## cname(struct LispCtx *ctx, size_t n, const LispObject __args[static n]) { \
+	static LispObject _ ## cname args;									\
+	static LispObject F ## cname(struct LispCtx *ctx, size_t n, const LispObject _args[static n]) { \
 		if (n != NUM_ARGS args) throw(1);								\
-		return __ ## cname(ctx, MAP_ARGS args);							\
+		return _ ## cname(ctx, MAP_ARGS args);							\
 	}																	\
 	static struct LispCFunction S ## cname = {							\
 		.hdr.tag = LISP_CFUNCTION, .nargs = NUM_ARGS args,				\
 		.f = F ## cname,												\
 		.name = lname,													\
 	};																	\
-	static LispObject __ ## cname args
+	static LispObject _ ## cname args
 
 static uint64_t symbol_hash(struct LispSymbol *x) {
 	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
@@ -63,13 +63,14 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 		if (!entry) die("malloc failed");
 		*entry = (struct LispSymbol *) &ctx->nil;
 
-		struct LispString *name = gc_alloc(heap, alignof(struct LispString), sizeof *name + len);
+		struct LispString *name
+			= gc_alloc(heap, alignof(struct LispString), sizeof *name + len);
 		name->hdr.tag = LISP_STRING;
 		memcpy(name->s, s, name->len = len);
 
 		*entry = gc_alloc(heap, alignof(struct LispSymbol), sizeof **entry);
 		**entry = (struct LispSymbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
-			.name = name->s, .len = len, .value = NIL(ctx), };
+			.name = name->s, .len = len, .value = NIL(ctx) };
 	}
 	return TAG_OBJ(*entry);
 }

@@ -17,7 +17,7 @@ static bool write_keyword_phf(struct LispCtx *ctx, FILE *f) {
 #undef X
 
 	struct Phf result;
-	struct PhfParameters params = { .c = 1, .alpha = 1 };
+	struct PhfParameters params = { .c = 0, .alpha = 1 };
 	uint64_t seed, max_tries = 32;
 	for (seed = 0; seed < max_tries; ++seed) {
 		uint64_t keys[LISP_NUM_KEYWORDS];
