@@ -26,17 +26,17 @@ static struct Upvalue *capture_upvalue(struct LispCtx *ctx, LispObject *local) {
 }
 
 /** Collects arguments of a CALL instruction. */
-static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *proto,
-	uint8_t n, LispObject *bp) {
-	uint8_t nargs = proto->arity & ~PROTO_VARIADIC;
-	if (proto->arity & PROTO_VARIADIC) {
-		LispObject rest = NIL(ctx);
-		while (n > nargs) rest = cons(ctx, bp[2 + --n], rest);
-		bp[2 + n++] = rest;
-		++nargs;
-	}
-	if (n != nargs) die("Wrong number of arguments");
-	return nargs;
+static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *prototype,
+	LispObject *bp, uint8_t n) {
+	uint8_t arity = prototype->arity, nargs = arity & ~PROTO_VARIADIC;
+
+	if (LIKELY(n == arity)) return n;
+	if (!(arity & PROTO_VARIADIC) || n < nargs)
+		die("Wrong number of arguments");
+	LispObject rest = NIL(ctx);
+	while (n > nargs) rest = cons(ctx, bp[2 + --n], rest);
+	bp[2 + n++] = rest;
+	return n;
 }
 
 #if ENABLE_TAIL_CALL_INTERP
@@ -87,11 +87,11 @@ static struct Handler { LispTailCallFunc *hnd; }
 
 #define HANDLER_PTR(op) &&op_ ## op,
 #define RECORD_PTR(_) HANDLER_PTR(RECORD)
-#define VM_BEGIN _Pragma("GCC diagnostic push")					\
-	_Pragma("GCC diagnostic ignored \"-Wpedantic\"")			\
-	void *main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },		\
-		*recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) },	\
-		**dispatch_table = main_dispatch_table;					\
+#define VM_BEGIN _Pragma("GCC diagnostic push")							\
+	_Pragma("GCC diagnostic ignored \"-Wpedantic\"")					\
+	void *main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },				\
+		*recording_dispatch_table [[maybe_unused]][] = { FOR_OPS(RECORD_PTR) },	\
+		**dispatch_table = main_dispatch_table;							\
 	struct Instruction ins; NEXT;
 #define VM_END _Pragma("GCC diagnostic pop")
 #elif ENABLE_JIT
@@ -172,7 +172,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 			break;
 		case LISP_CLOSURE:
 			struct Closure *closure = UNTAG_OBJ(*frame);
-			bind_rest(ctx, closure->prototype, ins.c, bp = frame);
+			bind_rest(ctx, closure->prototype, bp = frame, ins.c);
 
 			struct Instruction *to = closure->prototype->body;
 			DECR_HOTCOUNT(closure, to, 1);
@@ -192,7 +192,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 			JMP_TO_LABEL(RET);
 		case LISP_CLOSURE:
 			struct Closure *closure = UNTAG_OBJ(*bp = *frame);
-			uint8_t n = bind_rest(ctx, closure->prototype, ins.c, frame);
+			uint8_t n = bind_rest(ctx, closure->prototype, frame, ins.c);
 			memmove(bp + 2, frame + 2, n * sizeof *frame);
 
 			struct Instruction *to = closure->prototype->body;
@@ -259,6 +259,8 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		}
 		DISPATCH_MAIN(ins.op);
 	}
+#else
+	DEFINE_OP(RECORD) { unreachable(); }
 #endif
 	VM_END;
 }
@@ -372,15 +374,15 @@ static uint8_t resolve_upvalue(struct FnState *fn, uint8_t i, struct Local *var)
 }
 
 static struct VarRef {
-	enum VarRefType { VAR_LOCAL, VAR_UPVALUE, VAR_GLOBAL } type;
-	unsigned slot;
+	uint8_t slot;
+	enum VarRefType : unsigned char { VAR_LOCAL, VAR_UPVALUE, VAR_GLOBAL } type;
 } lookup(struct ByteCompCtx *ctx, LispObject sym) {
 	for (unsigned i = ctx->num_vars; i--;) {
 		struct Local *var = ctx->vars + i;
 		if (var->symbol.p == GC_COMPRESS(sym).p)
 			return i < ctx->fn->vars_start
-				? (struct VarRef) { VAR_UPVALUE, resolve_upvalue(ctx->fn, i, var) }
-				: (struct VarRef) { VAR_LOCAL, var->slot };
+				? (struct VarRef) { resolve_upvalue(ctx->fn, i, var), VAR_UPVALUE }
+				: (struct VarRef) { var->slot, VAR_LOCAL };
 	}
 	return (struct VarRef) { .type = VAR_GLOBAL };
 }
@@ -679,17 +681,19 @@ static void disassemble_range(size_t n, struct Instruction xs[static n], int ind
 		case LOAD_OBJ: printf("LOAD_OBJ %" PRIu8 " <- %" PRIxPTR "\n", x.a, GET_CONST); break;
 		case LOAD_SHORT: printf("LOAD_SHORT %" PRIu8 " <- %" PRIi16 "\n", x.a, (int16_t) x.b); break;
 		case GETGLOBAL:
-			struct LispSymbol *sym = (struct LispSymbol *) UNTAG_OBJ(GET_CONST);
+			struct LispSymbol *sym = UNTAG_OBJ(GET_CONST);
 			printf("GETGLOBAL %" PRIu8 " <- [%.*s]\n", x.a, sym->len, sym->name);
 			break;
 		case SETGLOBAL:
-			sym = (struct LispSymbol *) UNTAG_OBJ(GET_CONST);
+			sym = UNTAG_OBJ(GET_CONST);
 			printf("SETGLOBAL %" PRIu8 " -> [%.*s]\n", x.a, sym->len, sym->name);
 			break;
 		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
 		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
-		case CALL: case TAIL_CALL: case TAIL_JIT_CALL:
-		case CALL_INTERPR: case TAIL_CALL_INTERPR:
+		case CALL: case TAIL_CALL:
+#if ENABLE_JIT
+		case JIT_CALL: case TAIL_JIT_CALL: case CALL_INTERPR: case TAIL_CALL_INTERPR:
+#endif
 			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
 				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
 			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);

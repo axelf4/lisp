@@ -34,7 +34,7 @@ static inline void asm_write64(struct Assembler *ctx, uint64_t x) {
 
 static inline int32_t rel32(uintptr_t p, uintptr_t target) {
 	ptrdiff_t dt = target - p;
-	assert((int32_t) dt == dt && "Jump target is out of range");
+	assert((int32_t) dt == dt && "jump target is out of range");
 	return dt;
 }
 #define REL32(p, target) rel32((uintptr_t) (p), (uintptr_t) (target))
@@ -55,6 +55,7 @@ static inline int32_t rel32(uintptr_t p, uintptr_t target) {
 	(0x40 | (w) << 3 | ((rr) >> 1 & 0b0100) | ((rx) >> 2 & 0b0010) | (rb) >> 3)
 #define EMIT_REX(ctx, w, rr, rx, rb) do { uint8_t _n = REX(w, rr, rx, rb); \
 		if (_n != 0x40) *--(ctx)->p = _n; } while (0)
+#define IMM_GRP1_MR(op) (8 * (op) + 1)
 
 /** Register addressing mode. */
 enum Mod {
@@ -136,15 +137,16 @@ static inline void asm_mov_mi64(struct Assembler *ctx,
 
 enum ImmGrp1 { XG_ADD, XG_SUB = 5, XG_CMP = 7 };
 
-#define IMM_GRP1_MR(op) (8 * (op) + 1)
+/** Gets the Immediate Group 1 instruction opcode and emits its operand. */
+static inline uint8_t asm_imm_grp1_op(struct Assembler *ctx, int32_t i) {
+	if ((int8_t) i == i) { *--ctx->p = i; return 0x83; }
+	else { asm_write32(ctx, i); return 0x81; }
+}
 
 /** Emits an Immediate Group 1 instruction with a register as 2nd operand. */
 static inline void asm_grp1_imm(struct Assembler *ctx, bool w, enum ImmGrp1 reg,
 	enum Register rm, int32_t i) {
-	uint8_t op;
-	if ((int8_t) i == i) { *--ctx->p = i; op = 0x83; }
-	else { asm_write32(ctx, i); op = 0x81; }
-	asm_rr(ctx, w, op, (uint8_t) reg, rm);
+	asm_rr(ctx, w, asm_imm_grp1_op(ctx, i), (uint8_t) reg, rm);
 }
 
 /** Condition code for Conditional Test fields. */
@@ -157,17 +159,14 @@ enum Cc {
 
 static inline enum Cc cc_negate(enum Cc x) { return x ^ 1; }
 
-static inline void asm_ret(struct Assembler *ctx) { *--ctx->p = XI_RET; }
-
 /** x86(-64) instruction length disassembler. */
 static inline unsigned asm_insn_len(const uint8_t p[static 1]) {
-	const unsigned char lut1[256] = {
+	const unsigned char lut1[] = {
 		[0x0f] = 0x20,
 		[IMM_GRP1_MR(XG_ADD)] = 0x02, [IMM_GRP1_MR(XG_SUB)] = 0x02, [IMM_GRP1_MR(XG_CMP)] = 0x02,
 		[XI_XORr] = 0x52, [XI_PUSHib] = 0x02,
-		// REX
-		[0x40] = 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-		[/* REX.W */ 0x48] = 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
+		[REX(0, 0, 0, 0)] = 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+		/* REX.W */ 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
 		[0x66] = 0x42, [0x67] = 0x41,
 		[0x81] = 0x56, [0x83] = 0x53,
 
@@ -177,7 +176,7 @@ static inline unsigned asm_insn_len(const uint8_t p[static 1]) {
 
 		[XI_RET] = 0x01, [XI_JMP] = 0x05, [XI_JMPs] = 0x02,
 		[XI_GRP5] = 0x52,
-	}, lut2[256] = {
+	}, lut2[] = {
 		[0x38] = 0x30, [0x3a] = 0x30,
 		[XI_Jcc] = 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
 		0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
@@ -201,8 +200,7 @@ do_loop:
 		case MOD_REG: return acc;
 		}
 		if (rm == rsp) { rm = /* SIB */ p[1] & 7; ++acc; }
-		if (mod == MOD_DISP0 && rm == 5) acc += 4;
-		return acc;
+		return acc + (mod == MOD_DISP0 && rm == 5 ? 4 : 0);
 	default: unreachable();
 	}
 }

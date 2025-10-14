@@ -58,7 +58,11 @@
 #define NILP(ctx, x) LISP_EQ(x, NIL(ctx))
 #endif
 
-typedef uintptr_t LispObject;
+#if __DOXYGEN__
+#define ENABLE_JIT 1
+#endif
+
+typedef uintptr_t LispObject; ///< Tagged Lisp value pointer.
 typedef struct GcRef Lobj;
 
 /** Lisp object variant. */
@@ -132,7 +136,8 @@ struct LispCtx {
 #if ENABLE_JIT
 	unsigned char hotcounts[64];
 	struct JitState *jit_state;
-	struct LispTrace *(*traces)[UINT16_MAX], *current_trace;
+	struct LispTrace *(*traces)[UINT16_MAX], ///< Numbered root traces.
+		*current_trace;
 #endif
 
 #ifndef LISP_GENERATED_FILE
@@ -168,7 +173,7 @@ LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr);
 LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]);
 
 enum LispReadError {
-	LISP_READ_OK,
+	LISP_READ_OK, ///< Success.
 	LISP_READ_EOF, ///< End of file during parsing.
 	LISP_READ_EMPTY, ///< Input was empty save for whitespace or comments.
 	LISP_READ_EXPECTED_RPAREN, ///< Expected closing parenthesis.
@@ -190,7 +195,7 @@ bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b);
 
 /** Lisp VM signal handler to consult before user application signal handling.
  *
- * This routine recognizes SIGSEGV signals.
+ * This routine recognizes @c SIGSEGV signals.
  *
  * @return Whether the signal was handled.
  */
@@ -269,8 +274,8 @@ struct Instruction {
 /** Sequence of bytecode instructions. */
 struct Chunk {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	uint16_t num_consts;
-	size_t count;
+	uint16_t num_consts; ///< Number of #LispObject constant slots.
+	unsigned count; ///< Number of #Instruction:s.
 	/// Array of #num_consts constants, followed by #count instructions.
 	alignas(LispObject) alignas(struct Instruction) char data[];
 };

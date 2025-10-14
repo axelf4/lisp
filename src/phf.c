@@ -7,11 +7,11 @@
 		op (typeof(*(x)))1 << (i) % (CHAR_BIT * sizeof *(x)))
 
 static int key_cmp(const void *x, const void *y) {
-	uint64_t a = *(uint64_t *) x, b = *(uint64_t *) y;
+	uint64_t a = *(const uint64_t *) x, b = *(const uint64_t *) y;
 	return (a > b) - (a < b);
 }
 static int bucket_cmp(const void *x, const void *y) {
-	size_t a = *(size_t *) x, b = *(size_t *) y;
+	size_t a = *(const size_t *) x, b = *(const size_t *) y;
 	return (a < b) - (a > b);
 }
 

@@ -8,8 +8,8 @@
 #include <unistd.h>
 #endif
 
-#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
-#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 /** Number of elements in the array. */
 #define LENGTH(x) (sizeof (x) / sizeof *(x))
@@ -38,6 +38,7 @@
 #define HTOL(x) (x)
 #elif __STDC_ENDIAN_NATIVE__ == __STDC_ENDIAN_BIG__
 #define HTOL(x) _Generic((x),					\
+		uint8_t: ,								\
 		uint16_t: __builtin_bswap16,			\
 		uint32_t: __builtin_bswap32,			\
 		uint64_t: __builtin_bswap64)(x)

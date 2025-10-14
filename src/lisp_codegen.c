@@ -17,7 +17,7 @@ static bool write_keyword_phf(struct LispCtx *ctx, FILE *f) {
 #undef X
 
 	struct Phf result;
-	struct PhfParameters params = { .c = 1, .alpha = 1 };
+	struct PhfParameters params = { .c = 0, .alpha = 1 };
 	uint64_t seed, max_tries = 32;
 	for (seed = 0; seed < max_tries; ++seed) {
 		uint64_t keys[LISP_NUM_KEYWORDS];
@@ -38,14 +38,12 @@ out:
 		"\t\t.pilots = (unsigned char []) {",
 		result.n, result.n_prime, result.m);
 	for (size_t i = 0; i < result.m; ++i) fprintf(f, "%hhu, ", result.pilots[i]);
-	fprintf(f, "},\n\t\t.remap = ");
 	if (result.n_prime > result.n) {
-		fprintf(f, "(size_t []) {");
+		fputs("},\n\t\t.remap = (size_t []) {", f);
 		for (size_t i = 0; i < result.n_prime - result.n; ++i)
 			fprintf(f, "%zu,", result.remap[i]);
-		fprintf(f, "}");
-	} else fputs("NULL", f);
-	fprintf(f, "\n\t};\n"
+	}
+	fprintf(f, "}\n\t};\n"
 		"\tif (sym - LISP_CONST(ctx, " STR(KW_FIRST) ")"
 		" > LISP_CONST(ctx, " STR(KW_LAST) ") - LISP_CONST(ctx, " STR(KW_FIRST) ")\n"
 		"\t\t|| lisp_type(sym) != LISP_SYMBOL) return LISP_NO_KEYWORD;\n"

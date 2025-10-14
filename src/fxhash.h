@@ -68,7 +68,7 @@ static inline uint64_t fxhash_load64(const char p[static 8]) {
 	return x;
 }
 
-/** wyhash-inspired non-collision-resistant hash for strings. */
+/** wyhash-inspired non-collision-resistant string hash. */
 static inline uint64_t fxhash_str(size_t n, const char p[static n]) {
 	uint64_t s0 = 0x243f6a8885a308d3, s1 = 0x13198a2e03707344, // Digits of pi
 		prevent_trivial_zero_collapse = 0xa4093822299f31d0;
@@ -88,9 +88,9 @@ static inline uint64_t fxhash_str(size_t n, const char p[static n]) {
 	} else if (n >= 8) { do_16: s0 ^= fxhash_load64(p); s1 ^= fxhash_load64(p + n - 8); }
 	else if (n >= 4) { s0 ^= fxhash_load32(p); s1 ^= fxhash_load32(p + n - 4); }
 	else if (n) {
-		uint64_t lo = p[0], mid = p[n / 2], hi = p[n - 1];
+		unsigned char lo = p[0], mid = p[n / 2], hi = p[n - 1];
 		s0 ^= lo;
-		s1 ^= hi << 8 | mid;
+		s1 ^= hi << CHAR_BIT | mid;
 	}
 	// Subsequent multiplication and taking high bits will avalanche for us
 	return fxhash_mul_mix(s0, s1) ^ n;

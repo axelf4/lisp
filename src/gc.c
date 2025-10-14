@@ -20,6 +20,12 @@
 #include <immintrin.h>
 #endif
 
+#ifndef GC_HEAP_SIZE
+#define GC_HEAP_SIZE 0x800000 ///< GC heap allocation size in bytes.
+#endif
+#define NUM_BLOCKS (GC_HEAP_SIZE / sizeof(struct GcBlock) - 1)
+#define MIN_FREE (NUM_BLOCKS * 3 / 100)
+#define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_ALIGNMENT * CHAR_BIT))
 #define NULL_BUMP_PTR(block) (struct BumpPointer) { (block)->data, (block)->data }
 
 struct BumpPointer { char *cursor, *limit; };
@@ -54,13 +60,6 @@ static struct BumpPointer next_gap(struct GcBlock *block, char *top) {
 static struct BumpPointer block_bump_ptr(struct GcBlock *block) {
 	return (struct BumpPointer) { (&block->data)[1], block->data };
 }
-
-#ifndef GC_HEAP_SIZE
-#define GC_HEAP_SIZE 0x800000 ///< GC heap allocation size in bytes.
-#endif
-#define NUM_BLOCKS (GC_HEAP_SIZE / sizeof(struct GcBlock) - 1)
-#define MIN_FREE (NUM_BLOCKS * 3 / 100)
-#define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_ALIGNMENT * CHAR_BIT))
 
 struct GcHeap {
 	// Store at same offset to use a single pointer for both
@@ -179,7 +178,7 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 		|| !(LIKELY(p = bump_alloc(&heap->ptr, alignment, size))
 			|| (p = alloc_slow_path(heap, alignment, size)))) return NULL;
 	ASAN_UNPOISON_MEMORY_REGION(p, size);
-	*(struct GcObjectHeader *) p = (struct GcObjectHeader) { .flags = heap->mark_color };
+	*(struct GcObjectHeader *) p = (struct GcObjectHeader) { heap->mark_color };
 	object_map_add(heap, p);
 	return p;
 }

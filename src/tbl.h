@@ -57,7 +57,7 @@ struct Table {
 	size_t bucket_mask, ///< = n - 1
 		growth_left,
 		len;
-	/** Array of n + GROUP_WIDTH "control" bytes, preceded by n buckets of keys.
+	/** Array of n + GROUP_WIDTH control bytes, preceded by n buckets of keys.
 	 *
 	 * Each byte is one of:
 	 * - 0b1111'1111: EMPTY
