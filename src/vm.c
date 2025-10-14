@@ -88,11 +88,11 @@ static struct Handler { LispTailCallFunc *hnd; }
 
 #define HANDLER_PTR(op) &&op_ ## op,
 #define RECORD_PTR(_) HANDLER_PTR(RECORD)
-#define VM_BEGIN _Pragma("GCC diagnostic push")					\
-	_Pragma("GCC diagnostic ignored \"-Wpedantic\"")			\
-	void *main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },		\
-		*recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) },	\
-		**dispatch_table = main_dispatch_table;					\
+#define VM_BEGIN _Pragma("GCC diagnostic push")							\
+	_Pragma("GCC diagnostic ignored \"-Wpedantic\"")					\
+	void *main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },				\
+		*recording_dispatch_table [[maybe_unused]][] = { FOR_OPS(RECORD_PTR) },	\
+		**dispatch_table = main_dispatch_table;							\
 	struct Instruction ins; NEXT;
 #define VM_END _Pragma("GCC diagnostic pop")
 #elif ENABLE_JIT
@@ -260,6 +260,8 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		}
 		DISPATCH_MAIN(ins.op);
 	}
+#else
+	DEFINE_OP(RECORD) { unreachable(); }
 #endif
 	VM_END;
 }
@@ -689,8 +691,10 @@ static void disassemble_range(size_t n, struct Instruction xs[static n], int ind
 			break;
 		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
 		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
-		case CALL: case TAIL_CALL: case TAIL_JIT_CALL:
-		case CALL_INTERPR: case TAIL_CALL_INTERPR:
+		case CALL: case TAIL_CALL:
+#if ENABLE_JIT
+		case JIT_CALL: case TAIL_JIT_CALL: case CALL_INTERPR: case TAIL_CALL_INTERPR:
+#endif
 			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
 				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
 			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);
