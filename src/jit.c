@@ -46,6 +46,7 @@ enum SsaOp : uint8_t {
 	IR_EQ, IR_NEQ,
 	IR_CALL, ///< Call C function.
 	IR_CALLARG, ///< Argument for #IR_CALL.
+	IR_RET,
 	IR_SLOAD, ///< Load stack slot.
 	IR_GLOAD, ///< Load global.
 	IR_ULOAD, ///< Load upvalue.
@@ -328,7 +329,7 @@ static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 	guard_type(state, ref, ty);
 }
 
-static bool has_side_effects(enum SsaOp x) { return x <= IR_CALLARG; }
+static bool has_side_effects(enum SsaOp x) { return x <= IR_RET; }
 
 /** Dead-code elimination (DCE). */
 static void dce(struct JitState *state) {
@@ -809,6 +810,16 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 			break;
 		case IR_CALL: asm_call(&ctx, ref); break;
 		case IR_CALLARG: break;
+		case IR_RET:
+			bp = reg_use(&ctx, REF_BP, -1);
+			asm_rmrd(&ctx.assembler, 1, XI_MOVmr, bp, REG_LISP_CTX, offsetof(struct LispCtx, bp));
+			asm_grp1_imm(&ctx.assembler, 1, XG_SUB, bp, x.b * sizeof(LispObject));
+
+			uintptr_t pc = IR_GET(trace, x.a).v;
+			asm_guard(&ctx, CC_NE); // Guard the return address
+			asm_write32(&ctx.assembler, pc);
+			asm_rmrd(&ctx.assembler, 0, 0x81, (uint8_t) XG_CMP, bp, sizeof(LispObject));
+			break;
 		case IR_LOOP: asm_loop(&ctx); break;
 		case IR_PHI:
 			assert(IS_VAR(x.a) && IS_VAR(x.b) && "constant variant ref");
@@ -989,6 +1000,7 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 			puts(")");
 			break;
 		case IR_CALLARG: unreachable();
+		case IR_RET: puts("RET"); break;
 		case IR_LOOP: puts("LOOP ------------"); break;
 		case IR_NOP: puts("NOP"); break;
 		default:
@@ -1131,14 +1143,30 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 			{ .op = IR_EQ ^ !NILP(ctx, bp[x.a]), .ty = ty, .a = ref, .b = nil });
 		break;
 	case RET: do_ret:
+		struct Instruction *npc = (struct Instruction *) bp[1];
+		if (!npc) { rec_err(state); break; }
+		result = state->bp[x.a];
+		uint8_t offset = state->max_slot = x.a = npc[-1].a;
 		if (state->base_offset) {
-			result = state->bp[x.a];
-			uint8_t offset = state->max_slot = x.a = ((struct Instruction *) bp[1])[-1].a;
+			assert(state->base_offset >= offset);
 			state->bp -= offset;
 			state->base_offset -= offset;
 			break;
 		}
-		[[fallthrough]];
+
+		take_snapshot(state);
+		emit(state, (union SsaInstruction)
+			{ .op = IR_RET, .ty = TY_ANY, .b = offset,
+			  .a = emit_const(state, TY_RET_ADDR, (uintptr_t) npc) });
+		memset(state->bp, 0, offset * sizeof *state->bp); // Clear frame below
+		state->need_snapshot = true;
+
+		for (IrRef ref = state->chain[IR_RET]; ref; ref = IR_GET(state, ref).prev) {
+			union SsaInstruction o = IR_GET(state, ref);
+			struct Instruction *onpc = (struct Instruction *) IR_GET(state, o.a).v;
+			if (npc == onpc) { rec_err(state); break; } // Down-recursion
+		}
+		break;
 	default:
 		lttng_ust_tracepoint(lisp, record_nyi, x.op);
 		rec_err(state);
