@@ -111,6 +111,7 @@ struct Snapshot {
 enum TraceLink {
 	TRACE_LINK_LOOP, ///< Loop to itself.
 	TRACE_LINK_ROOT, ///< Jump to root trace.
+	TRACE_LINK_INTERPR, ///< Fall back to interpreter.
 	TRACE_LINK_UPREC, ///< Up-recursion.
 };
 
@@ -444,7 +445,6 @@ static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintpt
 	printf("Side exit %" PRIu8 "\n", exit_num);
 	lttng_ust_tracepoint(lisp, side_exit, trace, exit_num);
 	assert(!snapshot->trace);
-	ctx->current_trace = NULL;
 	FOR_SNAPSHOT_ENTRIES(snapshot, entries, e) {
 		union SsaInstruction insn = insns[trace->num_consts + e->ref - IR_BIAS];
 		ctx->bp[e->slot] = IS_VAR(e->ref)
@@ -463,6 +463,7 @@ static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintpt
 		jit_init(state);
 		state->parent = trace;
 		state->side_exit_num = exit_num;
+		state->pc = (struct Instruction *) GC_DECOMPRESS(ctx, snapshot->pc) + 1;
 		FOR_SNAPSHOT_ENTRIES(snapshot, entries, e) {
 			union SsaInstruction insn = insns[trace->num_consts + e->ref - IR_BIAS];
 			state->slots[state->max_slot = e->slot] = IS_VAR(e->ref)
@@ -474,9 +475,8 @@ static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintpt
 		state->bp += state->base_offset;
 	}
 
-	struct Instruction *pc = (struct Instruction *) GC_DECOMPRESS(ctx, snapshot->pc);
-	return (struct SideExitResult) { pc, {{ snapshot->base_offset,
-		trace->num_spill_slots, should_record }} };
+	return (struct SideExitResult) { snapshot->pc, {{ snapshot->base_offset,
+				trace->num_spill_slots, should_record }} };
 }
 
 struct SideExitResult trace_exec(struct LispCtx *ctx, struct LispTrace *trace) {
@@ -492,7 +492,8 @@ struct SideExitResult trace_exec(struct LispCtx *ctx, struct LispTrace *trace) {
 		"push r8; push r9; push r10; push r11; push r12; push r13; push r14; push r15\n\t"
 		"call %P[inner]\n\t"
 		"movzx ecx, dh\n\t"
-		"lea rsp, [rsp+8*(16+1+rcx)]"
+		"lea rsp, [rsp+8*(16+1+rcx)]\n\t"
+		"side_exit_interpr:"
 		: "=a" (result.pc), "=d" (result.out)
 		: "r" (ctx2), [f] "rm" (trace->f), [inner] "i" (side_exit_handler_inner)
 		: "rcx", "rbx", "rsi", "rdi",
@@ -500,6 +501,7 @@ struct SideExitResult trace_exec(struct LispCtx *ctx, struct LispTrace *trace) {
 		"rbp",
 #endif
 		"r8", "r9", "r10", "r11", "r12", "r13", "r14", "cc", "memory", "redzone");
+	ctx->current_trace = NULL;
 	return result;
 }
 
@@ -756,6 +758,16 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 	*(ctx.assembler.p -= 1 + sizeof(int32_t)) = XI_JMP; // Loop backedge placeholder
 	switch (link_type) {
 	case TRACE_LINK_LOOP: break;
+	case TRACE_LINK_INTERPR:
+		void side_exit_interpr();
+		int32_t jmp_dest = REL32(ctx.end, side_exit_interpr);
+		memcpy(ctx.end - sizeof jmp_dest, &jmp_dest, sizeof jmp_dest);
+		asm_grp1_imm(&ctx.assembler, 1, XG_ADD, rsp, ctx.num_spill_slots * sizeof(void *));
+		struct Snapshot *snapshot = trace->snapshots + trace->num_snapshots - 1;
+		asm_loadu64(&ctx.assembler, rdx, 0);
+		asm_loadu64(&ctx.assembler, rax, snapshot->pc.p);
+		ctx.assembler.p += 7;
+		[[fallthrough]];
 	case TRACE_LINK_ROOT: ctx.assembler.p -= /* ADD rsp, imm32 */ 7; [[fallthrough]];
 	case TRACE_LINK_UPREC: asm_stack_restore(&ctx); break;
 	default: unreachable();
@@ -864,7 +876,7 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 #endif
 
 	switch (link_type) {
-	case TRACE_LINK_LOOP: break;
+	case TRACE_LINK_LOOP: case TRACE_LINK_INTERPR: break;
 	case TRACE_LINK_ROOT:
 		asm_mov_mi64(&ctx.assembler, REG_LISP_CTX,
 			offsetof(struct LispCtx, current_trace), (uintptr_t) result);
@@ -929,7 +941,7 @@ static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTr
 }
 
 static void penalize(struct JitState *state) {
-	if (state->parent) return; // TODO
+	if (state->parent) return;
 
 	struct Penalty *slot = state->penalties, *end = slot + LENGTH(state->penalties);
 	do if (slot->pc == state->origin_pc) goto found; while (++slot < end);
@@ -966,7 +978,7 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		"ADD",
 	}, *type_names[]
 		= { "AxB", "sym", "str", "cfn", "clo", NULL, NULL, "nil", "int", "___" },
-		*link_names[] = { "loop", "root", "up-recursion" };
+		*link_names[] = { "loop", "root", "interpreter", "up-recursion" };
 
 	puts("\n---- TRACE IR");
 	for (unsigned i = 0, snap_idx = 0; ; ++i) {
