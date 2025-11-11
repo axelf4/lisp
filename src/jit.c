@@ -718,9 +718,10 @@ static struct LispTrace *assemble_trace(struct JitState *trace, enum TraceLink l
 	dce(trace);
 	if (link_type == TRACE_LINK_LOOP) peel_loop(trace);
 
+	bool is_pload_ok = false;
+do_retry:
 	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_insn.reg = -1,
-		.snapshot_idx = trace->num_snapshots - 1,
-		.num_spill_slots = trace->parent ? trace->parent->num_spill_slots : 0 };
+		.snapshot_idx = trace->num_snapshots - 1 };
 	if (!LIKELY(asm_init(&ctx.assembler))) return NULL;
 	// Emit side-exit trampolines
 	void side_exit_handler();
@@ -788,6 +789,13 @@ static struct LispTrace *assemble_trace(struct JitState *trace, enum TraceLink l
 			break;
 		}
 		case IR_PLOAD:
+			// Known side trace stack usage: Rectify parent spill slots and redo
+			if (ctx.num_spill_slots && !is_pload_ok) {
+				union SsaInstruction *y = &IR_GET(trace, ref);
+				do if (y->b) y->b += ctx.num_spill_slots; while (--y, i--);
+				is_pload_ok = true;
+				goto do_retry;
+			}
 			if (/* inherited spilled */ x.b) { if (has_reg(x)) reload(&ctx, ref); }
 			else reg_def(&ctx, ref, 1 << x.a);
 			break;
@@ -843,7 +851,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace, enum TraceLink l
 	if (has_reg(ctx.bp_insn)) reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
 	ctx.num_spill_slots += ctx.num_spill_slots % 2; // 16-byte align stack
-	unsigned dsp = ctx.num_spill_slots - (trace->parent ? trace->parent->num_spill_slots : 0);
+	unsigned dsp = ctx.num_spill_slots;
 	if (dsp) asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, dsp * sizeof(void *));
 
 	struct LispTrace *result;
@@ -863,7 +871,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace, enum TraceLink l
 		asm_mov_mi64(&ctx.assembler, REG_LISP_CTX,
 			offsetof(struct LispCtx, current_trace), (uintptr_t) result);
 		// Patch tail
-		unsigned dsp = ctx.num_spill_slots * sizeof(void *);
+		unsigned dsp = ctx.num_spill_slots += trace->parent->num_spill_slots;
 		struct Assembler _asm = { ctx.end -= dsp > INT8_MAX ? 0 : 3, NULL };
 		asm_write32(&_asm, REL32(_asm.p, trace->link->f));
 		*--_asm.p = XI_JMP;
