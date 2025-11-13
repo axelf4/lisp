@@ -516,7 +516,7 @@ static_assert(NUM_REGS <= CHAR_BIT * sizeof(RegSet));
 struct RegAlloc {
 	struct Assembler assembler;
 	struct JitState *trace;
-	RegSet available, clobbers, phi_regs;
+	RegSet available, phi_regs;
 	uint8_t num_spill_slots, snapshot_idx;
 	union SsaInstruction bp_insn; ///< Dummy virtual representing the BP.
 	/** The LuaJIT register cost model. */
@@ -563,10 +563,8 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 }
 
 static enum Register reg_alloc(struct RegAlloc *ctx, RegSet mask) {
-	if (!(ctx->available & mask)) return evict(ctx, mask);
-	enum Register r = stdc_trailing_zeros(ctx->available & mask);
-	ctx->clobbers |= 1 << r;
-	return r;
+	return ctx->available & mask
+		? stdc_trailing_zeros(ctx->available & mask) : evict(ctx, mask);
 }
 
 /** Allocates a register for the definition of @a ref.
@@ -628,7 +626,7 @@ static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
 /** Assembles the @ref IR_LOOP instruction. */
 static void asm_loop(struct RegAlloc *ctx) {
 	// Reload invariants whose registers get clobbered
-	FOR_ONES(reg, ctx->clobbers & ~(ctx->available | ctx->phi_regs))
+	FOR_ONES(reg, REG_ALL & ~(ctx->available | ctx->phi_regs))
 		reload(ctx, ctx->reg_costs[reg]);
 
 	// φ-resolution
@@ -820,10 +818,8 @@ static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitStat
 			// Pick φ registers from opposite end to reduce collisions
 			enum Register dst = stdc_bit_width(ctx.available) - 1;
 			if (LIKELY(!has_reg(*out))) reg_use(&ctx, x.b, 1 << dst);
-			else { // Outgoing variable already has a location: Move from out to in
-				ctx.clobbers |= 1 << dst;
+			else // Outgoing variable already has a location: Move from out to in
 				asm_mov(&ctx.assembler, dst, out->reg);
-			}
 			in->reg = dst | REG_NONE; // Add hint
 			ctx.phi_regs |= 1 << dst;
 			ctx.phis_refs[dst] = x.a;
