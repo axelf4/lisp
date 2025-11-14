@@ -13,6 +13,7 @@
 #include "lisp_tracepoint.h"
 
 #define IR_BIAS 0x8000
+#define REF_BP (IR_BIAS - 1) ///< Virtual representing #LispCtx.bp.
 #define IR_REF_TYPE_SHIFT 16
 #define IS_VAR(ref) ((Ref) (ref) >= IR_BIAS)
 #define IR_GET(state, ref) (state)->trace[(Ref) (ref) - IR_BIAS + MAX_CONSTS]
@@ -26,7 +27,6 @@
 #define IR_MARK 0x80 ///< Multi-purpose flag.
 #define REG_NONE 0x80 ///< Spilled or unallocated register flag.
 
-#define REF_BP 0
 #define REG_LISP_CTX r15
 /** Initial set of allocatable registers. */
 #if PRESERVE_FRAME_POINTER
@@ -212,11 +212,11 @@ static void take_snapshot(struct JitState *state) {
 }
 
 static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
-	Ref i = IR_BIAS;
-	while (i-- > IR_BIAS - state->num_consts)
+	Ref i = REF_BP;
+	while (i-- > REF_BP - state->num_consts)
 		if (LISP_EQ(IR_GET(state, i).v, x)) goto out;
-	if (state->num_consts >= MAX_CONSTS) { rec_err(state); return 0; }
-	IR_GET(state, i = IR_BIAS - ++state->num_consts).v = x;
+	if (++state->num_consts >= MAX_CONSTS) { rec_err(state); return 0; }
+	IR_GET(state, i).v = x;
 out: return ty << IR_REF_TYPE_SHIFT | i;
 }
 
@@ -511,7 +511,6 @@ struct RegAlloc {
 	struct JitState *trace;
 	RegSet available, phi_regs;
 	uint8_t num_spill_slots, snapshot_idx;
-	union SsaInstruction bp_insn; ///< Dummy virtual representing the BP.
 	/** The LuaJIT register cost model. */
 	alignas(32) Ref reg_costs[NUM_REGS];
 	Ref phis_refs[NUM_REGS]; ///< For each #phi_regs bit, its corresponding "in".
@@ -522,21 +521,18 @@ static bool has_reg(union SsaInstruction x) { return !(x.reg & REG_NONE); }
 
 /** Spills @a ref, emitting a reload. */
 static enum Register reload(struct RegAlloc *ctx, Ref ref) {
-	enum Register reg;
+	union SsaInstruction *x = &IR_GET(ctx->trace, ref);
+	assert(has_reg(*x) && "evicting unallocated virtual");
+	enum Register reg = x->reg;
+	x->reg |= REG_NONE;
 	if (IS_VAR(ref)) {
-		union SsaInstruction *x = &IR_GET(ctx->trace, ref);
-		assert(has_reg(*x) && "Evicting unallocated virtual?");
-		reg = x->reg;
 		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, reg);
-		x->reg |= REG_NONE;
 		if (!x->spill_slot && !(x->spill_slot = ++ctx->num_spill_slots))
 			rec_err(ctx->trace); // Out of spill slots
 		// Reload from stack
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, (x->spill_slot - 1) * sizeof x->v);
 	} else { // (Re-)materialize constant
 		assert(ref == REF_BP);
-		reg = ctx->bp_insn.reg;
-		ctx->bp_insn.reg = -1;
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg,
 			REG_LISP_CTX, offsetof(struct LispCtx, bp));
 	}
@@ -584,8 +580,7 @@ static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
  * @note If @a ref already has a register, it must be in @a mask.
  */
 static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
-	union SsaInstruction *x = IS_VAR(ref) ? &IR_GET(ctx->trace, ref)
-		: ref == REF_BP ? &ctx->bp_insn : NULL;
+	union SsaInstruction *x = &IR_GET(ctx->trace, ref);
 	assert(IS_VAR(ref) || ref == REF_BP);
 	if (has_reg(*x)) { assert(1 << x->reg & mask); return x->reg; }
 	RegSet available = ctx->available & mask;
@@ -720,7 +715,7 @@ static struct LispTrace *assemble_trace(struct JitState *trace, enum TraceLink l
 
 	bool is_pload_ok = false;
 do_retry:
-	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL, .bp_insn.reg = -1,
+	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL,
 		.snapshot_idx = trace->num_snapshots - 1 };
 	if (!LIKELY(asm_init(&ctx.assembler))) return NULL;
 	// Emit side-exit trampolines
@@ -737,8 +732,8 @@ do_retry:
 	}
 
 	// Initialize registers as unallocated
-	for (unsigned i = 0; i < trace->len; ++i) {
-		union SsaInstruction *x = &IR_GET(trace, IR_BIAS + i);
+	for (Ref ref = REF_BP; ref < IR_BIAS + trace->len; ++ref) {
+		union SsaInstruction *x = &IR_GET(trace, ref);
 		x->reg = -1;
 		x->spill_slot = 0;
 	}
@@ -848,7 +843,7 @@ do_retry:
 		union SsaInstruction in = IR_GET(trace, ctx.phis_refs[reg]);
 		if (in.spill_slot && !(in.ty & IR_MARK)) rec_err(trace); // Spilled outside loop
 	}
-	if (has_reg(ctx.bp_insn)) reload(&ctx, REF_BP);
+	if (has_reg(IR_GET(trace, REF_BP))) reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
 	ctx.num_spill_slots += ctx.num_spill_slots % 2; // 16-byte align stack
 	unsigned dsp = ctx.num_spill_slots;
