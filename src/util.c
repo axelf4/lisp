@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#ifndef USE_SJLJ
+#define USE_SJLJ !__GCC_HAVE_DWARF2_CFI_ASM
+#endif
+
 void die(const char *format, ...) {
 	va_list ap;
 	va_start(ap, format);
@@ -87,8 +91,9 @@ static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 }
 
 [[gnu::naked]] unsigned pcall(void *, void (*)(void *)) {
-	__asm__ ("DW_EH_PE_absptr = 0x00\n\t"
-		".cfi_personality DW_EH_PE_absptr, eh_personality\n\t"
+	__asm__ ("DW_EH_PE_sdata4 = 0x0b\n\t"
+		"DW_EH_PE_pcrel = 0x10\n\t"
+		".cfi_personality DW_EH_PE_pcrel | DW_EH_PE_sdata4, eh_personality\n\t"
 		"sub rsp, 8\n\t"
 		".cfi_adjust_cfa_offset 8\n\t"
 		"call rsi\n\t"
