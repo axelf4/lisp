@@ -22,7 +22,8 @@
 #define MAX_TRACE_LEN 512
 #define MAX_SNAPSHOTS 64
 #define MAX_SNAPSHOT_ENTRIES UINT8_MAX
-#define SIDE_TRACE_THRESHOLD 1
+#define SIDE_TRACE_THRESHOLD 5
+#define SIDE_TRACE_ATTEMPTS 4 ///< Number of times to try to compile a side trace.
 
 #define IR_MARK 0x80 ///< Multi-purpose flag.
 #define REG_NONE 0x80 ///< Spilled or unallocated register flag.
@@ -200,8 +201,7 @@ static void take_snapshot(struct JitState *state) {
 	struct Snapshot *snapshot = state->snapshots + state->num_snapshots++;
 	*snapshot = (struct Snapshot) {
 		.ir_start = state->len, .offset = state->num_stack_entries,
-		.base_offset = state->base_offset, .pc = GC_COMPRESS(state->pc - 1),
-		.hotcount = SIDE_TRACE_THRESHOLD
+		.base_offset = state->base_offset, .pc = GC_COMPRESS(state->pc - 1)
 	};
 	for (unsigned i = 0; i <= max_slot; ++i) {
 		IrRef ref = state->slots[i];
@@ -384,8 +384,7 @@ static void subst_snapshot(struct JitState *state, Ref *subst,
 	*s = (struct Snapshot)
 		{ .ir_start = state->len, .offset = offset,
 		  .num_entries = n - (state->stack_entries + offset),
-		  .base_offset = snap->base_offset, .pc = snap->pc,
-		  .hotcount = SIDE_TRACE_THRESHOLD };
+		  .base_offset = snap->base_offset, .pc = snap->pc };
 	state->num_stack_entries = offset + s->num_entries;
 }
 
@@ -436,6 +435,10 @@ static void peel_loop(struct JitState *state) {
 	}
 }
 
+static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTrace *trace);
+static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitState *trace,
+	enum TraceLink link_type);
+
 static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
 	struct JitState *state = ctx->jit_state;
 	struct LispTrace *trace = ctx->current_trace;
@@ -460,9 +463,8 @@ static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintpt
 		puts(".");
 	}
 
-	bool should_record = !--snapshot->hotcount;
+	bool should_record = ++snapshot->hotcount >= SIDE_TRACE_THRESHOLD;
 	if (should_record) {
-		snapshot->hotcount = SIDE_TRACE_THRESHOLD;
 		puts("Starting side trace recording");
 		jit_init(state);
 		state->parent = trace;
@@ -477,6 +479,11 @@ static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintpt
 			if (e->ty == TY_RET_ADDR) state->base_offset = e->slot - 1;
 		}
 		state->bp += state->base_offset;
+
+		if (snapshot->hotcount >= SIDE_TRACE_THRESHOLD + SIDE_TRACE_ATTEMPTS) {
+			should_record = false;
+			assemble_trace(ctx, state, TRACE_LINK_INTERPR);
+		}
 	}
 
 	return (struct SideExitResult) { snapshot->pc, {{ snapshot->base_offset,
@@ -932,6 +939,8 @@ do_retry:
 	memcpy(p, state->snapshots, size = state->num_snapshots * sizeof *state->snapshots);
 	p += size;
 	memcpy(p, state->stack_entries, state->num_stack_entries * sizeof *state->stack_entries);
+
+	if (state->parent) patch_exit(state->parent, state->side_exit_num, result);
 	return result;
 }
 
@@ -964,7 +973,7 @@ static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTr
 }
 
 static void penalize(struct JitState *state) {
-	if (state->parent) return;
+	if (state->parent) return; // Handled in side_exit_handler_inner()
 
 	struct Penalty *slot = state->penalties, *end = slot + LENGTH(state->penalties);
 	do if (slot->pc == state->origin_pc) goto found; while (++slot < end);
@@ -1178,11 +1187,8 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		// Move arguments down to current frame
 		memmove(state->bp + 2, state->bp + x.a + 2, n * sizeof *state->bp);
 		state->max_slot = 2 + n - 1;
-
-		struct LispTrace *trace;
-		if (!(trace = assemble_trace(ctx, state, TRACE_LINK_ROOT))) break;
-		patch_exit(state->parent, state->side_exit_num, trace);
-		return false;
+		if (assemble_trace(ctx, state, TRACE_LINK_ROOT)) return false;
+		break;
 	case MOV: result = SLOT(state, x.c); break;
 	case JMP: break;
 	case JNIL:
