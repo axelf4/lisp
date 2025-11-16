@@ -1134,22 +1134,24 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 	case GETUPVALUE: result = uref(state, bp, x.c); break;
 	case CALL: case CALL_INTERPR:
 		LispObject fn_value = bp[x.a];
+		enum TraceLink link_type = TRACE_LINK_UPREC;
+		enum Op jit_call_op = JIT_CALL;
 		switch (lisp_type(fn_value)) {
 		case LISP_CFUNCTION: result = record_c_call(ctx, state, bp, x); break;
 		case LISP_CLOSURE:
-			// Specialize to the function value in question
-			// TODO Guard on prototype only
-			guard_value(state, (IrRef[]) { SLOT(state, x.a) }, fn_value);
 			(state->bp += x.a)[1] = emit_const(state, TY_RET_ADDR, (uintptr_t) pc);
 			state->base_offset += x.a;
-			state->max_slot = 2 + x.c - 1;
+		do_rec_call:
 			struct Prototype *proto = ((struct Closure *) UNTAG_OBJ(fn_value))->prototype;
+			// TODO Guard on prototype only
+			guard_value(state, state->bp, fn_value); // Specialize to the function
+			state->max_slot = 2 + x.c - 1;
 			if (LISP_EQ(fn_value, TAG_OBJ(state->origin))) {
 				struct LispTrace *trace;
-				if (!(trace = assemble_trace(ctx, state, TRACE_LINK_UPREC))) break;
+				if (!(trace = assemble_trace(ctx, state, link_type))) break;
 				uint16_t trace_num = state->num_traces++;
 				(*ctx->traces)[trace_num] = trace;
-				pc[-1] = (struct Instruction) { .op = JIT_CALL, .a = x.a, .b = trace_num };
+				pc[-1] = (struct Instruction) { .op = jit_call_op, .a = x.a, .b = trace_num };
 				return false;
 			} else if (proto->arity & PROTO_VARIADIC) rec_err(state);
 			break;
@@ -1158,20 +1160,16 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		break;
 	case TAIL_CALL: case TAIL_CALL_INTERPR:
 		fn_value = bp[x.a];
-		bool is_cfn = lisp_type(fn_value) == LISP_CFUNCTION;
-		if (is_cfn) { state->bp[x.a] = record_c_call(ctx, state, bp, x); goto do_ret; }
-		if (/* Need reload? */ fn_value != *bp) *state->bp = state->bp[x.a];
-		// Move arguments down to current frame
-		memmove(state->bp + 2, state->bp + x.a + 2, x.c * sizeof *state->bp);
-		state->max_slot = 2 + x.c - 1;
-		guard_value(state, state->bp, fn_value); // Specialize to the function
-		if (LISP_EQ(fn_value, TAG_OBJ(state->origin))) {
-			struct LispTrace *trace;
-			if (!(trace = assemble_trace(ctx, state, TRACE_LINK_LOOP))) break;
-			uint16_t trace_num = state->num_traces++;
-			(*ctx->traces)[trace_num] = trace;
-			pc[-1] = (struct Instruction) { .op = TAIL_JIT_CALL, .a = x.a, .b = trace_num };
-			return false;
+		switch (lisp_type(fn_value)) {
+		case LISP_CFUNCTION: state->bp[x.a] = record_c_call(ctx, state, bp, x); goto do_ret;
+		case LISP_CLOSURE:
+			if (/* Need reload? */ fn_value != *bp) *state->bp = state->bp[x.a];
+			// Move arguments down to current frame
+			memmove(state->bp + 2, state->bp + x.a + 2, x.c * sizeof *state->bp);
+			link_type = TRACE_LINK_LOOP;
+			jit_call_op = TAIL_JIT_CALL;
+			goto do_rec_call;
+		default: break;
 		}
 		break;
 	case JIT_CALL:
