@@ -516,7 +516,7 @@ static_assert(NUM_REGS <= CHAR_BIT * sizeof(RegSet));
 
 struct RegAlloc {
 	struct Assembler assembler;
-	struct JitState *trace;
+	struct JitState *state;
 	RegSet available, phi_regs;
 	uint8_t num_spill_slots, snapshot_idx;
 	/** The LuaJIT register cost model. */
@@ -529,14 +529,14 @@ static bool has_reg(union SsaInstruction x) { return !(x.reg & REG_NONE); }
 
 /** Spills @a ref, emitting a reload. */
 static enum Register reload(struct RegAlloc *ctx, Ref ref) {
-	union SsaInstruction *x = &IR_GET(ctx->trace, ref);
+	union SsaInstruction *x = &IR_GET(ctx->state, ref);
 	assert(has_reg(*x) && "evicting unallocated virtual");
 	enum Register reg = x->reg;
 	x->reg |= REG_NONE;
 	if (IS_VAR(ref)) {
 		printf("Evicting %" PRIu16 " from register %d\n", ref - IR_BIAS, reg);
 		if (!x->spill_slot && !(x->spill_slot = ++ctx->num_spill_slots))
-			rec_err(ctx->trace); // Out of spill slots
+			rec_err(ctx->state); // Out of spill slots
 		// Reload from stack
 		asm_rmrd(&ctx->assembler, 1, XI_MOVrm, reg, rsp, (x->spill_slot - 1) * sizeof x->v);
 	} else { // (Re-)materialize constant
@@ -567,7 +567,7 @@ static enum Register reg_alloc(struct RegAlloc *ctx, RegSet mask) {
 /** Allocates a register for the definition of @a ref. */
 static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	assert(IS_VAR(ref));
-	union SsaInstruction x = IR_GET(ctx->trace, ref);
+	union SsaInstruction x = IR_GET(ctx->state, ref);
 	enum Register reg
 		= has_reg(x) && 1 << x.reg & mask ? x.reg // Already allocated
 		: reg_alloc(ctx, mask);
@@ -588,7 +588,7 @@ static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
  * @note If @a ref already has a register, it must be in @a mask.
  */
 static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
-	union SsaInstruction *x = &IR_GET(ctx->trace, ref);
+	union SsaInstruction *x = &IR_GET(ctx->state, ref);
 	assert(IS_VAR(ref) || ref == REF_BP);
 	if (has_reg(*x)) { assert(1 << x->reg & mask); return x->reg; }
 	RegSet available = ctx->available & mask;
@@ -621,14 +621,14 @@ static void asm_loop(struct RegAlloc *ctx) {
 	// FIXME: For now shuffle φ-registers by spilling in-between
 	FOR_ONES(reg, ctx->phi_regs) {
 		Ref lref = ctx->phis_refs[reg];
-		union SsaInstruction *in = &IR_GET(ctx->trace, lref);
+		union SsaInstruction *in = &IR_GET(ctx->state, lref);
 		if (LIKELY(in->reg == reg)) continue;
 		if (has_reg(*in)) reload(ctx, lref);
 		if (!(1 << reg & ctx->available)) reload(ctx, ctx->reg_costs[reg]);
 	}
 	FOR_ONES(reg, ctx->phi_regs) {
 		Ref lref = ctx->phis_refs[reg];
-		union SsaInstruction *in = &IR_GET(ctx->trace, lref);
+		union SsaInstruction *in = &IR_GET(ctx->state, lref);
 		if (LIKELY(!in->spill_slot)) continue;
 		// Resave spill slot of "in" on each iteration
 		asm_rmrd(&ctx->assembler, 1, XI_MOVmr, reg, rsp, (in->spill_slot - 1) * sizeof in->v);
@@ -647,7 +647,7 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 		reload(ctx, ctx->reg_costs[reg]);
 
 #define ARG_REGS (1 << rdi | 1 << rsi | 1 << rdx | 1 << rcx | 1 << r8 | 1 << r9)
-	union SsaInstruction x = IR_GET(ctx->trace, ref);
+	union SsaInstruction x = IR_GET(ctx->state, ref);
 	reg_def(ctx, ref, 1 << rax);
 	enum Register f_reg = reg_use(ctx, x.a, ~ARG_REGS);
 	asm_rmrd(&ctx->assembler, 0, XI_GRP5, /* CALL */ 2,
@@ -658,8 +658,8 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 	asm_loadu64(&ctx->assembler, (arg_regs >>= 4) & 0xf, x.b);
 	enum Register args_reg = (arg_regs >>= 4) & 0xf;
 	for (unsigned i = x.b; i--;) {
-		Ref arg_ref = IR_GET(ctx->trace, ref + 1 + i).a;
-		union SsaInstruction arg = IR_GET(ctx->trace, arg_ref);
+		Ref arg_ref = IR_GET(ctx->state, ref + 1 + i).a;
+		union SsaInstruction arg = IR_GET(ctx->state, arg_ref);
 		if (!IS_VAR(arg_ref)) {
 			if (IS_SMI(arg.v)) {
 				asm_write32(&ctx->assembler, arg.v);
@@ -675,8 +675,8 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 }
 
 static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
-	union SsaInstruction x = IR_GET(ctx->trace, ref),
-		a = IR_GET(ctx->trace, x.a), b = IR_GET(ctx->trace, x.b);
+	union SsaInstruction x = IR_GET(ctx->state, ref),
+		a = IR_GET(ctx->state, x.a), b = IR_GET(ctx->state, x.b);
 	assert(IS_VAR(x.a) && "non-folded constant arithmetic op");
 
 	asm_guard(ctx, CC_O);
@@ -696,18 +696,18 @@ static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
 /** Assembles synchronization of interpreter stack with on-trace state. */
 static void asm_stack_restore(struct RegAlloc *ctx) {
 	enum Register bp = reg_use(ctx, REF_BP, -1);
-	if (ctx->trace->base_offset) { // Shift base pointer to next frame
+	if (ctx->state->base_offset) { // Shift base pointer to next frame
 		uint8_t op;
-		int32_t dbp = ctx->trace->base_offset * sizeof(LispObject);
+		int32_t dbp = ctx->state->base_offset * sizeof(LispObject);
 		if ((int8_t) dbp == dbp) { *--ctx->assembler.p = dbp; op = 0x83; }
 		else { asm_write32(&ctx->assembler, dbp); op = 0x81; }
 		asm_rmrd(&ctx->assembler, 1, op, (uint8_t) XG_ADD,
 			REG_LISP_CTX, offsetof(struct LispCtx, bp));
 	}
 
-	struct Snapshot *snapshot = ctx->trace->snapshots + ctx->trace->num_snapshots - 1;
-	FOR_SNAPSHOT_ENTRIES(snapshot, ctx->trace->stack_entries, entry) {
-		union SsaInstruction x = IR_GET(ctx->trace, entry->ref);
+	struct Snapshot *snapshot = ctx->state->snapshots + ctx->state->num_snapshots - 1;
+	FOR_SNAPSHOT_ENTRIES(snapshot, ctx->state->stack_entries, entry) {
+		union SsaInstruction x = IR_GET(ctx->state, entry->ref);
 		if (IS_VAR(entry->ref)) {
 			enum Register reg = reg_use(ctx, entry->ref, ~(1 << bp));
 			asm_rmrd(&ctx->assembler, 1, XI_MOVmr, reg, bp, entry->slot * sizeof x.v);
@@ -717,17 +717,17 @@ static void asm_stack_restore(struct RegAlloc *ctx) {
 
 static void print_trace(struct JitState *state, enum TraceLink link);
 
-static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitState *trace,
+static struct LispTrace *assemble_trace(struct LispCtx *lisp_ctx, struct JitState *state,
 	enum TraceLink link_type) {
-	trace->need_snapshot = true, take_snapshot(trace);
-	trace->snapshots[0].ir_start = 0;
-	dce(trace);
-	if (link_type == TRACE_LINK_LOOP) peel_loop(trace);
+	state->need_snapshot = true, take_snapshot(state);
+	state->snapshots[0].ir_start = 0;
+	dce(state);
+	if (link_type == TRACE_LINK_LOOP) peel_loop(state);
 
 	bool is_pload_ok = false;
 do_retry:
-	struct RegAlloc ctx = { .trace = trace, .available = REG_ALL,
-		.snapshot_idx = trace->num_snapshots - 1 };
+	struct RegAlloc ctx = { .state = state, .available = REG_ALL,
+		.snapshot_idx = state->num_snapshots - 1 };
 	if (!LIKELY(asm_init(&ctx.assembler))) return NULL;
 	// Emit side-exit trampolines
 	void side_exit_handler();
@@ -743,14 +743,14 @@ do_retry:
 	}
 
 	// Initialize registers as unallocated
-	IR_GET(trace, REF_BP).reg = -1;
-	for (unsigned i = 0; i < trace->len; ++i) {
-		union SsaInstruction *x = &IR_GET(trace, IR_BIAS + i);
+	IR_GET(state, REF_BP).reg = -1;
+	for (unsigned i = 0; i < state->len; ++i) {
+		union SsaInstruction *x = &IR_GET(state, IR_BIAS + i);
 		x->reg = -1;
 		x->spill_slot = 0;
 	}
 	for (unsigned i = 0; ; ++i) {
-		union SsaInstruction *x = &IR_GET(trace, IR_BIAS + i);
+		union SsaInstruction *x = &IR_GET(state, IR_BIAS + i);
 		if (x->op != IR_PLOAD) break;
 		x->reg = x->a | REG_NONE; // Add hint
 		x->spill_slot = x->b;
@@ -764,8 +764,8 @@ do_retry:
 		int32_t jmp_dest = REL32(ctx.end, side_exit_interpr);
 		memcpy(ctx.end - sizeof jmp_dest, &jmp_dest, sizeof jmp_dest);
 		asm_grp1_imm(&ctx.assembler, 1, XG_ADD,
-			rsp, trace->parent->num_spill_slots * sizeof(void *));
-		struct Snapshot *snapshot = trace->snapshots + trace->num_snapshots - 1;
+			rsp, state->parent->num_spill_slots * sizeof(void *));
+		struct Snapshot *snapshot = state->snapshots + state->num_snapshots - 1;
 		asm_loadu64(&ctx.assembler, rdx, 0);
 		asm_loadu64(&ctx.assembler, rax, snapshot->pc.p);
 		ctx.assembler.p += 7;
@@ -775,24 +775,24 @@ do_retry:
 	default: unreachable();
 	}
 
-	for (unsigned i = trace->len; i--;) {
-		if (i < trace->snapshots[ctx.snapshot_idx].ir_start) {
-			struct Snapshot *s = trace->snapshots + --ctx.snapshot_idx;
+	for (unsigned i = state->len; i--;) {
+		if (i < state->snapshots[ctx.snapshot_idx].ir_start) {
+			struct Snapshot *s = state->snapshots + --ctx.snapshot_idx;
 			// Start live ranges of virtuals escaping into snapshot
-			FOR_SNAPSHOT_ENTRIES(s, trace->stack_entries, e)
-				if (IS_VAR(e->ref) && !IR_GET(trace, e->ref).spill_slot)
+			FOR_SNAPSHOT_ENTRIES(s, state->stack_entries, e)
+				if (IS_VAR(e->ref) && !IR_GET(state, e->ref).spill_slot)
 					reg_use(&ctx, e->ref, -1);
 		}
 
 		Ref ref = IR_BIAS + i;
-		union SsaInstruction x = IR_GET(trace, ref);
+		union SsaInstruction x = IR_GET(state, ref);
 		switch (x.op) {
 		case IR_SLOAD:
 			enum Register reg = reg_def(&ctx, ref, -1), bp = reg_use(&ctx, REF_BP, -1);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, bp, x.a * sizeof x.v);
 			break;
 		case IR_GLOAD:
-			struct LispSymbol *sym = UNTAG_OBJ(IR_GET(trace, x.a).v);
+			struct LispSymbol *sym = UNTAG_OBJ(IR_GET(state, x.a).v);
 			int32_t p = (char *) &sym->value - (char *) lisp_ctx;
 			reg = reg_def(&ctx, ref, -1);
 			asm_rmrd(&ctx.assembler, 1, XI_MOVrm, reg, REG_LISP_CTX, p);
@@ -809,7 +809,7 @@ do_retry:
 		case IR_PLOAD:
 			// Known side trace stack usage: Rectify parent spill slots and redo
 			if (ctx.num_spill_slots && !is_pload_ok) {
-				union SsaInstruction *y = &IR_GET(trace, ref);
+				union SsaInstruction *y = &IR_GET(state, ref);
 				do if (y->b) y->b += ctx.num_spill_slots; while (--y, i--);
 				is_pload_ok = true;
 				goto do_retry;
@@ -826,7 +826,7 @@ do_retry:
 				enum Register reg2 = reg_use(&ctx, x.b, ~(1 << reg1));
 				asm_rr(&ctx.assembler, 0, IMM_GRP1_MR(XG_CMP), reg2, reg1);
 			} else asm_grp1_imm(&ctx.assembler, 0, XG_CMP,
-				reg1, (uint32_t) IR_GET(trace, x.b).v);
+				reg1, (uint32_t) IR_GET(state, x.b).v);
 			break;
 		case IR_CALL: asm_call(&ctx, ref); break;
 		case IR_CALLARG: break;
@@ -835,7 +835,7 @@ do_retry:
 			asm_rmrd(&ctx.assembler, 1, XI_MOVmr, bp, REG_LISP_CTX, offsetof(struct LispCtx, bp));
 			asm_grp1_imm(&ctx.assembler, 1, XG_SUB, bp, x.b * sizeof(LispObject));
 
-			uintptr_t pc = IR_GET(trace, x.a).v;
+			uintptr_t pc = IR_GET(state, x.a).v;
 			asm_guard(&ctx, CC_NE); // Guard the return address
 			asm_write32(&ctx.assembler, pc);
 			asm_rmrd(&ctx.assembler, 0, 0x81, (uint8_t) XG_CMP, bp, sizeof(LispObject));
@@ -843,7 +843,7 @@ do_retry:
 		case IR_LOOP: asm_loop(&ctx); break;
 		case IR_PHI:
 			assert(IS_VAR(x.a) && IS_VAR(x.b) && "constant variant ref");
-			union SsaInstruction *in = &IR_GET(trace, x.a), out = IR_GET(trace, x.b);
+			union SsaInstruction *in = &IR_GET(state, x.a), out = IR_GET(state, x.b);
 			assert(!has_reg(*in));
 			assert(stdc_count_ones(ctx.available) > 1 && "out of φ registers");
 			// Pick φ registers from opposite end to reduce collisions
@@ -877,25 +877,25 @@ do_retry:
 	}
 
 	FOR_ONES(reg, ctx.phi_regs) {
-		union SsaInstruction in = IR_GET(trace, ctx.phis_refs[reg]);
-		if (in.spill_slot && !(in.ty & IR_MARK)) rec_err(trace); // Spilled outside loop
+		union SsaInstruction in = IR_GET(state, ctx.phis_refs[reg]);
+		if (in.spill_slot && !(in.ty & IR_MARK)) rec_err(state); // Spilled outside loop
 	}
-	if (has_reg(IR_GET(trace, REF_BP))) reload(&ctx, REF_BP);
+	if (has_reg(IR_GET(state, REF_BP))) reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
 	ctx.num_spill_slots += ctx.num_spill_slots % 2; // 16-byte align stack
 	unsigned dsp = ctx.num_spill_slots;
 	if (dsp) asm_grp1_imm(&ctx.assembler, 1, XG_SUB, rsp, dsp * sizeof(void *));
 
 	struct LispTrace *result;
-	if (UNLIKELY(trace->status != REC_OK
-			|| trace->num_traces >= LENGTH(*lisp_ctx->traces))
+	if (UNLIKELY(state->status != REC_OK
+			|| state->num_traces >= LENGTH(*lisp_ctx->traces))
 		|| !(result = malloc(sizeof *result
-				+ (trace->num_consts + trace->len) * sizeof *trace->trace
-				+ trace->num_snapshots * sizeof *trace->snapshots
-				+ trace->num_stack_entries * sizeof *trace->stack_entries)))
+				+ (state->num_consts + state->len) * sizeof *state->trace
+				+ state->num_snapshots * sizeof *state->snapshots
+				+ state->num_stack_entries * sizeof *state->stack_entries)))
 		return NULL;
 #ifdef DEBUG
-	print_trace(trace, link_type);
+	print_trace(state, link_type);
 #endif
 
 	switch (link_type) {
@@ -904,9 +904,9 @@ do_retry:
 		asm_mov_mi64(&ctx.assembler, REG_LISP_CTX,
 			offsetof(struct LispCtx, current_trace), (uintptr_t) result);
 		// Patch tail
-		unsigned dsp = ctx.num_spill_slots += trace->parent->num_spill_slots;
+		unsigned dsp = ctx.num_spill_slots += state->parent->num_spill_slots;
 		struct Assembler _asm = { ctx.end -= dsp > INT8_MAX ? 0 : 3, NULL };
-		asm_write32(&_asm, REL32(_asm.p, trace->link->f));
+		asm_write32(&_asm, REL32(_asm.p, state->link->f));
 		*--_asm.p = XI_JMP;
 		asm_grp1_imm(&_asm, 1, XG_ADD, rsp, dsp);
 		break;
@@ -918,20 +918,20 @@ do_retry:
 
 	*result = (struct LispTrace) {
 		.f = asm_assemble(&ctx.assembler),
-		.len = trace->len, .num_consts = trace->num_consts,
-		.num_snapshots = trace->num_snapshots,
+		.len = state->len, .num_consts = state->num_consts,
+		.num_snapshots = state->num_snapshots,
 		.num_spill_slots = ctx.num_spill_slots,
-		.arity = trace->origin ? trace->origin->prototype->arity : 0,
+		.arity = state->origin ? state->origin->prototype->arity : 0,
 		.mcode_size = ctx.end - ctx.assembler.p,
 		.mcode_tail = ctx.assembler.buf + MCODE_CAPACITY - ctx.assembler.p
 	};
 	char *p = result->data;
-	size_t size = (trace->num_consts + trace->len) * sizeof *trace->trace;
-	memcpy(p, trace->trace + MAX_CONSTS - trace->num_consts, size);
+	size_t size = (state->num_consts + state->len) * sizeof *state->trace;
+	memcpy(p, state->trace + MAX_CONSTS - state->num_consts, size);
 	p += size;
-	memcpy(p, trace->snapshots, size = trace->num_snapshots * sizeof *trace->snapshots);
+	memcpy(p, state->snapshots, size = state->num_snapshots * sizeof *state->snapshots);
 	p += size;
-	memcpy(p, trace->stack_entries, trace->num_stack_entries * sizeof *trace->stack_entries);
+	memcpy(p, state->stack_entries, state->num_stack_entries * sizeof *state->stack_entries);
 	return result;
 }
 
