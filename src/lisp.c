@@ -186,8 +186,8 @@ void gc_object_visit(struct GcHeap *heap, void *p) {
 	case LISP_UPVALUE:
 		struct Upvalue *x = p;
 		gc_mark(sizeof *x, p);
-		if (x->is_closed) lisp_trace(heap, x->location = &x->value);
-		else x->next = gc_trace(heap, x->next);
+		if (x->is_closed) lisp_trace(heap, x->location);
+		else if (x->next) x->next = gc_trace(heap, x->next);
 		break;
 	case LISP_BYTECODE_CHUNK:
 		struct Chunk *chunk = p;

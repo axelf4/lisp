@@ -236,7 +236,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 	DEFINE_OP(CALL_INTERPR) { JMP_TO_LABEL(CALL); }
 	DEFINE_OP(TAIL_CALL_INTERPR) { JMP_TO_LABEL(TAIL_CALL); }
 	DEFINE_OP(JIT_CALL) {
-		struct LispTrace *trace = ctx->current_trace = (*ctx->traces)[ins.b];
+		struct LispTrace *trace = (*ctx->traces)[ins.b];
 		ctx->bp = bp;
 		struct SideExitResult x = trace_exec(ctx, trace);
 		pc = (struct Instruction *) GC_DECOMPRESS(ctx, x.pc);
