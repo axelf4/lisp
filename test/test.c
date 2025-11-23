@@ -84,7 +84,7 @@ static void test_asm(void **) {
 #ifdef __x86_64__
 	struct Assembler ctx;
 	if (!asm_init(&ctx)) fail();
-	asm_ret(&ctx);
+	*--ctx.p = XI_RET;
 	asm_loadu64(&ctx, rax, 42);
 	int (*f)() = (int (*)()) asm_assemble(&ctx);
 	assert_int_equal(f(), 42);
