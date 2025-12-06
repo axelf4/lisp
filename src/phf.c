@@ -3,8 +3,8 @@
 #include <assert.h>
 #include <string.h>
 
-#define BITSET_GET(x, i) ((x)[(i) / (CHAR_BIT * sizeof *(x))] \
-		& (typeof(*(x))) 1 << (i) % (CHAR_BIT * sizeof *(x)))
+#define BITSET_OP(x, op, i) ((x)[(i) / (CHAR_BIT * sizeof *(x))] \
+		op (typeof(*(x)))1 << (i) % (CHAR_BIT * sizeof *(x)))
 
 static int key_cmp(const void *x, const void *y) {
 	uint64_t a = *(uint64_t *) x, b = *(uint64_t *) y;
@@ -20,7 +20,7 @@ static bool try_pilot(unsigned char pilot, size_t len, uint64_t keys[static len]
 	size_t n_prime, size_t *taken, size_t positions[static len]) {
 	for (size_t i = 0; i < len; ++i) {
 		size_t pos = pthash_position(keys[i], pilot, n_prime);
-		if (BITSET_GET(taken, pos)) return false;
+		if (BITSET_OP(taken, &, pos)) return false;
 		for (size_t j = 0; j < i; ++j)
 			if (UNLIKELY(pos == positions[j])) return false; // Intra-bucket collision
 		positions[i] = pos;
@@ -76,8 +76,8 @@ enum PhfError phf_build(const struct PhfParameters *params,
 	pilots = (unsigned char *) (remap + (n_prime - n));
 	for (size_t b = 0, stack[64], stack_size = 0, recent[16] = {}, recent_idx = 0,
 				num_displacements = 0; b < m || stack_size;) {
-		struct Bucket *bucket = buckets + (recent[recent_idx++ % LENGTH(recent)]
-			= stack_size ? stack[--stack_size] : b++);
+		size_t b1 = stack_size ? stack[--stack_size] : b++;
+		struct Bucket *bucket = buckets + (recent[recent_idx++ % LENGTH(recent)] = b1);
 		unsigned char pilot = 0;
 		// Fast path in case of no collisions
 		do if (try_pilot(pilot, bucket->size, keys + bucket->start,
@@ -94,7 +94,7 @@ enum PhfError phf_build(const struct PhfParameters *params,
 					= pthash_position(keys[bucket->start + i], pilot, n_prime);
 				for (size_t j = 0; j < i; ++j)
 					if (UNLIKELY(pos == positions[j])) goto do_retry;
-				if (!BITSET_GET(taken, pos)) continue; // No collision!
+				if (!BITSET_OP(taken, &, pos)) continue; // No collision!
 				for (unsigned i = 0; i < LENGTH(recent); ++i)
 					if (slots[pos] == recent[i]) goto do_retry;
 				size_t size = buckets[slots[pos]].size;
@@ -108,7 +108,7 @@ enum PhfError phf_build(const struct PhfParameters *params,
 		for (size_t i = 0; i < bucket->size; ++i) {
 			size_t pos = positions[i]
 				= pthash_position(keys[bucket->start + i], pilot, n_prime);
-			if (!BITSET_GET(taken, pos)) continue;
+			if (!BITSET_OP(taken, &, pos)) continue;
 			if (UNLIKELY(stack_size >= LENGTH(stack) || ++num_displacements > 8 * n)) {
 				status = PHF_RESEED;
 				goto err;
@@ -116,24 +116,22 @@ enum PhfError phf_build(const struct PhfParameters *params,
 			struct Bucket *b2 = buckets + (stack[stack_size++] = slots[pos]);
 			for (uint64_t *key = keys + b2->start, *end = key + b2->size; key < end; ++key) {
 				size_t pos2 = pthash_position(*key, pilots[b2->i], n_prime);
-				taken[pos2 / (CHAR_BIT * sizeof *taken)]
-					^= 1ul << pos2 % (CHAR_BIT * sizeof *taken);
+				BITSET_OP(taken, ^=, pos2);
 			}
 		}
 
 	out_found_pilot:
 		pilots[bucket->i] = pilot;
 		for (size_t i = 0; i < bucket->size; ++i) {
-			taken[positions[i] / (CHAR_BIT * sizeof *taken)]
-				|= 1ul << positions[i] % (CHAR_BIT * sizeof *taken);
-			slots[positions[i]] = bucket - buckets;
+			BITSET_OP(taken, |=, positions[i]);
+			slots[positions[i]] = b1;
 		}
 	}
 
-	taken[n_prime / (CHAR_BIT * sizeof *taken)] |= ~0ull << n_prime % (CHAR_BIT * sizeof *taken);
+	BITSET_OP(taken, -=, n_prime);
 	for (size_t i = 0, p = 0, offset = 0; offset < n; ++i, offset += CHAR_BIT * sizeof *taken)
 		FOR_ONES(x, ~taken[i]) {
-			while (!BITSET_GET(taken, n + p)) ++p;
+			while (!BITSET_OP(taken, &, n + p)) ++p;
 			remap[p++] = offset + x;
 		}
 
