@@ -239,7 +239,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		struct LispTrace *trace = ctx->current_trace = (*ctx->traces)[ins.b];
 		ctx->bp = bp;
 		struct SideExitResult x = trace_exec(ctx, trace);
-		pc = x.pc;
+		pc = (struct Instruction *) GC_DECOMPRESS(ctx, x.pc);
 		bp = ctx->bp + x.base_offset;
 		dispatch_table = x.should_record ? recording_dispatch_table : main_dispatch_table;
 		NEXT;

@@ -323,7 +323,7 @@ void jit_init_root(struct JitState *state, struct Closure *f, struct Instruction
 bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);
 
 struct SideExitResult {
-	struct Instruction *pc;
+	struct GcRef pc;
 	union {
 		struct { uint8_t base_offset, num_spill_slots, should_record : 1; };
 		uint64_t rdx;
