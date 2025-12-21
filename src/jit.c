@@ -1179,3 +1179,12 @@ struct SideExitResult trace_exec(struct LispCtx *ctx, struct LispTrace *trace) {
 	ctx->current_trace = NULL;
 	return result;
 }
+
+void trace_free(struct LispTrace *trace) {
+	if (!trace) return;
+	union Node *insns = (union Node *) trace->data;
+	struct Snapshot *snapshots = (struct Snapshot *) (insns + trace->len);
+	for (struct Snapshot *s = snapshots, *end = s + trace->num_snapshots; s < end; ++s)
+		trace_free(s->trace);
+	free(trace);
+}
