@@ -343,7 +343,7 @@ err:
 void lisp_free(struct LispCtx *ctx) {
 #if ENABLE_JIT
 	jit_free(ctx->jit_state);
-	for (unsigned i = 0; i < LENGTH(*ctx->traces); ++i) free((*ctx->traces)[i]);
+	for (unsigned i = 0; i < LENGTH(*ctx->traces); ++i) trace_free((*ctx->traces)[i]);
 	free(ctx->traces);
 #endif
 	symbol_tbl_free(&ctx->symbol_tbl);
