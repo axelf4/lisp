@@ -15,15 +15,15 @@ static_assert(IS_POWER_OF_TWO(16));
 static_assert(!IS_POWER_OF_TWO(10));
 
 static void test_rotate_left(void **) {
-	assert_int_equal(rol64(UINT64_C(1) << 63 | 2, 65), 0b101);
+	assert_int_equal(rol64(UINT64_C(1) << 63 | 0b10, 65), 0b101);
 }
 
 static void do_nothing(void *) {}
 static void do_throw_error(void *) { throw(42); fail(); }
 
-static void test_exception(void **state) {
-	assert_int_equal(pcall(state, do_nothing), 0);
-	assert_int_equal(pcall(state, do_throw_error), 42);
+static void test_exception(void **) {
+	assert_int_equal(pcall(NULL, do_nothing), 0);
+	assert_int_equal(pcall(NULL, do_throw_error), 42);
 }
 
 static uint64_t my_hash(int key) { return key; }
@@ -46,7 +46,7 @@ static void test_hash_table(void **) {
 
 static void test_gc_traces_live_object(void **state) {
 	struct LispCtx *ctx = *state;
-	LispObject obj = cons(*state, TAG_SMI(1), NIL(ctx));
+	LispObject obj = cons(ctx, TAG_SMI(1), NIL(ctx));
 	garbage_collect(*state);
 	assert_int_equal(UNTAG_SMI(car(ctx, obj)), 1);
 }
@@ -97,7 +97,6 @@ static void test_asm(void **) {
 static void test_insn_len_disasm(void **) {
 #ifdef __x86_64__
 	assert_int_equal(asm_insn_len((uint8_t[]) { XI_XORr, MODRM(MOD_REG, rax, rax) }), 2);
-	assert_int_equal(asm_insn_len((uint8_t[]) { XI_XORr, MODRM(MOD_REG, rax, rax) }), 2);
 	assert_int_equal(asm_insn_len((uint8_t[]) { XI_PUSHib, 0 }), 2);
 	assert_int_equal(asm_insn_len((uint8_t[]) { XI_JMP, 0, 0, 0, 0 }), 5);
 	assert_int_equal(asm_insn_len((uint8_t[]) { 0x0f, XI_Jcc | CC_E, 0, 0, 0, 0 }), 6);
@@ -136,6 +135,16 @@ static void assert_read_whole_equal(struct LispCtx *ctx, const char *s, LispObje
 	assert_lisp_equal(ctx, x, expected);
 }
 
+static void test_intern_reuses_sym(void **state) {
+	struct LispCtx *ctx = *state;
+	assert_lisp_equal(ctx, intern(ctx, 1, "x"), intern(ctx, 1, "x"));
+}
+
+static void test_intern_recognizes_nil(void **state) {
+	struct LispCtx *ctx = *state;
+	assert_true(NILP(ctx, intern(ctx, sizeof "nil" - 1, "nil")));
+}
+
 static void test_reader(void **state) {
 	struct LispCtx *ctx = *state;
 	LispObject obj;
@@ -160,16 +169,20 @@ static LispObject eval(struct LispCtx *ctx, const char *s) {
 
 static void test_eval(void **state) {
 	struct LispCtx *ctx = *state;
-	// Test that closures capture the environment
-	assert_lisp_equal(ctx, eval(ctx, "((let (x 't) (fn () x)))"), LISP_CONST(ctx, t));
-
-	// Test that macros work
-	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");
-	assert_lisp_equal(ctx, eval(ctx, "(mymacro)"), TAG_SMI(3));
-
 	assert_lisp_equal(ctx, eval(ctx, "\
 (let (mult (fn (x y acc) (if (< y 1) acc (mult x (+ y -1) (+ acc x))))) \
   (mult 4 3 0))"), TAG_SMI(12));
+}
+
+static void test_closure_captures_env(void **state) {
+	struct LispCtx *ctx = *state;
+	assert_lisp_equal(ctx, eval(ctx, "((let (x 't) (fn () x)))"), LISP_CONST(ctx, t));
+}
+
+static void test_macros_work(void **state) {
+	struct LispCtx *ctx = *state;
+	eval(ctx, "(set mymacro (cons (fn () '(+ 1 2)) nil))");
+	assert_lisp_equal(ctx, eval(ctx, "(mymacro)"), TAG_SMI(3));
 }
 
 static void test_man_or_boy(void **state) {
@@ -201,9 +214,13 @@ int main() {
 		cmocka_unit_test(test_phf_is_bijective),
 		cmocka_unit_test(test_asm),
 		cmocka_unit_test(test_insn_len_disasm),
+		cmocka_unit_test(test_intern_reuses_sym),
+		cmocka_unit_test(test_intern_recognizes_nil),
 		cmocka_unit_test(test_reader),
 		cmocka_unit_test(test_reader_ignores_whitespace),
 		cmocka_unit_test(test_eval),
+		cmocka_unit_test(test_closure_captures_env),
+		cmocka_unit_test(test_macros_work),
 		cmocka_unit_test(test_man_or_boy),
 	};
 	return cmocka_run_group_tests(tests, setup, teardown);
