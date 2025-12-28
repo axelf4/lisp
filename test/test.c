@@ -110,9 +110,25 @@ static void test_insn_len_disasm(void **) {
 #endif
 }
 
-static void assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b) {
-	assert_true(lisp_eq(ctx, a, b));
+static void _assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b,
+	const char *file, int line) {
+	if (lisp_eq(ctx, a, b)) return;
+
+	char *buf;
+	size_t size;
+	FILE *f;
+	if (!(f = open_memstream(&buf, &size))) fail();
+
+	lisp_print(ctx, a, f);
+	fputs(" != ", f);
+	lisp_print(ctx, b, f);
+
+	fclose(f);
+	cm_print_error("%s\n", buf);
+	free(buf);
+	_fail(file, line);
 }
+#define assert_lisp_equal(ctx, a, b) _assert_lisp_equal(ctx, a, b, __FILE__, __LINE__)
 
 static void assert_read_whole_equal(struct LispCtx *ctx, const char *s, LispObject expected) {
 	LispObject x;
