@@ -38,6 +38,7 @@
 #define LISP_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <signal.h>
 #include "gc.h"
 #include "tbl.h"
@@ -188,7 +189,7 @@ enum LispReadError lisp_read_whole(struct LispCtx *ctx, const char *s, LispObjec
 /** Evaluates @a form. */
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form);
 
-void lisp_print(struct LispCtx *ctx, LispObject object);
+void lisp_print(struct LispCtx *ctx, LispObject object, FILE *stream);
 
 /** Returns whether @a a and @a b are structurally equal. */
 bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b);

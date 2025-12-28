@@ -75,25 +75,25 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	return TAG_OBJ(*entry);
 }
 
-void lisp_print(struct LispCtx *ctx, LispObject x) {
+void lisp_print(struct LispCtx *ctx, LispObject x, FILE *stream) {
 	switch (lisp_type(x)) {
-	case LISP_INTEGER: printf("%i", UNTAG_SMI(x)); break;
-	case LISP_NIL: fputs("nil", stdout); break;
+	case LISP_INTEGER: fprintf(stream, "%i", UNTAG_SMI(x)); break;
+	case LISP_NIL: fputs("nil", stream); break;
 	case LISP_PAIR:
-		putchar('(');
-		do lisp_print(ctx, car(ctx, x));
-		while (consp(x = cdr(ctx, x)) && (putchar(' '), true));
-		if (!NILP(ctx, x)) { fputs(" . ", stdout); lisp_print(ctx, x); }
-		putchar(')');
+		putc('(', stream);
+		do lisp_print(ctx, car(ctx, x), stream);
+		while (consp(x = cdr(ctx, x)) && (putc(' ', stream), true));
+		if (!NILP(ctx, x)) { fputs(" . ", stream); lisp_print(ctx, x, stream); }
+		putc(')', stream);
 		break;
 	case LISP_SYMBOL:
 		struct LispSymbol *sym = UNTAG_OBJ(x);
-		fwrite(sym->name, sizeof *sym->name, sym->len, stdout);
+		fwrite(sym->name, sizeof *sym->name, sym->len, stream);
 		break;
 	case LISP_CFUNCTION:
-		printf("#<subr %s>", ((struct LispCFunction *) UNTAG_OBJ(x))->name);
+		fprintf(stream, "#<subr %s>", ((struct LispCFunction *) UNTAG_OBJ(x))->name);
 		break;
-	case LISP_CLOSURE: printf("#<closure>"); break;
+	case LISP_CLOSURE: fputs("#<closure>", stream); break;
 	default: unreachable();
 	}
 }
@@ -254,7 +254,7 @@ void gc_trace_roots(struct GcHeap *heap) {
 DEFUN("eval", eval, (struct LispCtx *ctx, LispObject form)) { return lisp_eval(ctx, form); }
 
 DEFUN("print", print, (struct LispCtx *ctx, LispObject x)) {
-	lisp_print(ctx, x);
+	lisp_print(ctx, x, stdout);
 	putchar('\n');
 	return NIL(ctx);
 }

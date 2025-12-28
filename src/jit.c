@@ -452,7 +452,7 @@ static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintpt
 			: insn.v;
 
 		printf("Restoring stack slot %" PRIu8 " to value: ", e->slot);
-		lisp_print(ctx, ctx->bp[e->slot]);
+		lisp_print(ctx, ctx->bp[e->slot], stdout);
 		puts(".");
 	}
 

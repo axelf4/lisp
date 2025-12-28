@@ -32,9 +32,9 @@ int main() {
 			fprintf(stderr, "Error: %d\n", error);
 		else {
 			fputs("Read expression: ", stdout);
-			lisp_print(ctx, form);
+			lisp_print(ctx, form, stdout);
 			fputs("\nResult: ", stdout);
-			lisp_print(ctx, lisp_eval(ctx, form));
+			lisp_print(ctx, lisp_eval(ctx, form), stdout);
 			putchar('\n');
 		}
 	}
