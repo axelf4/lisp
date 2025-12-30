@@ -234,9 +234,8 @@ static inline void asm_free(struct Assembler *ctx) {
 	munmap(ctx->buf, MCODE_CAPACITY);
 }
 
-static inline void (*asm_assemble(struct Assembler *ctx))() {
-	uint8_t *beg = (uint8_t *) ((uintptr_t) ctx->p & ~(page_size() - 1)),
-		*end = ctx->buf + MCODE_CAPACITY;
+static inline void (*asm_assemble(struct Assembler *ctx, uint8_t *end))() {
+	uint8_t *beg = (uint8_t *) ((uintptr_t) ctx->p & ~(page_size() - 1));
 	if (mprotect(beg, end - beg, PROT_EXEC)) die("mprotect failed");
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"

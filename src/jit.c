@@ -36,6 +36,7 @@
 #else
 #define REG_ALL (((1 << NUM_REGS) - 1) & ~(1 << rsp | 1 << REG_LISP_CTX))
 #endif
+#define ASM_HIWATER 64 ///< Max number of bytes assembled between overflow checks.
 
 typedef uint16_t Ref; ///< Reference to a virtual or constant of a trace.
 typedef uint32_t IrRef;
@@ -153,6 +154,7 @@ struct JitState {
 	struct Instruction *pc;
 	struct Instruction *origin_pc;
 
+	struct Assembler as;
 	uint16_t num_traces; ///< Length of #LispCtx::traces.
 	unsigned char next_penalty_slot;
 	struct Penalty penalties[32];
@@ -166,6 +168,7 @@ struct JitState {
 struct JitState *jit_new() {
 	struct JitState *state;
 	if (!(state = malloc(sizeof *state))) return NULL;
+	state->as = (struct Assembler) {};
 	state->num_traces = 0;
 	state->next_penalty_slot = 0;
 	memset(state->penalties, 0, sizeof state->penalties);
@@ -519,11 +522,22 @@ struct RegAlloc {
 	RegSet available, phi_regs, clobbers;
 	uint8_t num_spill_slots, snapshot_idx;
 	Ref next_snapshot_beg;
+#ifndef NDEBUG
+	uint8_t *prev_p;
+#endif
 	uint8_t *end;
 	/** The LuaJIT register cost model. */
 	alignas(32) Ref reg_costs[NUM_REGS];
 	Ref phi_refs[NUM_REGS]; ///< For each #phi_regs bit, its corresponding "in".
 };
+
+static bool is_asm_full(struct RegAlloc *ctx) {
+#ifndef NDEBUG
+	assert(ctx->prev_p - ctx->as.p <= ASM_HIWATER && "missing overflow check");
+	ctx->prev_p = ctx->as.p;
+#endif
+	return UNLIKELY(ctx->as.p < ctx->as.buf);
+}
 
 /** Spills @a ref, emitting a reload. */
 static enum Register reload(struct RegAlloc *ctx, Ref ref) {
@@ -598,10 +612,25 @@ static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	return x->reg = reg;
 }
 
+static void asm_exit_trampolines(struct Assembler *as) {
+	void side_exit_handler();
+	asm_write32(as, REL32(as->p, side_exit_handler));
+	*--as->p = XI_JMP;
+	for (unsigned i = 0; i < MAX_SNAPSHOTS; ++i) {
+		if (i) {
+			*--as->p = (4 * i - 2) & 0x7f; // Chain jumps if i>=32
+			*--as->p = XI_JMPs;
+		}
+		*--as->p = i;
+		*--as->p = XI_PUSHib;
+	}
+}
+
 #define EXIT_TRAMPOLINE(end, exit_num) ((end) - 7 - 4 * (exit_num))
 /** Emits a conditional jump to the side exit trampoline. */
 static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
-	uint8_t *target = EXIT_TRAMPOLINE(ctx->as.buf + MCODE_CAPACITY, ctx->snapshot_idx);
+	uint8_t *end = ctx->as.buf - ASM_HIWATER + MCODE_CAPACITY,
+		*target = EXIT_TRAMPOLINE(end, ctx->snapshot_idx);
 	asm_write32(&ctx->as, REL32(ctx->as.p, target));
 	*--ctx->as.p = XI_Jcc | cc;
 	*--ctx->as.p = 0x0f;
@@ -618,6 +647,7 @@ static void asm_stack_restore(struct RegAlloc *ctx) {
 	struct Snapshot *snapshot = ctx->state->snapshots + ctx->state->num_snapshots - 1;
 	FOR_SNAPSHOT_ENTRIES(snapshot, ctx->state->stack_entries, entry) {
 		union Node x = IR_GET(ctx->state, entry->ref);
+		if (is_asm_full(ctx)) return;
 		if (IS_VAR(entry->ref)) {
 			enum Register reg = reg_use(ctx, entry->ref, ~(1 << bp));
 			asm_rmrd(&ctx->as, 1, XI_MOVmr, reg, bp, entry->slot * sizeof x.v);
@@ -640,7 +670,7 @@ static void asm_cmp(struct RegAlloc *ctx, union Node x) {
 static void asm_loop(struct RegAlloc *ctx) {
 	// Reload invariants whose registers get clobbered
 	FOR_ONES(reg, ctx->clobbers & ~(ctx->available | ctx->phi_regs))
-		reload(ctx, ctx->reg_costs[reg]);
+		if (!is_asm_full(ctx)) reload(ctx, ctx->reg_costs[reg]);
 
 	// φ-resolution
 	// TODO Shuffle φ-registers without always spilling in between
@@ -648,6 +678,7 @@ static void asm_loop(struct RegAlloc *ctx) {
 		Ref lref = ctx->phi_refs[reg];
 		union Node *in = &IR_GET(ctx->state, lref);
 		if (LIKELY(in->reg == reg)) continue;
+		if (is_asm_full(ctx)) return;
 		if (HAS_REG(*in)) reload(ctx, lref);
 		if (!(1 << reg & ctx->available)) reload(ctx, ctx->reg_costs[reg]);
 	}
@@ -655,6 +686,7 @@ static void asm_loop(struct RegAlloc *ctx) {
 		Ref lref = ctx->phi_refs[reg];
 		union Node *in = &IR_GET(ctx->state, lref);
 		if (LIKELY(!in->spill_slot)) continue;
+		if (is_asm_full(ctx)) return;
 		reg_def(ctx, lref, 1 << reg); // Resave "in" on each iteration
 		in->ty |= IR_MARK; // Remember that spilling is handled by loop
 		reg_use(ctx, lref, 1 << reg); // Allocate (now free) register
@@ -692,6 +724,7 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 	for (unsigned i = x.b; i--;) {
 		Ref arg_ref = IR_GET(ctx->state, ref + 1 + i).a;
 		union Node arg = IR_GET(ctx->state, arg_ref);
+		if (is_asm_full(ctx)) return;
 		if (!IS_VAR(arg_ref)) {
 			if (IS_SMI(arg.v)) {
 				asm_write32(&ctx->as, arg.v);
@@ -767,25 +800,24 @@ static struct LispTrace *assemble_trace(struct JitState *state, enum TraceLink l
 	if (link_type == TRACE_LINK_LOOP) peel_loop(state);
 	state->snapshots[0].beg = IR_BIAS;
 
+#define ALIGN_PAGE(p) ((void *) ((uintptr_t) (p) & ~(page_size() - 1)))
+	if (LIKELY(state->as.p > state->as.buf)) {
+		if (mprotect(ALIGN_PAGE(state->as.p), 1, PROT_WRITE)) die("mprotect failed");
+	} else {
+		if (false) err_realloc:
+			if (mprotect(ALIGN_PAGE(state->as.p), 1, PROT_EXEC)) die("mprotect failed");
+		if (!LIKELY(asm_init(&state->as))) return NULL;
+		state->as.buf += ASM_HIWATER;
+		asm_exit_trampolines(&state->as);
+	}
 	bool is_pload_ok = false;
 do_retry:
 	struct RegAlloc ctx =
-		{ .state = state, .available = REG_ALL,
+		{ .as = state->as, .state = state, .available = REG_ALL, .end = state->as.p,
+#ifndef NDEBUG
+		  .prev_p = state->as.p,
+#endif
 		  .snapshot_idx = state->num_snapshots, .next_snapshot_beg = UINT16_MAX };
-	if (!LIKELY(asm_init(&ctx.as))) return NULL;
-	// Emit side-exit trampolines
-	void side_exit_handler();
-	asm_write32(&ctx.as, REL32(ctx.as.p, side_exit_handler));
-	*--ctx.as.p = XI_JMP;
-	for (unsigned i = 0; i < MAX_SNAPSHOTS; ++i) {
-		if (i) {
-			*--ctx.as.p = (4 * i - 2) & 0x7f; // Chain jumps if i>=32
-			*--ctx.as.p = XI_JMPs;
-		}
-		*--ctx.as.p = i;
-		*--ctx.as.p = XI_PUSHib;
-	}
-
 	// Initialize registers as unallocated and add hints
 	for (Ref ref = REF_BP; ref < state->end; ++ref) {
 		union Node *x = &IR_GET(state, ref);
@@ -806,7 +838,6 @@ do_retry:
 		default: x->reg = -1; break;
 		}
 	}
-	ctx.end = ctx.as.p;
 	*(ctx.as.p -= 1 + sizeof(int32_t)) = XI_JMP; // Loop backedge placeholder
 	switch (link_type) {
 	case TRACE_LINK_LOOP: break;
@@ -833,11 +864,12 @@ do_retry:
 			ctx.next_snapshot_beg = snapshot->beg;
 			// Start live ranges of virtuals escaping into snapshot
 			FOR_SNAPSHOT_ENTRIES(snapshot, state->stack_entries, e)
-				if (IS_VAR(e->ref) && !IR_GET(state, e->ref).spill_slot)
-					reg_use(&ctx, e->ref, -1);
+				if (IS_VAR(e->ref) && !IR_GET(state, e->ref).spill_slot
+					&& !is_asm_full(&ctx)) reg_use(&ctx, e->ref, -1);
 		}
 
 		union Node x = IR_GET(state, ref);
+		if (is_asm_full(&ctx)) goto err_realloc;
 		switch (x.op) {
 		case IR_SLOAD:
 			enum Register reg = reg_def(&ctx, ref, -1), bp = reg_use(&ctx, REF_BP, -1);
@@ -884,6 +916,7 @@ do_retry:
 		}
 	}
 
+	if (is_asm_full(&ctx)) goto err_realloc;
 	FOR_ONES(reg, ctx.phi_regs) {
 		union Node in = IR_GET(state, ctx.phi_refs[reg]);
 		if (in.spill_slot && !(in.ty & IR_MARK)) rec_err(state); // Spilled outside loop
@@ -899,8 +932,10 @@ do_retry:
 	if (UNLIKELY(state->status != REC_OK)
 		|| !(result = malloc(sizeof *result + len * sizeof *state->trace
 				+ state->num_snapshots * sizeof *state->snapshots
-				+ state->num_stack_entries * sizeof *state->stack_entries)))
+				+ state->num_stack_entries * sizeof *state->stack_entries))) {
+		if (mprotect(ALIGN_PAGE(state->as.p), 1, PROT_EXEC)) die("mprotect failed");
 		return NULL;
+	}
 #ifdef DEBUG
 	print_trace(state, link_type);
 #endif
@@ -925,13 +960,13 @@ do_retry:
 	}
 
 	*result = (struct LispTrace) {
-		.f = asm_assemble(&ctx.as),
+		.f = asm_assemble(&ctx.as, ctx.end),
 		.len = len, .num_consts = state->num_consts,
 		.num_snapshots = state->num_snapshots,
 		.num_spill_slots = ctx.num_spill_slots,
 		.arity = state->origin ? state->origin->prototype->arity : 0,
 		.mcode_size = ctx.end - ctx.as.p,
-		.mcode_tail = ctx.as.buf + MCODE_CAPACITY - ctx.as.p
+		.mcode_tail = ctx.as.buf - ASM_HIWATER + MCODE_CAPACITY - ctx.as.p
 	};
 	char *p = result->data;
 	size_t size = len * sizeof *state->trace;
@@ -942,6 +977,7 @@ do_retry:
 	memcpy(p, state->stack_entries, state->num_stack_entries * sizeof *state->stack_entries);
 	// TODO Register FDE for mcode with __register_frame()
 
+	state->as = ctx.as;
 	if (state->parent) patch_exit(state->parent, state->side_exit_num, result);
 	return result;
 }
