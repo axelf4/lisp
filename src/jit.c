@@ -154,6 +154,7 @@ struct JitState {
 	struct Instruction *pc;
 	struct Instruction *origin_pc;
 
+	struct Assembler as;
 	uint16_t num_traces; ///< Length of #LispCtx::traces.
 	unsigned char next_penalty_slot;
 	struct Penalty penalties[32];
@@ -167,6 +168,7 @@ struct JitState {
 struct JitState *jit_new() {
 	struct JitState *state;
 	if (!(state = malloc(sizeof *state))) return NULL;
+	state->as = (struct Assembler) {};
 	state->num_traces = 0;
 	state->next_penalty_slot = 0;
 	memset(state->penalties, 0, sizeof state->penalties);
@@ -613,6 +615,20 @@ static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
 	*--ctx->as.p = 0x0f;
 }
 
+static void asm_exit_trampolines(struct Assembler *as) {
+	void side_exit_handler();
+	asm_write32(as, REL32(as->p, side_exit_handler));
+	*--as->p = XI_JMP;
+	for (unsigned i = 0; i < MAX_SNAPSHOTS; ++i) {
+		if (i) {
+			*--as->p = (4 * i - 2) & 0x7f; // Chain jumps if i>=32
+			*--as->p = XI_JMPs;
+		}
+		*--as->p = i;
+		*--as->p = XI_PUSHib;
+	}
+}
+
 /** Assembles synchronization of interpreter stack with on-trace state. */
 static void asm_stack_restore(struct RegAlloc *ctx) {
 	enum Register bp = reg_use(ctx, REF_BP, -1);
@@ -753,25 +769,20 @@ static struct LispTrace *assemble_trace(struct JitState *state, enum TraceLink l
 	if (link_type == TRACE_LINK_LOOP) peel_loop(state);
 	state->snapshots[0].beg = IR_BIAS;
 
+	if (LIKELY(state->as.p > state->as.buf)) {
+		void *page = (void *) ((uintptr_t) state->as.p & ~(page_size() - 1));
+		if (mprotect(page, 1, PROT_WRITE)) die("mprotect failed");
+		// TODO If failed then need to re-set PROT_EXEC
+	} else {
+		if (!LIKELY(asm_init(&state->as))) return NULL;
+		/* state->as.buf += 64; */
+		asm_exit_trampolines(&state->as);
+	}
 	bool is_pload_ok = false;
 do_retry:
 	struct RegAlloc ctx =
-		{ .state = state, .available = REG_ALL,
+		{ .as = state->as, .state = state, .available = REG_ALL, .end = state->as.p,
 		  .snapshot_idx = state->num_snapshots, .next_snapshot_beg = UINT16_MAX };
-	if (!LIKELY(asm_init(&ctx.as))) return NULL;
-	// Emit side-exit trampolines
-	void side_exit_handler();
-	asm_write32(&ctx.as, REL32(ctx.as.p, side_exit_handler));
-	*--ctx.as.p = XI_JMP;
-	for (unsigned i = 0; i < MAX_SNAPSHOTS; ++i) {
-		if (i) {
-			*--ctx.as.p = (4 * i - 2) & 0x7f; // Chain jumps if i>=32
-			*--ctx.as.p = XI_JMPs;
-		}
-		*--ctx.as.p = i;
-		*--ctx.as.p = XI_PUSHib;
-	}
-
 	// Initialize registers as unallocated and add hints
 	for (Ref ref = REF_BP; ref < state->end; ++ref) {
 		union Node *x = &IR_GET(state, ref);
@@ -793,7 +804,6 @@ do_retry:
 		default: x->reg = -1; break;
 		}
 	}
-	ctx.end = ctx.as.p;
 	*(ctx.as.p -= 1 + sizeof(int32_t)) = XI_JMP; // Loop backedge placeholder
 	switch (link_type) {
 	case TRACE_LINK_LOOP: break;
@@ -961,6 +971,7 @@ do_retry:
 	memcpy(p, state->stack_entries, state->num_stack_entries * sizeof *state->stack_entries);
 	// TODO Register FDE for mcode with __register_frame()
 
+	state->as = ctx.as;
 	if (state->parent) patch_exit(state->parent, state->side_exit_num, result);
 	return result;
 }
