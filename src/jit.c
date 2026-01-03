@@ -659,17 +659,12 @@ static void asm_loop(struct RegAlloc *ctx) {
 }
 
 static void asm_phi(struct RegAlloc *ctx, union Node x) {
-	union Node *in = &IR_GET(ctx->state, x.a),
-		out [[maybe_unused]] = IR_GET(ctx->state, x.b);
-	RegSet available = ctx->available & ~ctx->phi_regs;
+	union Node *in = &IR_GET(ctx->state, x.a), out = IR_GET(ctx->state, x.b);
 	assert(IS_VAR(x.a) && IS_VAR(x.b) && "constant variant ref");
-	assert(stdc_count_ones(available) && "out of φ registers");
-	assert(!has_reg(*in) && !has_reg(out));
-	// Pick φ registers from opposite end to reduce collisions
-	enum Register dst = stdc_bit_width(available) - 1;
-	reg_use(ctx, x.b, 1 << dst);
-	in->reg = dst | REG_NONE; // Add hint
-	ctx->phi_regs |= 1 << dst;
+	enum Register dst = in->reg & ~REG_NONE,
+		src = has_reg(out) ? out.reg
+		: reg_use(ctx, x.b, has_reg(*in) ? -1 : 1 << dst);
+	if (src != dst) asm_mov(&ctx->as, dst, src);
 	ctx->phis_refs[dst] = x.a;
 }
 
@@ -761,7 +756,7 @@ static struct LispTrace *assemble_trace(struct JitState *state, enum TraceLink l
 do_retry:
 	struct RegAlloc ctx =
 		{ .state = state, .available = REG_ALL,
-		  .snapshot_idx = state->num_snapshots, .next_snapshot_beg = state->end };
+		  .snapshot_idx = state->num_snapshots, .next_snapshot_beg = UINT16_MAX };
 	if (!LIKELY(asm_init(&ctx.as))) return NULL;
 	// Emit side-exit trampolines
 	void side_exit_handler();
@@ -786,7 +781,14 @@ do_retry:
 			ctx.clobbers |= REG_ALL & ~CALLEE_SAVED_REGS;
 			x->reg = rax | REG_NONE;
 			break;
-		case IR_PHI: --ctx.next_snapshot_beg; [[fallthrough]];
+		case IR_PHI:
+			union Node *in = &IR_GET(state, x->a);
+			/* assert(stdc_count_ones(available) && "out of φ registers"); */
+			// Pick φ registers from opposite end to reduce collisions
+			enum Register dst = stdc_bit_width(REG_ALL & ~ctx.phi_regs) - 1;
+			in->reg = dst | REG_NONE;
+			ctx.phi_regs |= 1 << dst;
+			[[fallthrough]];
 		default: x->reg = -1; break;
 		}
 	}
