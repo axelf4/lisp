@@ -515,7 +515,7 @@ static void peel_loop(struct JitState *state) {
 struct RegAlloc {
 	struct Assembler as;
 	struct JitState *state;
-	RegSet available, phi_regs;
+	RegSet available, phi_regs, clobbers;
 	uint8_t num_spill_slots, snapshot_idx;
 	Ref next_snapshot_beg;
 	uint8_t *end;
@@ -541,6 +541,7 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 	}
 	x->reg |= REG_NONE;
 	ctx->available |= 1 << reg;
+	ctx->clobbers |= 1 << reg;
 	return reg;
 }
 
@@ -571,7 +572,9 @@ static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 		if (reg != x.reg) // Existing allocation was masked
 			asm_mov(&ctx->as, x.reg, reg);
 		ctx->available |= 1 << x.reg; // Free register
+		ctx->clobbers |= 1 << x.reg;
 	}
+	ctx->clobbers |= 1 << reg;
 	// Save ASAP as exits use spilled value of split virtual over its register
 	if (x.spill_slot)
 		asm_rmrd(&ctx->as, 1, XI_MOVmr, reg, rsp, (x.spill_slot - 1) * sizeof x.v);
@@ -624,7 +627,7 @@ static void asm_stack_restore(struct RegAlloc *ctx) {
 /** Assembles the @ref IR_LOOP instruction. */
 static void asm_loop(struct RegAlloc *ctx) {
 	// Reload invariants whose registers get clobbered
-	FOR_ONES(reg, REG_ALL & ~(ctx->available | ctx->phi_regs))
+	FOR_ONES(reg, ctx->clobbers & ~(ctx->available | ctx->phi_regs))
 		reload(ctx, ctx->reg_costs[reg]);
 
 	// φ-resolution
@@ -667,8 +670,9 @@ static void asm_phi(struct RegAlloc *ctx, union Node x) {
 static void asm_call(struct RegAlloc *ctx, Ref ref) {
 	reg_def(ctx, ref, 1 << rax);
 	// Evict caller-saved registers
-	FOR_ONES(reg, REG_ALL & ~ctx->available & ~CALLEE_SAVED_REGS)
+	FOR_ONES(reg, REG_ALL & ~CALLEE_SAVED_REGS & ~ctx->available)
 		reload(ctx, ctx->reg_costs[reg]);
+	ctx->clobbers |= REG_ALL & ~CALLEE_SAVED_REGS;
 
 #define ARG_REGS (1 << rdi | 1 << rsi | 1 << rdx | 1 << rcx | 1 << r8 | 1 << r9)
 	union Node x = IR_GET(ctx->state, ref);
@@ -783,7 +787,10 @@ do_retry:
 		x->spill_slot = 0;
 		switch (x->op) {
 		case IR_PLOAD: x->reg = x->a | REG_NONE; x->spill_slot = x->b; break;
-		case IR_CALL: x->reg = rax | REG_NONE; break;
+		case IR_CALL:
+			ctx.clobbers |= REG_ALL & ~CALLEE_SAVED_REGS;
+			x->reg = rax | REG_NONE;
+			break;
 		case IR_PHI: --ctx.next_snapshot_beg; [[fallthrough]];
 		default: x->reg = -1; break;
 		}
