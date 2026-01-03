@@ -7,10 +7,10 @@
 
 #pragma GCC diagnostic ignored "-Wcast-align"
 
-#ifdef DEBUG
-#define MAX_BYTES 16
+#ifdef ROPE_CHUNK_CAPACITY
+#define MAX_BYTES ROPE_CHUNK_CAPACITY
 #else
-#define MAX_BYTES 2048
+#define MAX_BYTES 1018
 #endif
 #define MIN_BYTES (MAX_BYTES / 4)
 
