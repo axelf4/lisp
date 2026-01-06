@@ -624,6 +624,17 @@ static void asm_stack_restore(struct RegAlloc *ctx) {
 	}
 }
 
+static void asm_cmp(struct RegAlloc *ctx, union Node x) {
+	assert(IS_VAR(x.a));
+	enum Cc cc = x.op < IR_EQ ? CC_L + x.op - IR_LT : CC_E + x.op - IR_EQ;
+	asm_guard(ctx, cc_negate(cc));
+	enum Register reg1 = reg_use(ctx, x.a, -1);
+	if (IS_VAR(x.b)) {
+		enum Register reg2 = reg_use(ctx, x.b, ~(1 << reg1));
+		asm_rr(&ctx->as, 0, IMM_GRP1_MR(XG_CMP), reg2, reg1);
+	} else asm_grp1_imm(&ctx->as, 0, XG_CMP, reg1, (uint32_t) IR_GET(ctx->state, x.b).v);
+}
+
 /** Assembles the @ref IR_LOOP instruction. */
 static void asm_loop(struct RegAlloc *ctx) {
 	// Reload invariants whose registers get clobbered
@@ -859,17 +870,8 @@ do_retry:
 				goto do_retry;
 			}
 			break;
-		case IR_EQ: case IR_NEQ: case IR_LT: case IR_GE: case IR_LE: case IR_GT:
-			assert(IS_VAR(x.a));
-			enum Cc cc = x.op < IR_EQ ? CC_L + x.op - IR_LT : CC_E + x.op - IR_EQ;
-			asm_guard(&ctx, cc_negate(cc));
-			enum Register reg1 = reg_use(&ctx, x.a, -1);
-			if (IS_VAR(x.b)) {
-				enum Register reg2 = reg_use(&ctx, x.b, ~(1 << reg1));
-				asm_rr(&ctx.as, 0, IMM_GRP1_MR(XG_CMP), reg2, reg1);
-			} else asm_grp1_imm(&ctx.as, 0, XG_CMP,
-				reg1, (uint32_t) IR_GET(state, x.b).v);
-			break;
+		case IR_EQ: case IR_NEQ:
+		case IR_LT: case IR_GE: case IR_LE: case IR_GT: asm_cmp(&ctx, x); break;
 		case IR_CALL: asm_call(&ctx, ref); break;
 		case IR_CALLARG: break;
 		case IR_RET: asm_ret(&ctx, x); break;
