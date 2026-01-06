@@ -65,6 +65,7 @@ enum SsaOp : uint8_t {
 	IR_PLOAD, ///< Load from parent trace.
 
 	IR_ADD,
+	IR_CAR, IR_CDR,
 
 	IR_NUM_OPS
 };
@@ -204,7 +205,7 @@ static void print_ref(struct JitState *state, Ref ref) {
 static void print_trace(struct JitState *state, enum TraceLink link) {
 	const char *ops[] = {
 		"LT", "GE", "LE", "GT", "EQ", "NEQ", NULL, "PHI",
-		[IR_ADD] = "ADD",
+		[IR_ADD] = "ADD", "CAR", "CDR",
 	}, *type_names[]
 		= { "AxB", "sym", "str", "cfn", "clo", NULL, NULL, "nil", "int", "___" },
 		*link_names[] = { "loop", "root", "interpreter", "up-recursion" };
@@ -351,6 +352,8 @@ static IrRef emit_opt(struct JitState *state, union Node x) {
 		if (!IS_VAR(x.a)) return emit_const(state, LISP_INTEGER,
 			IR_GET(state, x.a).v + IR_GET(state, x.b).v);
 		break;
+
+	case IR_CAR: case IR_CDR: break; // TODO setc[ad]r
 	}
 	// Common Subexpression Elimination (CSE)
 	union Node o;
@@ -751,6 +754,13 @@ static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
 	else reg_use(ctx, x.a, 1 << dst);
 }
 
+static void asm_proj(struct RegAlloc *ctx, Ref ref, size_t offset) {
+	union Node x = IR_GET(ctx->state, ref);
+	enum Register dst = reg_def(ctx, ref, -1), src = reg_use(ctx, x.a, -1);
+	asm_rr(&ctx->as, 1, IMM_GRP1_MR(XG_ADD), REG_LISP_CTX, dst);
+	asm_rmrd(&ctx->as, 0, XI_MOVrm, dst, src, offset - 1);
+}
+
 static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTrace *trace) {
 	union Node *insns = (union Node *) parent->data;
 	struct Snapshot *snapshot = (struct Snapshot *) (insns + parent->len) + exit_num;
@@ -895,6 +905,8 @@ do_retry:
 		default: unreachable();
 
 		case IR_ADD: asm_arith(&ctx, XG_ADD, ref); break;
+		case IR_CAR: asm_proj(&ctx, ref, offsetof(struct LispPair, car)); break;
+		case IR_CDR: asm_proj(&ctx, ref, offsetof(struct LispPair, cdr)); break;
 		}
 	}
 
@@ -996,6 +1008,15 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 			{ .op = cmp_op ^ NILP(ctx, value), .ty = TY_ANY, .a = a, .b = b });
 		return emit_const(state, lisp_type(value), value);
 	} else if (!strcmp(f->name, "<")) { cmp_op = IR_LT; goto do_record_cmp; }
+	else if (!strcmp(f->name, "car")) {
+		guard_type(state, &a, LISP_PAIR);
+		take_snapshot(state);
+		return emit_opt(state, (union Node) { .op = IR_CAR, TY_ANY, .a = a });
+	} else if (!strcmp(f->name, "cdr")) {
+		guard_type(state, &a, LISP_PAIR);
+		take_snapshot(state);
+		return emit_opt(state, (union Node) { .op = IR_CDR, TY_ANY, .a = a });
+	}
 
 	guard_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
