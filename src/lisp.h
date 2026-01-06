@@ -380,7 +380,7 @@ bool lisp_tbl_iter_next(struct Table *table, size_t *i, struct LispEntry **entry
 bool lisp_tbl_entry(struct Table *table, struct LispEntry key, struct LispEntry **entry);
 
 enum JitSubrId {
-	JIT_F_EQ = 1, JIT_F_LT, JIT_F_ADD
+	JIT_F_EQ = 1, JIT_F_LT, JIT_F_ADD, JIT_F_CAR, JIT_F_CDR
 };
 
 [[nodiscard, gnu::malloc]] struct JitState *jit_new();
