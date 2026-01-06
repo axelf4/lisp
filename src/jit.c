@@ -188,7 +188,7 @@ static void jit_init(struct JitState *state) {
 void jit_init_root(struct JitState *state, struct Closure *f, struct Instruction *pc) {
 	jit_init(state);
 	state->origin = f;
-	state->origin_pc = pc - 1;
+	state->origin_pc = pc;
 }
 
 #ifdef DEBUG
@@ -1005,7 +1005,7 @@ static void penalize(struct JitState *state) {
 	*slot = (struct Penalty) { .pc = state->origin_pc, .value = TRACE_ATTEMPTS };
 found:
 	if (!--slot->value)
-		state->origin_pc->op += CALL_INTERPR - CALL; // Blacklist
+		state->origin_pc[-1].op += CALL_INTERPR - CALL; // Blacklist
 }
 
 static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_t *bp, struct Instruction x) {
