@@ -38,6 +38,18 @@ static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *prototype,
 	return n;
 }
 
+static struct Closure *cached_closure(struct Prototype *proto, uint8_t *upvalues, LispObject *bp, uint8_t a) {
+	if (!proto->cache) return NULL;
+	for (unsigned i = 0; i < proto->num_upvalues; ++i) {
+		uint8_t uv = upvalues[i], idx = uv % UV_MUTABLE;
+		LispObject v = uv & UV_INSTACK
+			? idx == a ? TAG_OBJ(proto->cache) : bp[idx]
+			: *((struct Closure *)UNTAG_OBJ(*bp))->upvalues[idx]->location;
+		if (v != *proto->cache->upvalues[i]->location) return NULL;
+	}
+	return proto->cache;
+}
+
 #if __has_c_attribute(clang::musttail)
 #ifdef __clang__
 #define PRESERVE_NONE [[clang::preserve_none]]
@@ -192,16 +204,29 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 	DEFINE_OP(FNEW) {
 		struct Prototype *proto = (struct Prototype *) pc;
 		uint8_t *upvalues = (uint8_t *)(pc += insn.b) - proto->num_upvalues;
-		struct Closure *closure = gc_alloc((struct GcHeap *)ctx, alignof(struct Closure),
+
+		struct Closure *closure = cached_closure(proto, upvalues, bp, insn.a);
+		if (closure) { bp[insn.a] = TAG_OBJ(closure); NEXT; }
+
+		closure = gc_alloc((struct GcHeap *)ctx, alignof(struct Closure),
 			sizeof *closure + proto->num_upvalues * sizeof *closure->upvalues);
 		*closure = (struct Closure) { { closure->hdr.hdr, LISP_CLOSURE }, proto };
 		// Read upvalues
+		bool has_mut = false;
 		for (unsigned i = 0; i < proto->num_upvalues; ++i) {
 			uint8_t uv = upvalues[i], idx = uv % UV_MUTABLE;
+			has_mut |= uv & UV_MUTABLE;
 			closure->upvalues[i] = uv & UV_INSTACK
 				? find_uv(ctx, bp + idx, uv & UV_MUTABLE)
 				: ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx];
 		}
+
+		if (!has_mut) {
+			struct Chunk *chunk = (struct Chunk *)((char *)proto - proto->offset);
+			gc_write_barrier((struct GcHeap *)ctx, &chunk->hdr.hdr);
+			proto->cache = closure;
+		}
+
 		bp[insn.a] = TAG_OBJ(closure);
 		NEXT;
 	}
@@ -386,6 +411,7 @@ static void fixup_uvs(struct ByteCompCtx *ctx) {
 				upvalues[i] = var.slot | UV_INSTACK | (var.is_mutable ? UV_MUTABLE : 0);
 		}
 		p = proto->next_sibling;
+		proto->cache = NULL;
 	}
 }
 
