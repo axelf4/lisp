@@ -288,6 +288,7 @@ struct Chunk {
 struct Prototype {
 	uint8_t arity, num_upvalues;
 	unsigned offset; ///< Byte offset within chunk.
+	struct Closure *cache;
 	struct Instruction body[];
 };
 

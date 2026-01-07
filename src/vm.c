@@ -40,6 +40,18 @@ static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *prototype,
 	return n;
 }
 
+static struct Closure *cached_closure(struct Prototype *proto, uint8_t *upvalues, LispObject *bp, uint8_t a) {
+	if (!proto->cache) return NULL;
+	for (unsigned i = 0; i < proto->num_upvalues; ++i) {
+		uint8_t uv = upvalues[i], idx = uv % UV_INSTACK;
+		LispObject *v = uv & UV_INSTACK
+			? idx == a ? &(LispObject) { TAG_OBJ(proto->cache) } : bp + idx
+			: ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx]->location;
+		if (*v != *proto->cache->upvalues[i]->location) return NULL;
+	}
+	return proto->cache;
+}
+
 #if ENABLE_TAIL_CALL_INTERP
 #ifdef __clang__
 #define PRESERVE_NONE [[clang::preserve_none]]
