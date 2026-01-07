@@ -51,6 +51,7 @@
 
 /** Returns whether @a a and @a b are referentially equal. */
 #define LISP_EQ(a, b) (GC_COMPRESS(a).p == GC_COMPRESS(b).p)
+#define IS_UV_OPEN(x) ((x).location != &(x).value)
 
 #define NIL(ctx) TAG_OBJ(&(ctx)->nil)
 #if USE_COMPRESSED_PTRS
@@ -292,7 +293,6 @@ struct Prototype {
 
 struct Upvalue {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	bool is_closed;
 	union {
 		struct Upvalue *next; ///< Next unclosed in list sorted by stack locations.
 		LispObject value; ///< The closed over object.

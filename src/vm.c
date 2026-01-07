@@ -21,7 +21,7 @@ static struct Upvalue *capture_upvalue(struct LispCtx *ctx, LispObject *local) {
 	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct Upvalue *new = gc_alloc(heap, alignof(struct Upvalue), sizeof *new);
 	*new = (struct Upvalue) { { new->hdr.hdr, LISP_UPVALUE },
-		.is_closed = false, .next = *p, .location = local };
+		.next = *p, .location = local };
 	return *p = new;
 }
 
@@ -227,8 +227,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		while (ctx->upvalues && ctx->upvalues->location >= bp + ins.a) {
 			struct Upvalue *x = ctx->upvalues;
 			ctx->upvalues = x->next;
-			*x = (struct Upvalue) { x->hdr, .is_closed = true,
-				.value = *x->location, .location = &x->value };
+			*x = (struct Upvalue) { x->hdr, .value = *x->location, &x->value };
 		}
 		NEXT;
 	}
