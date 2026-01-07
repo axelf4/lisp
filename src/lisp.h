@@ -343,7 +343,10 @@ struct Prototype {
 	uint8_t arity, num_upvalues, frame_size;
 	bool is_toplevel;
 	unsigned offset; ///< Byte offset within chunk.
-	unsigned next_sibling;
+	union {
+		unsigned next_sibling;
+		struct Closure *cache;
+	};
 	struct Instruction body[];
 };
 
