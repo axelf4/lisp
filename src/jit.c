@@ -52,6 +52,8 @@ enum SsaOp : uint8_t {
 	// Comparisons are ordered such that flipping the LSB inverts them
 	IR_LT, IR_GE, IR_LE, IR_GT,
 	IR_EQ, IR_NEQ,
+	IR_LOOP,
+	IR_PHI,
 	IR_CALL, ///< Call C function.
 	IR_CALLARG, ///< Argument for #IR_CALL.
 	IR_RET,
@@ -59,9 +61,6 @@ enum SsaOp : uint8_t {
 	IR_GLOAD, ///< Load global.
 	IR_ULOAD, ///< Load upvalue.
 	IR_PLOAD, ///< Load from parent trace.
-	IR_LOOP,
-	IR_PHI,
-	IR_NOP,
 
 	IR_ADD,
 
@@ -83,6 +82,9 @@ union Node {
 	};
 	LispObject v; ///< Object constant.
 };
+
+static bool is_effectful(enum SsaOp x) { return x <= IR_RET; }
+static bool is_nop(union Node x) { return x.reg == 0xff && !is_effectful(x.op); }
 
 /** Snapshot stack slot entry. */
 struct SnapshotEntry {
@@ -210,8 +212,8 @@ static void print_ref(struct JitState *state, Ref ref) {
 
 static void print_trace(struct JitState *state, enum TraceLink link) {
 	const char *ops[] = {
-		"LT", "GE", "LE", "GT", "EQ", "NEQ", [IR_PHI] = "PHI", NULL,
-		"ADD",
+		"LT", "GE", "LE", "GT", "EQ", "NEQ", NULL, "PHI",
+		[IR_ADD] = "ADD",
 	}, *type_names[]
 		= { "AxB", "sym", "str", "cfn", "clo", NULL, NULL, "nil", "int", "___" },
 		*link_names[] = { "loop", "root", "interpreter", "up-recursion" };
@@ -256,7 +258,6 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		case IR_CALLARG: unreachable();
 		case IR_RET: puts("RET"); break;
 		case IR_LOOP: puts("LOOP ------------"); break;
-		case IR_NOP: puts("NOP"); break;
 		default:
 			printf("%-5s ", ops[x.op]);
 			if (x.a) {
@@ -337,7 +338,6 @@ static IrRef emit_opt(struct JitState *state, union Node x) {
 #define CONDFOLD(cond) do { if (!(cond)) rec_err(state); return 0; } while (0)
 
 	switch (x.op) {
-	case IR_NOP: return 0;
 	case IR_SLOAD: return state->slots[x.a];
 	case IR_EQ: case IR_NEQ:
 		if (x.a == x.b) CONDFOLD(x.op == IR_EQ);
@@ -411,32 +411,6 @@ static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 	emit_opt(state, (union Node)
 		{ .op = IR_EQ, .ty = ty, .a = *ref, .b = emit_const(state, ty, value) });
 	guard_type(state, ref, ty);
-}
-
-static bool is_effectful(enum SsaOp x) { return x <= IR_RET; }
-
-/** Dead-code elimination (DCE). */
-static void dce(struct JitState *state) {
-	// Mark virtuals escaping into snapshots
-	for (struct Snapshot *s = state->snapshots, *end = s + state->num_snapshots;
-			s < end; ++s)
-		FOR_SNAPSHOT_ENTRIES(s, state->stack_entries, entry)
-			if (IS_VAR(entry->ref)) IR_GET(state, entry->ref).ty |= IR_MARK;
-	Ref *pchain[IR_NUM_OPS];
-	for (unsigned i = 0; i < IR_NUM_OPS; ++i) pchain[i] = state->chain + i;
-	// Sweep in reverse while propagating marks
-	for (Ref i = state->end; i-- > IR_BIAS;) {
-		union Node *x = &IR_GET(state, i);
-		if (!(x->ty & IR_MARK || is_effectful(x->op))) {
-			*pchain[x->op] = x->prev;
-			x->op = IR_NOP;
-			continue;
-		}
-		x->ty &= ~IR_MARK;
-		pchain[x->op] = &x->prev;
-		if (IS_VAR(x->a)) IR_GET(state, x->a).ty |= IR_MARK;
-		if (IS_VAR(x->b)) IR_GET(state, x->b).ty |= IR_MARK;
-	}
 }
 
 #define SUBST_GET(subst, ref) (*(Ref *) ((subst) + (ref) * sizeof(Ref)))
@@ -796,7 +770,6 @@ static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTr
 
 static struct LispTrace *assemble_trace(struct JitState *state, enum TraceLink link_type) {
 	state->need_snapshot = true, take_snapshot(state);
-	dce(state);
 	if (link_type == TRACE_LINK_LOOP) peel_loop(state);
 	state->snapshots[0].beg = IR_BIAS;
 
@@ -869,6 +842,7 @@ do_retry:
 		}
 
 		union Node x = IR_GET(state, ref);
+		if (is_nop(x)) continue; // Dead-code elimination
 		if (is_asm_full(&ctx)) goto err_realloc;
 		switch (x.op) {
 		case IR_SLOAD:
@@ -909,7 +883,6 @@ do_retry:
 		case IR_RET: asm_ret(&ctx, x); break;
 		case IR_LOOP: asm_loop(&ctx); break;
 		case IR_PHI: asm_phi(&ctx, x); break;
-		case IR_NOP: break;
 		default: unreachable();
 
 		case IR_ADD: asm_arith(&ctx, XG_ADD, ref); break;
