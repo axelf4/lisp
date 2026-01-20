@@ -171,7 +171,7 @@ static inline unsigned asm_insn_len(const uint8_t p[static 1]) {
 		[0x81] = 0x56, [0x83] = 0x53,
 
 		[XI_MOVmr] = 0x52, [XI_MOVrm] = 0x52, [XI_LEA] = 0x52,
-		[XI_MOVri] = 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
+		[XI_MOVri] = 0x15, 0x15, 0x15, 0x15, 0x15, 0x15, 0x15, 0x15,
 		[XI_MOVmi] = 0x56,
 
 		[XI_RET] = 0x01, [XI_JMP] = 0x05, [XI_JMPs] = 0x02,
@@ -186,7 +186,8 @@ static inline unsigned asm_insn_len(const uint8_t p[static 1]) {
 do_prefix: unsigned char x = lut1[*p];
 do_loop:
 	switch (x >> 4) {
-	case 0: return acc + x + (prefixes & 4);
+	case 0: return acc + x;
+	case 1: return acc + (x & 0xf) + (prefixes & 4);
 	case 2: x = lut2[*++p]; goto do_loop; // >=2-byte opcode
 	case 3: ++p; goto do_modrm; // 3-byte opcode
 	case 4: prefixes |= x; ++acc; ++p; goto do_prefix; // Legacy/REX prefix

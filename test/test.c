@@ -104,6 +104,8 @@ static void test_insn_len_disasm(void **) {
 	assert_int_equal(asm_insn_len((uint8_t[])
 			{ REX(1, 0, 0, 0), XI_MOVmi, MODRM(MOD_DISP32, 0, rsp), SIB(0, rsp, rsp),
 			  0, 0, 0, 0, 0, 0, 0, 0 }), 12);
+	assert_int_equal(asm_insn_len((uint8_t[])
+			{ REX(1, 0, 0, 0), IMM_GRP1_MR(XG_ADD), MODRM(MOD_REG, rax, rax) }), 3);
 #else
 	skip();
 #endif
