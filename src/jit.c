@@ -26,6 +26,8 @@
 #define SIDE_TRACE_THRESHOLD 5
 
 #define REF_TYPE_SHIFT 16
+#define IR_TYPE 0x3f
+#define IR_TYPE_GUARD 0x40
 #define IR_MARK 0x80 ///< Multi-purpose flag.
 #define REG_NONE 0x80 ///< Spilled or unallocated register flag.
 
@@ -234,7 +236,8 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		if (i >= state->end) break;
 
 		union Node x = IR_GET(state, i);
-		printf("%.4u %s %3u ", i - IR_BIAS, type_names[x.ty & ~IR_MARK], x.reg);
+		printf("%.4u %c%c %s %3u ", i - IR_BIAS, x.ty & IR_TYPE_GUARD ? '>' : ' ',
+			x.spill_slot ? '~' : ' ', type_names[x.ty & IR_TYPE], x.reg);
 		switch (x.op) {
 		case IR_SLOAD: printf("SLOAD #%" PRIu16 "\n", x.a); break;
 		case IR_GLOAD:
@@ -293,7 +296,7 @@ static void take_snapshot(struct JitState *state) {
 		// Skip unmodified SLOADs
 		if (IS_VAR(ref) && x.op == IR_SLOAD && x.a == i) continue;
 		state->stack_entries[state->num_stack_entries++] = (struct SnapshotEntry)
-			{ .slot = i, .ref = ref, .ty = ref >> REF_TYPE_SHIFT };
+			{ .ref = ref, .ty = ref >> REF_TYPE_SHIFT & IR_TYPE, .slot = i };
 		++snapshot->num_entries;
 	}
 }
@@ -396,11 +399,12 @@ static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
  * @return Whether the type of @a ref was compatible with @a ty.
  */
 static bool guard_type(struct JitState *state, IrRef *ref, uint8_t ty) {
-	uint8_t ty2 = *ref >> REF_TYPE_SHIFT;
+	uint8_t ty2 = *ref >> REF_TYPE_SHIFT & IR_TYPE;
 	if (ty == TY_ANY || ty2 == ty) return true;
 	// If ty </: ref->ty, then type error is imminent
 	if (IS_VAR(*ref))
-		*ref = (IR_GET(state, *ref).ty = ty) << REF_TYPE_SHIFT | (Ref) *ref;
+		*ref = (IR_GET(state, *ref).ty = IR_TYPE_GUARD | ty) << REF_TYPE_SHIFT
+			| (Ref) *ref;
 	return ty2 == TY_ANY;
 }
 
@@ -410,7 +414,7 @@ static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 	take_snapshot(state);
 	emit_opt(state, (union Node)
 		{ .op = IR_EQ, .ty = ty, .a = *ref, .b = emit_const(state, ty, value) });
-	guard_type(state, ref, ty);
+	*ref = (IR_GET(state, *ref).ty = ty) << REF_TYPE_SHIFT | (Ref) *ref;
 }
 
 #define SUBST_GET(subst, ref) (*(Ref *) ((subst) + (ref) * sizeof(Ref)))
@@ -473,7 +477,7 @@ static void peel_loop(struct JitState *state) {
 			}
 			// In case of type-instability, need to emit conversion
 			// since later instructions expect the previous type.
-			if (!guard_type(state, &ref, insn.ty)) rec_err(state);
+			if (!guard_type(state, &ref, insn.ty & IR_TYPE)) rec_err(state);
 		}
 		SUBST_GET(subst, i) = ref;
 	}
@@ -608,6 +612,21 @@ static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
 	asm_write32(&ctx->as, REL32(ctx->as.p, target));
 	*--ctx->as.p = XI_Jcc | cc;
 	*--ctx->as.p = 0x0f;
+}
+
+static void asm_type_guard(struct RegAlloc *ctx, Ref ref) {
+	uint8_t ty = IR_GET(ctx->state, ref).ty & IR_TYPE;
+	if (is_asm_full(ctx)) return;
+	enum Register reg = reg_use(ctx, ref, -1);
+	if (ty != LISP_INTEGER) {
+		asm_guard(ctx, CC_NE);
+		*--ctx->as.p = ty;
+		asm_rmrd(&ctx->as, 0, 0x80, (uint8_t) XG_CMP,
+			reg, offsetof(struct LispObjectHeader, tag) - 1);
+	}
+	asm_guard(ctx, CC_E ^ (ty == LISP_INTEGER));
+	*--ctx->as.p = 0x1;
+	asm_rr(&ctx->as, 0, XI_TESTmi8, 0, reg);
 }
 
 /** Assembles synchronization of interpreter stack with on-trace state. */
@@ -843,6 +862,7 @@ do_retry:
 
 		union Node x = IR_GET(state, ref);
 		if (is_nop(x)) continue; // Dead-code elimination
+		if (x.ty & IR_TYPE_GUARD) asm_type_guard(&ctx, ref);
 		if (is_asm_full(&ctx)) goto err_realloc;
 		switch (x.op) {
 		case IR_SLOAD:
@@ -994,7 +1014,7 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 		{ .op = IR_CALL, .ty = TY_ANY, .a = ref, .b = x.c });
 	for (unsigned i = 0; i < x.c; ++i) {
 		IrRef arg = state->bp[x.a + 2 + i];
-		uint8_t ty = arg >> REF_TYPE_SHIFT;
+		uint8_t ty = arg >> REF_TYPE_SHIFT & IR_TYPE;
 		emit(state, (union Node) { .op = IR_CALLARG, .ty = ty, .a = arg });
 	}
 	state->max_slot = x.a; // CALL always uses highest register
@@ -1026,7 +1046,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 	case JMP: break;
 	case JNIL:
 		IrRef ref = SLOT(state, x.a);
-		uint8_t ty = ref >> REF_TYPE_SHIFT;
+		uint8_t ty = ref >> REF_TYPE_SHIFT & IR_TYPE;
 		if (ty != TY_ANY) break; // Constant NIL comparison is a no-op
 		IrRef nil = emit_const(state, LISP_NIL, NIL(ctx));
 		take_snapshot(state);
