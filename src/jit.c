@@ -191,7 +191,7 @@ static void jit_init(struct JitState *state) {
 void jit_init_root(struct JitState *state, struct Closure *f, struct Instruction *pc) {
 	jit_init(state);
 	state->origin = f;
-	state->origin_pc = pc - 1;
+	state->origin_pc = pc;
 }
 
 #ifdef DEBUG
@@ -950,6 +950,7 @@ do_retry:
 		asm_mov_mi64(&ctx.as, REG_LISP_CTX,
 			offsetof(struct LispCtx, current_trace), (uintptr_t) result);
 		break;
+	default: unreachable();
 	}
 
 	*result = (struct LispTrace) {
@@ -985,7 +986,7 @@ static void penalize(struct JitState *state) {
 	*slot = (struct Penalty) { .pc = state->origin_pc, .value = TRACE_ATTEMPTS };
 found:
 	if (!--slot->value)
-		state->origin_pc->op += CALL_INTERPR - CALL; // Blacklist
+		state->origin_pc[-1].op += CALL_INTERPR - CALL; // Blacklist
 }
 
 static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_t *bp, struct Instruction x) {
@@ -1038,8 +1039,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 	case GETGLOBAL:
 		IrRef sym = emit_const(state, LISP_SYMBOL, *(LispObject *) (pc - x.b));
 		take_snapshot(state);
-		result = emit_opt(state,
-			(union Node) { .op = IR_GLOAD, .ty = TY_ANY, .a = sym });
+		result = emit_opt(state, (union Node) { .op = IR_GLOAD, TY_ANY, .a = sym });
 		break;
 	case GETUPVALUE: result = uref(state, bp, x.c); break;
 	case MOV: result = SLOT(state, x.c); break;
@@ -1123,7 +1123,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 
 		take_snapshot(state);
 		Ref pc_ref = emit_const(state, TY_RET_ADDR, (uintptr_t) npc);
-		emit(state, (union Node) { .op = IR_RET, .ty = TY_ANY, .a = pc_ref, .b = offset });
+		emit(state, (union Node) { .op = IR_RET, TY_ANY, .a = pc_ref, .b = offset });
 		memset(state->bp, 0, offset * sizeof *state->bp); // Clear frame below
 		state->need_snapshot = true;
 

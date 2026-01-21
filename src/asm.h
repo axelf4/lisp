@@ -20,16 +20,11 @@ struct Assembler {
 	uint8_t *p, *buf;
 };
 
-static void asm_write(struct Assembler *ctx, size_t n, unsigned char xs[static n]) {
-	memcpy(ctx->p -= n, xs, n);
-}
-
 static inline void asm_write32(struct Assembler *ctx, uint32_t x) {
-	asm_write(ctx, sizeof x, (unsigned char *) &x);
+	memcpy(ctx->p -= sizeof x, &x, sizeof x);
 }
-
 static inline void asm_write64(struct Assembler *ctx, uint64_t x) {
-	asm_write(ctx, sizeof x, (unsigned char *) &x);
+	memcpy(ctx->p -= sizeof x, &x, sizeof x);
 }
 
 static inline int32_t rel32(uintptr_t p, uintptr_t target) {
@@ -42,7 +37,7 @@ static inline int32_t rel32(uintptr_t p, uintptr_t target) {
 #ifdef __x86_64__
 #define JMP_RANGE 31 // +-2^31
 
-#define MODRM(mod, reg, rm) ((mod) << 6 | ((reg) & 7) << 3 | (rm & 7))
+#define MODRM(mod, reg, rm) ((mod) << 6 | ((reg) & 7) << 3 | ((rm) & 7))
 #define SIB MODRM
 /** Formats a REX prefix.
  *
@@ -213,19 +208,19 @@ do_loop:
 /** Reserves space for machine code. */
 static inline bool asm_init(struct Assembler *ctx) {
 	uint8_t *p;
-	size_t length = MCODE_CAPACITY;
+	size_t len = MCODE_CAPACITY;
 	// Force within range of relative jumps/CALLs to our code
 	uintptr_t target = (uintptr_t) asm_init & ~0xffff,
-		range = (1u << (JMP_RANGE - 1)) - (1u << 21),
-		hint = 0, state = FXHASH_K;
+		range = (1u << (JMP_RANGE - 1)) - (1u << 21), hint = 0;
+	uint64_t state = FXHASH_K;
 	for (unsigned i = 0; i < JMP_RANGE; ++i) {
-		if ((p = mmap((void *) hint, length, PROT_READ | PROT_WRITE,
+		if ((p = mmap((void *) hint, len, PROT_READ | PROT_WRITE,
 					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) break;
-		if ((uintptr_t) p - target < range || target - (uintptr_t) p < range + length) {
-			*ctx = (struct Assembler) { .buf = p, .p = p + length };
+		if ((uintptr_t) p - target < range || target - (uintptr_t) p < range + len) {
+			*ctx = (struct Assembler) { .buf = p, .p = p + len };
 			return true;
 		}
-		munmap(p, length);
+		munmap(p, len);
 		// Probe random 64K-aligned addresses
 		hint = ((state = fxhash(state, hint)) & (2 * range - 0x10000)) + target - range;
 	}
