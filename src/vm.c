@@ -94,14 +94,16 @@ static struct Handler { LispTailCallFunc *hnd; }
 		**dispatch_table = main_dispatch_table;							\
 	struct Instruction ins; NEXT;
 #define VM_END _Pragma("GCC diagnostic pop")
-#elif ENABLE_JIT
-#error Switch-based dispatch does not support JIT trace recording
 #else
-#define DEFINE_OP(op) op_ ## op: case op:
+#define DEFINE_OP(op) [[maybe_unused]] op_ ## op: case op:
 #define NEXT goto vm_start
 #define JMP_TO_LABEL(name) goto op_ ## name
+#define DISPATCH_MAIN(op) do { _op = (op); goto vm_dispatch; } while (0)
+enum { main_dispatch_table, RECORD = 0x1f, recording_dispatch_table = RECORD };
 
-#define VM_BEGIN vm_start: struct Instruction ins = *pc++; switch (ins.op) {
+#define VM_BEGIN uint8_t dispatch_table = main_dispatch_table, _op;		\
+	vm_start: struct Instruction ins = *pc++; _op = ins.op | dispatch_table; \
+	[[maybe_unused]] vm_dispatch: switch (_op) {
 #define VM_END }
 #endif
 
