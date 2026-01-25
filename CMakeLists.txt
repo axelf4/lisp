@@ -84,7 +84,7 @@ target_link_libraries(lisp lisplib)
 if(BUILD_TESTING)
   add_executable(unittest test/test.c src/phf.c)
   target_include_directories(unittest PRIVATE src)
-  target_link_libraries(unittest cmocka lisplib)
+  target_link_libraries(unittest cmocka::cmocka lisplib)
   add_test(unittest unittest)
 
   add_executable(heap_fuzz test/heap_fuzz.c)
