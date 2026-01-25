@@ -15,15 +15,15 @@ static_assert(IS_POWER_OF_TWO(16));
 static_assert(!IS_POWER_OF_TWO(10));
 
 static void test_rotate_left(void **) {
-	assert_int_equal(rol64(UINT64_C(1) << 63 | 0b10, 65), 0b101);
+	assert_uint_equal(rol64(UINT64_C(1) << 63 | 0b10, 65), 0b101);
 }
 
 static void do_nothing(void *) {}
 static void do_throw_error(void *) { throw(42); fail(); }
 
 static void test_exception(void **) {
-	assert_int_equal(pcall(NULL, do_nothing), 0);
-	assert_int_equal(pcall(NULL, do_throw_error), 42);
+	assert_uint_equal(pcall(NULL, do_nothing), 0);
+	assert_uint_equal(pcall(NULL, do_throw_error), 42);
 }
 
 static uint64_t my_hash(int key) { return key; }
@@ -37,7 +37,7 @@ static void test_hash_table(void **) {
 	struct Table table = tbl_new();
 	int *entry;
 	my_tbl_entry(&table, 1, &entry);
-	assert_int_equal(table.len, 1);
+	assert_uint_equal(table.len, 1);
 	assert_int_equal(*entry, 1);
 	assert_ptr_equal(my_tbl_find(&table, 1), entry);
 	assert_null(my_tbl_find(&table, 2));
@@ -48,16 +48,16 @@ static void test_gc_traces_live_object(void **state) {
 	struct LispCtx *ctx = *state;
 	LispObject obj = cons(ctx, TAG_SMI(1), NIL(ctx));
 	garbage_collect(*state);
-	assert_int_equal(UNTAG_SMI(car(ctx, obj)), 1);
+	assert_uint_equal(UNTAG_SMI(car(ctx, obj)), 1);
 }
 
 static void test_rope(void **) {
 	struct Rope rope;
 	if (!rope_init(&rope)) fail();
 	rope_replace(&rope, 0, 0, 26, "abcdefghijklmnopqrstuvwxyz");
-	assert_int_equal(rope_size(&rope), 26);
+	assert_uint_equal(rope_size(&rope), 26);
 	rope_replace(&rope, 1, 17, 0, "");
-	assert_int_equal(rope_size(&rope), 10);
+	assert_uint_equal(rope_size(&rope), 10);
 	rope_free(&rope);
 }
 
@@ -96,15 +96,15 @@ static void test_asm(void **) {
 
 static void test_insn_len_disasm(void **) {
 #ifdef __x86_64__
-	assert_int_equal(asm_insn_len((uint8_t[]) { XI_XORr, MODRM(MOD_REG, rax, rax) }), 2);
-	assert_int_equal(asm_insn_len((uint8_t[]) { XI_PUSHib, 0 }), 2);
-	assert_int_equal(asm_insn_len((uint8_t[]) { XI_JMP, 0, 0, 0, 0 }), 5);
-	assert_int_equal(asm_insn_len((uint8_t[]) { 0x0f, XI_Jcc | CC_E, 0, 0, 0, 0 }), 6);
+	assert_uint_equal(asm_insn_len((uint8_t[]) { XI_XORr, MODRM(MOD_REG, rax, rax) }), 2);
+	assert_uint_equal(asm_insn_len((uint8_t[]) { XI_PUSHib, 0 }), 2);
+	assert_uint_equal(asm_insn_len((uint8_t[]) { XI_JMP, 0, 0, 0, 0 }), 5);
+	assert_uint_equal(asm_insn_len((uint8_t[]) { 0x0f, XI_Jcc | CC_E, 0, 0, 0, 0 }), 6);
 
-	assert_int_equal(asm_insn_len((uint8_t[])
+	assert_uint_equal(asm_insn_len((uint8_t[])
 			{ REX(1, 0, 0, 0), XI_MOVmi, MODRM(MOD_DISP32, 0, rsp), SIB(0, rsp, rsp),
 			  0, 0, 0, 0, 0, 0, 0, 0 }), 12);
-	assert_int_equal(asm_insn_len((uint8_t[])
+	assert_uint_equal(asm_insn_len((uint8_t[])
 			{ REX(1, 0, 0, 0), IMM_GRP1_MR(XG_ADD), MODRM(MOD_REG, rax, rax) }), 3);
 #else
 	skip();
@@ -125,7 +125,7 @@ static void _assert_lisp_equal(struct LispCtx *ctx, LispObject a, LispObject b,
 	lisp_print(ctx, b, f);
 
 	fclose(f);
-	cm_print_error("%s\n", buf);
+	cmocka_print_error("%s\n", buf);
 	free(buf);
 	_fail(file, line);
 }
