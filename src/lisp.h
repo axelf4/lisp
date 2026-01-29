@@ -233,10 +233,9 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 
 #if ENABLE_JIT
 #define FOR_JIT_OPS(X) \
-	X(JIT_CALL) \
-	X(TAIL_JIT_CALL) \
-	X(CALL_INTERPR) /* Like CALL but blacklisted from being JITed. */ \
-	X(TAIL_CALL_INTERPR)
+	X(FHDR) /* Function header. */ \
+	X(FHDR_INTERPR) /* Like FHDR but blacklisted from being JITed. */ \
+	X(FHDR_JIT)
 #else
 #define FOR_JIT_OPS(X)
 #endif
@@ -318,7 +317,7 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 
 void jit_free(struct JitState *state);
 
-void jit_init_root(struct JitState *state, struct Closure *f, struct Instruction *pc);
+void jit_init_root(struct JitState *state, struct Instruction *pc);
 
 /** Records instruction preceding @a pc prior to it being executed. */
 bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);

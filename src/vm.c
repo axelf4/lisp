@@ -58,8 +58,7 @@ PRESERVE_NONE typedef LispObject LispTailCallFunc(TAIL_CALL_PARAMS);
 #define DECLARE_HANDLER(op) HANDLER(op),
 #define HANDLER_PTR(op) { HANDLER(op) },
 #define RECORD_PTR(_) HANDLER_PTR(RECORD)
-static LispTailCallFunc FOR_OPS(DECLARE_HANDLER) HANDLER(RECORD),
-	HANDLER(JIT_CALL) [[gnu::noinline]];
+static LispTailCallFunc FOR_OPS(DECLARE_HANDLER) HANDLER(RECORD);
 static struct Handler { LispTailCallFunc *hnd; }
 	main_dispatch_table[] = { FOR_OPS(HANDLER_PTR) },
 	recording_dispatch_table[] = { FOR_OPS(RECORD_PTR) };
@@ -114,20 +113,6 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 #if ENABLE_JIT
 #define JIT_THRESHOLD 4
 	memset(ctx->hotcounts, JIT_THRESHOLD, sizeof ctx->hotcounts);
-
-	/** Decrements hotcount by @a n, triggering trace recorder at zero. */
-#define DECR_HOTCOUNT(closure, to, n) do {								\
-		unsigned char hash = ((uintptr_t) pc ^ (uintptr_t) (to)) / sizeof *(to), \
-			*hotcount = ctx->hotcounts + hash % LENGTH(ctx->hotcounts);	\
-		if (!ckd_sub(hotcount, *hotcount, n)) break;					\
-		*hotcount = JIT_THRESHOLD;										\
-		if (ins.op < CALL_INTERPR && dispatch_table != recording_dispatch_table) { \
-			jit_init_root(ctx->jit_state, closure, pc);					\
-			dispatch_table = recording_dispatch_table;					\
-		}																\
-} while(0)
-#else
-#define DECR_HOTCOUNT(closure, to, n) ((void) (closure), (void) (to), (void) (n))
 #endif
 
 #define LOAD_CONST (*(LispObject *) (pc - ins.b))
@@ -175,10 +160,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		case LISP_CLOSURE:
 			struct Closure *closure = UNTAG_OBJ(*frame);
 			bind_rest(ctx, closure->prototype, bp = frame, ins.c);
-
-			struct Instruction *to = closure->prototype->body;
-			DECR_HOTCOUNT(closure, to, 1);
-			pc = to;
+			pc = closure->prototype->body;
 			break;
 		default: die("Bad function");
 		}
@@ -196,10 +178,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 			struct Closure *closure = UNTAG_OBJ(*bp = *frame);
 			uint8_t n = bind_rest(ctx, closure->prototype, frame, ins.c);
 			memmove(bp + 2, frame + 2, n * sizeof *frame);
-
-			struct Instruction *to = closure->prototype->body;
-			DECR_HOTCOUNT(closure, to, 2);
-			pc = to;
+			pc = closure->prototype->body;
 			NEXT;
 		default: die("Bad function");
 		}
@@ -234,9 +213,20 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		NEXT;
 	}
 #if ENABLE_JIT
-	DEFINE_OP(CALL_INTERPR) { JMP_TO_LABEL(CALL); }
-	DEFINE_OP(TAIL_CALL_INTERPR) { JMP_TO_LABEL(TAIL_CALL); }
-	DEFINE_OP(JIT_CALL) {
+	/** Decrements hotcount, triggering trace recorder at zero. */
+#define DECR_HOTCOUNT() do {											\
+		unsigned char _hash = (uintptr_t) pc / sizeof *pc,				\
+			*hotcount = ctx->hotcounts + _hash % LENGTH(ctx->hotcounts); \
+		if (!ckd_sub(hotcount, *hotcount, 1)) break;					\
+		*hotcount = JIT_THRESHOLD;										\
+		if (dispatch_table == recording_dispatch_table) break;			\
+		jit_init_root(ctx->jit_state, pc);								\
+		dispatch_table = recording_dispatch_table;						\
+} while(0)
+
+	DEFINE_OP(FHDR) { DECR_HOTCOUNT(); NEXT; }
+	DEFINE_OP(FHDR_INTERPR) { NEXT; }
+	DEFINE_OP(FHDR_JIT) {
 		struct LispTrace *trace = (*ctx->traces)[ins.b];
 		ctx->bp = bp;
 		struct SideExitResult x = trace_exec(ctx, trace);
@@ -244,14 +234,6 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		bp = ctx->bp + x.base_offset;
 		dispatch_table = x.should_record ? recording_dispatch_table : main_dispatch_table;
 		NEXT;
-	}
-	DEFINE_OP(TAIL_JIT_CALL) {
-		struct LispTrace *trace = (*ctx->traces)[ins.b];
-		uint8_t arity = *(uint8_t *) trace;
-		LispObject *frame = bp + ins.a;
-		*bp = *frame;
-		memmove(bp + 2, frame + 2, arity * sizeof *bp);
-		JMP_TO_LABEL(JIT_CALL);
 	}
 	DEFINE_OP(RECORD) {
 		if (!jit_record(ctx, pc, bp)) {
@@ -519,6 +501,9 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				ctx->vars[ctx->num_vars++]
 					= (struct Local) { .symbol = GC_COMPRESS(sym), .slot = ctx->num_regs++ };
 			}
+#if ENABLE_JIT
+			emit(ctx, (struct Instruction) { .op = FHDR });
+#endif
 
 			Register reg = ctx->num_regs++; // Return register
 			if (!compile_progn(ctx, x, (struct Destination) { .reg = reg, .is_return = true })) {
@@ -692,9 +677,6 @@ static void disassemble_range(size_t n, struct Instruction xs[static n], int ind
 		case GETUPVALUE: printf("GETUPVALUE %" PRIu8 " <- %" PRIu8 "\n", x.a, x.c); break;
 		case SETUPVALUE: printf("SETUPVALUE %" PRIu8 " -> %" PRIu8 "\n", x.a, x.c); break;
 		case CALL: case TAIL_CALL:
-#if ENABLE_JIT
-		case JIT_CALL: case TAIL_JIT_CALL: case CALL_INTERPR: case TAIL_CALL_INTERPR:
-#endif
 			printf("%sCALL %" PRIu8 " <- (%" PRIu8,
 				x.op == TAIL_CALL ? "TAIL_" : "", x.a, x.a);
 			for (unsigned i = 0; i < x.c; ++i) printf(" %" PRIu8, x.a + 2 + i);
@@ -712,6 +694,9 @@ static void disassemble_range(size_t n, struct Instruction xs[static n], int ind
 			i += x.b;
 			break;
 		case CLOSE_UPVALS: printf("CLOSE_UPVALS >= %" PRIu8 "\n", x.a); break;
+#if ENABLE_JIT
+		case FHDR: case FHDR_INTERPR: case FHDR_JIT: puts("FHDR"); break;
+#endif
 		default: unreachable();
 		}
 	}
