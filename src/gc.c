@@ -204,24 +204,30 @@ void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
 	mark_stack_push(heap, src); // Add to remembered set
 }
 
-void *gc_trace(struct GcHeap *heap, void *p) {
+[[gnu::noinline]] static void *evacuate(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
 	struct GcRef *fwd = (struct GcRef *) ALIGN_UP(hdr + 1, alignof(struct GcRef));
 	if ((hdr->flags & GC_MARK) == heap->mark_color) // Already traced
 		return hdr->flags & GC_FORWARDED ? (void *) GC_DECOMPRESS(heap, *fwd) : p;
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
-	// Opportunistic evacuation if block is a defragmentation candidate
-	size_t alignment, size;
+	size_t alignment, size = gc_object_size(p, &alignment);
 	void *q;
-	if (GC_BLOCK(p)->flag && (size = gc_object_size(p, &alignment),
-			q = gc_alloc(heap, alignment, size))) {
+	if ((q = gc_alloc(heap, alignment, size))) {
 		memcpy(q, p, size);
 		*fwd = GC_COMPRESS(p = q); // Leave forwarding pointer
 		hdr->flags |= GC_FORWARDED;
 	}
 
 	mark_stack_push(heap, p);
+	return p;
+}
+
+void *gc_trace(struct GcHeap *heap, void *p) {
+	// Opportunistic evacuation if block is a defragmentation candidate
+	if (UNLIKELY(GC_BLOCK(p)->flag)) return evacuate(heap, p);
+	if ((((struct GcObjectHeader *) p)->flags & GC_MARK) != heap->mark_color)
+		gc_pin(heap, p);
 	return p;
 }
 
