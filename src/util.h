@@ -55,7 +55,7 @@
 
 /** Iterates over the indices of set bits in @a x. */
 #define FOR_ONES(var, x) for (typeof(x) _i = (x), var; \
-		_i && (var = stdc_trailing_zeros(_i), true); _i &= _i - 1)
+		var = stdc_trailing_zeros(_i), _i; _i &= _i - 1)
 
 /** Terminates the program with the specified error message. */
 [[noreturn, gnu::cold, gnu::format (printf, 1, 2)]] void die(const char *format, ...);

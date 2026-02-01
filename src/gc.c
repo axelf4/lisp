@@ -1,7 +1,5 @@
 #include "gc.h"
-#include <stddef.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <assert.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -71,18 +69,16 @@ struct GcHeap {
 
 	bool mark_color, inhibit_gc, is_major_gc, is_defrag;
 	char *object_map; ///< Bitset of object start positions.
-	struct MarkStack { size_t length, capacity; void **items; } mark_stack;
+	struct MarkStack { size_t len, capacity; void **items; } mark_stack;
 	struct ModSet { unsigned len, capacity; struct BumpPointer *xs; } modset;
 	struct GcBlock blocks[NUM_BLOCKS];
 };
 
 struct GcHeap *gc_new() {
 	struct GcHeap *heap;
-	size_t alignment =
+	size_t alignment = alignof(struct GcHeap);
 #if USE_COMPRESSED_PTRS
-		/* 4 GiB */ 1ull << 32;
-#else
-		alignof(struct GcHeap);
+	alignment = /* 4 GiB */ 1ull << 32;
 #endif
 	char *p;
 	if ((p = mmap(NULL, sizeof *heap + alignment - 1, PROT_READ | PROT_WRITE,
@@ -92,17 +88,19 @@ struct GcHeap *gc_new() {
 	munmap(p, (char *) heap - p);
 	munmap(heap + 1, p + sizeof *heap + alignment - 1 - (char *) (heap + 1));
 
+#ifndef __linux__
 	heap->mark_color = heap->inhibit_gc = heap->is_major_gc = heap->is_defrag = false;
 	heap->mark_stack = (struct MarkStack) {};
 	heap->modset = (struct ModSet) {};
 	heap->free = NULL;
+	heap->recycled_len = 0;
+#endif
 	if (!((heap->object_map = calloc(1, OBJECT_MAP_SIZE))
 			&& (heap->free = malloc(2 * NUM_BLOCKS * sizeof *heap->free)))) {
 		gc_free(heap);
 		return NULL;
 	}
 	heap->free_len = NUM_BLOCKS - 1;
-	heap->recycled_len = 0;
 	heap->recycled = heap->free + NUM_BLOCKS;
 
 	struct GcBlock *blocks = heap->blocks;
@@ -172,7 +170,7 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 		if ((p = bump_alloc(ptr = &heap->overflow_ptr, alignment, size))) return p;
 	}
 	// Acquire a free block
-	if (heap->free_len <= MIN_FREE) garbage_collect(heap);
+	if (heap->free_len <= MIN_FREE && !heap->inhibit_gc) garbage_collect(heap);
 	if (!heap->free_len) return NULL;
 	*ptr = block_bump_ptr(heap->free[--heap->free_len]);
 out_bump:
@@ -204,9 +202,8 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 }
 
 static void mark_stack_push(struct GcHeap *heap, void *x) {
-	if (heap->mark_stack.length >= heap->mark_stack.capacity)
-		mark_stack_grow(heap);
-	heap->mark_stack.items[heap->mark_stack.length++] = x;
+	if (heap->mark_stack.len >= heap->mark_stack.capacity) mark_stack_grow(heap);
+	heap->mark_stack.items[heap->mark_stack.len++] = x;
 }
 
 void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
@@ -333,20 +330,17 @@ volatile void *gc_nop_sink;
 #endif
 
 void garbage_collect(struct GcHeap *heap) {
-	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
+	heap->inhibit_gc = true;
 	lttng_ust_tracepoint(lisp, garbage_collection, heap->is_major_gc + heap->is_defrag);
-	if (heap->is_major_gc) heap->mark_stack.length = 0; // Ignore remembered set
+	if (heap->is_major_gc) heap->mark_stack.len = 0; // Ignore remembered set
 	// Unlog remembered set
-	for (size_t i = 0; i < heap->mark_stack.length; ++i)
+	for (size_t i = 0; i < heap->mark_stack.len; ++i)
 		((struct GcObjectHeader *) heap->mark_stack.items[i])->flags |= GC_UNLOGGED;
 	heap->mark_color ^= 1; // Alternate liveness color to skip zeroing object marks
 
 	// Push callee-saved register onto the stack
 	ucontext_t ctx;
-	if (UNLIKELY(getcontext(&ctx))) {
-		fputs("getcontext() failed\n", stderr);
-		__builtin_unwind_init();
-	}
+	if (getcontext(&ctx)) __builtin_unwind_init();
 	scan_stack(heap); // Collect conservative roots
 	// Prevent prematurely popping register contents
 #ifdef __GNUC__
@@ -371,8 +365,8 @@ void garbage_collect(struct GcHeap *heap) {
 	}
 	heap->modset.len = 0;
 	gc_trace_roots(heap);
-	while (heap->mark_stack.length) { // Trace live objects
-		void *p = heap->mark_stack.items[--heap->mark_stack.length];
+	while (heap->mark_stack.len) { // Trace live objects
+		void *p = heap->mark_stack.items[--heap->mark_stack.len];
 		object_map_add(heap, p);
 		gc_object_visit(heap, p);
 	}
