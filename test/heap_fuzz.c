@@ -151,7 +151,7 @@ int main() {
 
 	struct GcHeap *heap;
 	uint64_t state = time(NULL);
-	unsigned int scenario_count = 0;
+	unsigned scenario_count = 0;
 	do {
 		this_seed = state;
 		if (!(heap = gc_new())) goto err_free_objects;
@@ -162,14 +162,14 @@ int main() {
 			uint64_t b = state = fxhash(state, 0);
 			switch (gen_event_type(b)) {
 			case EVENT_ALLOC: {
-				size_t data_size = gen_obj_data_size(b);
 				struct Obj *obj;
+				size_t data_size = gen_obj_data_size(b),
+					num_slots = data_size / sizeof *obj->slots;
 				if (!(obj = gc_alloc(heap, alignof(struct Obj), sizeof *obj + data_size))) {
 					fputs("gc_alloc failed\n", stderr);
 					goto err_free_heap;
 				}
-				*obj = (struct Obj)
-					{ .hdr = obj->hdr, .num_slots = data_size / sizeof *obj->slots };
+				*obj = (struct Obj) { .hdr = obj->hdr, .num_slots = num_slots };
 
 				unsigned i = ctx->num_objects++;
 				bool is_root = !(b & 0x700);
@@ -199,12 +199,12 @@ int main() {
 
 			case EVENT_GC:
 				garbage_collect(heap);
+				if (!validate_heap(heap)) goto err_free_heap;
 				if (b < 0.6 * (double) UINT64_MAX) {
 					heap->mark_color ^= !heap->is_major_gc;
 					heap->is_major_gc = true;
 					heap->is_defrag |= b < 0.3 * (double) UINT64_MAX;
 				}
-				if (!validate_heap(heap)) goto err_free_heap;
 				break;
 			default: unreachable();
 			}

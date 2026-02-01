@@ -3,6 +3,7 @@
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <string.h>
 #include "lisp.h"
 #include "fxhash.h"
@@ -29,8 +30,7 @@ static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *prototype,
 	uint8_t arity = prototype->arity, nargs = arity & ~PROTO_VARIADIC;
 
 	if (LIKELY(n == arity)) return n;
-	if (!(arity & PROTO_VARIADIC) || n < nargs)
-		die("Wrong number of arguments");
+	if (!(arity & PROTO_VARIADIC) || n < nargs) die("Wrong number of arguments");
 	LispObject rest = NIL(ctx);
 	while (n > nargs) rest = cons(ctx, bp[2 + --n], rest);
 	bp[2 + n++] = rest;
@@ -109,6 +109,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 	uintptr_t *bp = ctx->bp;
 	bp[1] = (uintptr_t) NULL; // TODO Reentrancy
 #if ENABLE_JIT
+	assert(!ctx->current_trace && "TODO");
 #define JIT_THRESHOLD 4
 	memset(ctx->hotcounts, JIT_THRESHOLD, sizeof ctx->hotcounts);
 #endif
@@ -218,7 +219,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		if (!ckd_sub(hotcount, *hotcount, 1)) break;					\
 		*hotcount = JIT_THRESHOLD;										\
 		if (dispatch_table == recording_dispatch_table) break;			\
-		jit_init_root(ctx->jit_state, pc);								\
+		jit_init(ctx->jit_state, pc);									\
 		dispatch_table = recording_dispatch_table;						\
 } while(0)
 
@@ -256,10 +257,11 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
  */
 [[gnu::optimize ("-fnon-call-exceptions")]]
 static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
+	LispObject xs = args[n];
 	switch (lisp_type(function)) {
 	case LISP_CFUNCTION:
 		struct LispCFunction *fn = UNTAG_OBJ(function);
-		if (!(n == fn->nargs && NILP(ctx, args[n]))) die("TODO");
+		if (!(n == fn->nargs && NILP(ctx, xs))) die("TODO");
 		return fn->f(ctx, n, args);
 	case LISP_CLOSURE: break;
 	default: throw(1);
@@ -268,15 +270,14 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	bool is_variadic = proto->arity & PROTO_VARIADIC;
 	uint8_t m = proto->arity & ~PROTO_VARIADIC;
 
-	*ctx->bp = function;
-	memcpy(ctx->bp + 2, args, MIN(n, m) * sizeof *args);
-
-	LispObject xs = args[n];
-	while (n < m && !NILP(ctx, xs)) ctx->bp[2 + n++] = pop(ctx, &xs);
 	while (n > m) xs = cons(ctx, args[--n], xs);
+
+	*ctx->bp = function;
+	memcpy(ctx->bp + 2, args, n * sizeof *args);
+	while (n < m && !NILP(ctx, xs)) ctx->bp[2 + n++] = pop(ctx, &xs);
+
 	if (n < m || !(is_variadic || NILP(ctx, xs))) die("Wrong number of arguments");
 	ctx->bp[2 + m] = xs;
-
 	return run(ctx, proto->body);
 }
 
