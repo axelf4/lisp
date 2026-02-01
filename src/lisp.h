@@ -313,7 +313,7 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 	return (struct Instruction *) (chunk_constants(chunk) + chunk->num_consts);
 }
 
-[[gnu::malloc]] struct JitState *jit_new();
+[[nodiscard, gnu::malloc]] struct JitState *jit_new();
 
 void jit_free(struct JitState *state);
 

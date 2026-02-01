@@ -117,7 +117,7 @@ struct Snapshot {
 
 enum TraceLink {
 	TRACE_LINK_LOOP, ///< Loop to itself.
-	TRACE_LINK_ROOT, ///< Jump to root trace.
+	TRACE_LINK_ROOT, ///< Jump to root trace @ref JitState::link.
 	TRACE_LINK_INTERPR, ///< Fallback to interpreter.
 	TRACE_LINK_UPREC, ///< Up-recursion.
 };
@@ -459,7 +459,7 @@ static void peel_loop(struct JitState *state) {
 
 		IrRef ref = emit_opt(state, insn), j = (Ref) ref;
 		if (j != i && j < preamble_end) { // Loop-carried dependency
-			// SLOAD:s of arguments varied in tail call give rise to φ:s
+			// SLOADs of arguments varied in tail call give rise to φ:s
 			if (IS_VAR(ref)) {
 				if (num_phis >= LENGTH(phis)) rec_err(state);
 				else phis[num_phis++] = ref;

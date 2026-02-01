@@ -1,5 +1,4 @@
 #include "gc.h"
-#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
@@ -77,11 +76,9 @@ struct GcHeap {
 
 struct GcHeap *gc_new() {
 	struct GcHeap *heap;
-	size_t alignment =
+	size_t alignment = alignof(struct GcHeap);
 #if USE_COMPRESSED_PTRS
-		/* 4 GiB */ 1ull << 32;
-#else
-		alignof(struct GcHeap);
+	alignment = /* 4 GiB */ 1ull << 32;
 #endif
 	char *p;
 	if ((p = mmap(NULL, sizeof *heap + alignment - 1, PROT_READ | PROT_WRITE,
