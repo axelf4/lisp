@@ -72,6 +72,7 @@ struct GcHeap {
 	bool mark_color, inhibit_gc, is_major_gc, is_defrag;
 	char *object_map; ///< Bitset of object start positions.
 	struct MarkStack { size_t length, capacity; void **items; } mark_stack;
+	struct ModSet { unsigned len, capacity; struct BumpPointer *xs; } modset;
 	struct GcBlock blocks[NUM_BLOCKS];
 };
 
@@ -93,6 +94,7 @@ struct GcHeap *gc_new() {
 
 	heap->mark_color = heap->inhibit_gc = heap->is_major_gc = heap->is_defrag = false;
 	heap->mark_stack = (struct MarkStack) {};
+	heap->modset = (struct ModSet) {};
 	heap->free = NULL;
 	if (!((heap->object_map = calloc(1, OBJECT_MAP_SIZE))
 			&& (heap->free = malloc(2 * NUM_BLOCKS * sizeof *heap->free)))) {
@@ -104,8 +106,7 @@ struct GcHeap *gc_new() {
 	heap->recycled = heap->free + NUM_BLOCKS;
 
 	struct GcBlock *blocks = heap->blocks;
-	heap->ptr = block_bump_ptr(blocks);
-	heap->overflow_ptr = NULL_BUMP_PTR(blocks);
+	heap->ptr = heap->overflow_ptr = NULL_BUMP_PTR(blocks);
 	for (struct GcBlock *block = blocks; block < blocks + NUM_BLOCKS; ++block) {
 		ASAN_POISON_MEMORY_REGION(block->data, sizeof block->data);
 #ifndef __linux__
@@ -113,11 +114,12 @@ struct GcHeap *gc_new() {
 		blocks->flag = 0;
 #endif
 	}
-	for (unsigned i = 1; i < NUM_BLOCKS; ++i) heap->free[i - 1] = blocks + i;
+	for (unsigned i = 0; i < NUM_BLOCKS; ++i) heap->free[i] = blocks + i;
 	return heap;
 }
 
 void gc_free(struct GcHeap *heap) {
+	free(heap->modset.xs);
 	free(heap->mark_stack.items);
 	free(heap->free);
 	free(heap->object_map);
@@ -138,6 +140,14 @@ static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
 	char *v = heap->object_map + i / CHAR_BIT, mask = 1 << i % CHAR_BIT;
 	if (*v & mask) { *v &= ~mask; return true; }
 	return false;
+}
+
+[[gnu::cold]] static void modset_grow(struct ModSet *set) {
+	size_t new_capacity = set->capacity ? 2 * set->capacity : 8;
+	struct BumpPointer *xs;
+	if (!(xs = realloc(set->xs, new_capacity * sizeof *xs))) die("malloc failed");
+	set->xs = xs;
+	set->capacity = new_capacity;
 }
 
 enum {
@@ -167,8 +177,8 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 	*ptr = block_bump_ptr(heap->free[--heap->free_len]);
 out_bump:
 	ASAN_POISON_MEMORY_REGION(ptr->limit, ptr->cursor - ptr->limit);
-	memset(heap->object_map + (ptr->limit - (char *) heap) / (GC_ALIGNMENT * CHAR_BIT),
-		0, (ptr->cursor - ptr->limit) / (GC_ALIGNMENT * CHAR_BIT));
+	if (heap->modset.len >= heap->modset.capacity) modset_grow(&heap->modset);
+	heap->modset.xs[heap->modset.len++] = *ptr;
 	return bump_alloc(ptr, alignment, size);
 }
 
@@ -353,7 +363,13 @@ void garbage_collect(struct GcHeap *heap) {
 		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
 			if (block->flag == 2) block->flag = 0;
 			else memset(block->line_marks, 0, sizeof block->line_marks);
+	} else for (size_t i = 0; i < heap->modset.len; ++i) {
+			struct BumpPointer p = heap->modset.xs[i];
+			// Clear portions of object map that were allocated into
+			char *x = heap->object_map + (p.limit - (char *) heap) / (GC_ALIGNMENT * CHAR_BIT);
+			memset(x, 0, (p.cursor - p.limit) / (GC_ALIGNMENT * CHAR_BIT));
 	}
+	heap->modset.len = 0;
 	gc_trace_roots(heap);
 	while (heap->mark_stack.length) { // Trace live objects
 		void *p = heap->mark_stack.items[--heap->mark_stack.length];
