@@ -14,7 +14,8 @@
 #include "lisp_tracepoint.h"
 
 #define IR_BIAS 0x8000
-#define REF_BP (IR_BIAS - 1) ///< Virtual representing #LispCtx.bp.
+#define REF_BP IR_BIAS ///< Virtual representing #LispCtx.bp.
+#define REF_FIRST (IR_BIAS + 1)
 #define IS_VAR(ref) ((Ref) (ref) >= IR_BIAS)
 #define IR_GET(state, ref) (state)->trace[(Ref) (ref) - IR_BIAS + MAX_CONSTS]
 #define HAS_REG(x) (!((x).reg & REG_NONE))
@@ -175,7 +176,7 @@ void jit_free(struct JitState *state) { free(state); }
 
 static void jit_init(struct JitState *state) {
 	memset(state, 0, offsetof(struct JitState, pc));
-	state->end = IR_BIAS;
+	state->end = REF_FIRST;
 	state->bp = state->slots;
 	state->need_snapshot = true;
 }
@@ -212,7 +213,7 @@ static void print_trace(struct JitState *state, enum TraceLink link) {
 		*link_names[] = { "loop", "root", "interpreter", "up-recursion" };
 
 	puts("\n---- TRACE IR");
-	for (unsigned i = IR_BIAS, snap_idx = 0; ; ++i) {
+	for (unsigned i = REF_FIRST, snap_idx = 0; ; ++i) {
 		struct Snapshot *snap = state->snapshots + snap_idx;
 		if (snap_idx < state->num_snapshots && i >= snap->beg) {
 			printf("....         SNAP  #%-3u [ ", snap_idx++);
@@ -293,8 +294,8 @@ static void take_snapshot(struct JitState *state) {
 }
 
 static IrRef emit_const(struct JitState *state, uint8_t ty, uintptr_t x) {
-	Ref i = REF_BP;
-	while (i-- > REF_BP - state->num_consts)
+	Ref i = IR_BIAS;
+	while (i-- > IR_BIAS - state->num_consts)
 		if (LISP_EQ(IR_GET(state, i).v, x)) goto out;
 	if (++state->num_consts >= MAX_CONSTS) { rec_err(state); return 0; }
 	IR_GET(state, i).v = x;
@@ -452,7 +453,7 @@ static void peel_loop(struct JitState *state) {
 	Ref subst_buf[MAX_TRACE_LEN], phis[12];
 	// Map of virtuals in the preamble onto virtuals of the peeled loop
 	uintptr_t subst = (uintptr_t) subst_buf - IR_BIAS * sizeof *subst_buf;
-	for (Ref i = IR_BIAS; i < preamble_end; ++i) {
+	for (Ref i = REF_FIRST; i < preamble_end; ++i) {
 		if (i >= s->beg) subst_snapshot(state, subst, s++, loopsnap);
 
 		union Node insn = IR_GET(state, i);
@@ -513,7 +514,7 @@ static enum Register reload(struct RegAlloc *ctx, Ref ref) {
 	union Node *x = &IR_GET(ctx->state, ref);
 	assert(HAS_REG(*x) && "evicting unallocated virtual");
 	enum Register reg = x->reg;
-	if (IS_VAR(ref)) {
+	if (ref >= REF_FIRST) {
 		if (!x->spill_slot && !(x->spill_slot = ++ctx->num_spill_slots))
 			rec_err(ctx->state); // Out of spill slots
 		// Reload from stack
@@ -571,7 +572,7 @@ static enum Register reg_def(struct RegAlloc *ctx, Ref ref, RegSet mask) {
  */
 static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	union Node *x = &IR_GET(ctx->state, ref);
-	assert(IS_VAR(ref) || ref == REF_BP);
+	assert(IS_VAR(ref));
 	if (HAS_REG(*x)) { assert(1 << x->reg & mask); return x->reg; }
 	RegSet available = ctx->available & mask;
 	enum Register hint = x->reg % stdc_bit_ceil_uc(NUM_REGS),
@@ -781,7 +782,7 @@ static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTr
 static struct LispTrace *assemble_trace(struct JitState *state, enum TraceLink link_type) {
 	state->need_snapshot = true, take_snapshot(state);
 	if (link_type == TRACE_LINK_LOOP) peel_loop(state);
-	state->snapshots[0].beg = IR_BIAS;
+	state->snapshots[0].beg = REF_FIRST;
 
 #define ALIGN_PAGE(p) ((void *) ((uintptr_t) (p) & ~(page_size() - 1)))
 	if (LIKELY(state->as.p > state->as.buf)) {
@@ -802,7 +803,7 @@ do_retry:
 #endif
 		  .snapshot_idx = state->num_snapshots, .next_snapshot_beg = UINT16_MAX };
 	// Initialize registers as unallocated and add hints
-	for (Ref ref = REF_BP; ref < state->end; ++ref) {
+	for (Ref ref = IR_BIAS; ref < state->end; ++ref) {
 		union Node *x = &IR_GET(state, ref);
 		x->spill_slot = 0;
 		switch (x->op) {
@@ -841,7 +842,7 @@ do_retry:
 	default: unreachable();
 	}
 
-	for (Ref ref = state->end; ref-- > IR_BIAS;) {
+	for (Ref ref = state->end; ref-- > REF_FIRST;) {
 		if (ref < ctx.next_snapshot_beg) {
 			struct Snapshot *snapshot = state->snapshots + --ctx.snapshot_idx;
 			ctx.next_snapshot_beg = snapshot->beg;
@@ -879,7 +880,7 @@ do_retry:
 			if (/* inherited spilled? */ x.b) { if (HAS_REG(x)) reload(&ctx, ref); }
 			else reg_def(&ctx, ref, 1 << x.a);
 			// Known side trace stack usage: Rectify parent spill slots and redo
-			if (ref == IR_BIAS && !is_pload_ok && ctx.num_spill_slots) {
+			if (ref == REF_FIRST && !is_pload_ok && ctx.num_spill_slots) {
 				if (ckd_addassign(&ctx.num_spill_slots, ctx.num_spill_slots % 2)) goto err;
 				union Node *y = &IR_GET(state, ref);
 				do if (y->b) y->b += ctx.num_spill_slots; while ((++y)->op == IR_PLOAD);
