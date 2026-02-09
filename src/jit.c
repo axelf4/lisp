@@ -5,6 +5,7 @@
  *      2009, 44.6: 465-478.
  */
 
+#include <stdckdint.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <assert.h>
@@ -17,6 +18,7 @@
 #define IS_VAR(ref) ((Ref) (ref) >= IR_BIAS)
 #define IR_GET(state, ref) (state)->trace[(Ref) (ref) - IR_BIAS + MAX_CONSTS]
 #define HAS_REG(x) (!((x).reg & REG_NONE))
+#define ckd_addassign(r, b) ckd_add(r, *(r), b)
 
 #define MAX_CONSTS UINT8_MAX
 #define MAX_TRACE_LEN 512
@@ -718,7 +720,7 @@ static void asm_call(struct RegAlloc *ctx, Ref ref) {
 		asm_rmrd(&ctx->as, 1, XI_MOVmr, arg_reg, args_reg, i * sizeof arg.v);
 	}
 	asm_rmrd(&ctx->as, 1, XI_LEA, args_reg, rsp, ctx->num_spill_slots * sizeof x.v);
-	ctx->num_spill_slots += x.b;
+	if (ckd_addassign(&ctx->num_spill_slots, x.b)) rec_err(ctx->state);
 }
 
 static void asm_ret(struct RegAlloc *ctx, union Node x) {
@@ -878,7 +880,7 @@ do_retry:
 			else reg_def(&ctx, ref, 1 << x.a);
 			// Known side trace stack usage: Rectify parent spill slots and redo
 			if (ref == IR_BIAS && !is_pload_ok && ctx.num_spill_slots) {
-				ctx.num_spill_slots += ctx.num_spill_slots % 2; // 16-byte align stack
+				if (ckd_addassign(&ctx.num_spill_slots, ctx.num_spill_slots % 2)) goto err;
 				union Node *y = &IR_GET(state, ref);
 				do if (y->b) y->b += ctx.num_spill_slots; while ((++y)->op == IR_PLOAD);
 				is_pload_ok = true;
@@ -905,7 +907,8 @@ do_retry:
 	}
 	if (HAS_REG(IR_GET(state, REF_BP))) reload(&ctx, REF_BP);
 	assert(ctx.available == REG_ALL);
-	ctx.num_spill_slots += ctx.num_spill_slots % 2; // 16-byte align stack
+	if (ckd_addassign(&ctx.num_spill_slots, ctx.num_spill_slots % 2)) // 16-byte align stack
+		rec_err(state);
 	unsigned dsp = ctx.num_spill_slots * sizeof(LispObject);
 	if (dsp) asm_grp1_imm(&ctx.as, 1, XG_SUB, rsp, dsp);
 
@@ -914,10 +917,7 @@ do_retry:
 	if (UNLIKELY(state->status != REC_OK)
 		|| !(result = malloc(sizeof *result + len * sizeof *state->trace
 				+ state->num_snapshots * sizeof *state->snapshots
-				+ state->num_stack_entries * sizeof *state->stack_entries))) {
-		if (mprotect(ALIGN_PAGE(state->as.p), 1, PROT_EXEC)) die("mprotect failed");
-		return NULL;
-	}
+				+ state->num_stack_entries * sizeof *state->stack_entries))) goto err;
 #ifdef DEBUG
 	print_trace(state, link_type);
 #endif
@@ -927,7 +927,9 @@ do_retry:
 	case TRACE_LINK_INTERPR: break;
 	case TRACE_LINK_ROOT:
 		target = (uintptr_t) state->link->f;
-		dsp = (ctx.num_spill_slots += state->parent->num_spill_slots) * sizeof(LispObject);
+		if (ckd_addassign(&ctx.num_spill_slots, state->parent->num_spill_slots))
+			goto err_free_trace;
+		dsp = ctx.num_spill_slots * sizeof(LispObject);
 		[[fallthrough]];
 	case TRACE_LINK_UPREC: // Patch tail
 		struct Assembler as = { ctx.end -= dsp > INT8_MAX ? 0 : dsp ? 3 : 7, NULL };
@@ -962,6 +964,9 @@ do_retry:
 	state->as = ctx.as;
 	if (state->parent) patch_exit(state->parent, state->side_exit_num, result);
 	return result;
+err_free_trace: free(result);
+err: if (mprotect(ALIGN_PAGE(state->as.p), 1, PROT_EXEC)) die("mprotect failed");
+	return NULL;
 }
 
 static void penalize(struct JitState *state) {
