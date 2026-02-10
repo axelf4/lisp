@@ -399,10 +399,12 @@ static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 
 /** Emits an instruction to load the given upvalue. */
 static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
+	struct Closure *closure = UNTAG_OBJ(*bp);
 	struct Upvalue *upvalue = ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx];
 	IrRef fn = SLOT(state, 0);
 	if (!upvalue->is_mut) { // Inlineable?
-		guard_value(state, state->bp, /* this closure */ *bp);
+		if (!closure->prototype->is_toplevel)
+			guard_value(state, state->bp, /* this closure */ *bp);
 		LispObject v = *upvalue->location;
 		return emit_const(state, lisp_type(v), v);
 	}
