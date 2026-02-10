@@ -285,6 +285,7 @@ struct Chunk {
 /** Lisp closure prototype. */
 struct Prototype {
 	uint8_t arity, num_upvalues;
+	bool is_toplevel;
 	unsigned offset; ///< Byte offset within chunk.
 	struct Instruction body[];
 };
