@@ -513,6 +513,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 			*(struct Prototype *) (ctx->insns + proto_beg) = (struct Prototype) {
 				.arity = num_args, .num_upvalues = fn.num_upvalues,
+				.is_toplevel = !fn.prev->vars_start,
 				.offset = ctx->prototypes,
 			};
 			ctx->prototypes = proto_beg;
