@@ -11,8 +11,8 @@ from gdb.types import make_enum_dict
 IR_BIAS = 0x8000
 REF_FIRST = IR_BIAS + 1
 
-IR_TYPE = 0x3F
-IR_GUARD = 0x40
+IR_TYPE = 0x1F
+IR_GUARD = 0x20
 REG_NONE = 0x80
 
 
