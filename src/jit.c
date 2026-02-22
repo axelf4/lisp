@@ -29,8 +29,9 @@
 #define SIDE_TRACE_THRESHOLD 5
 
 #define REF_TYPE_SHIFT 16
-#define IR_TYPE 0x3f
-#define IR_GUARD 0x40 ///< Type-check result.
+#define IR_TYPE 0x1f
+#define IR_GUARD 0x20 ///< Type-check result.
+#define IR_EFFECTFUL 0x40
 #define IR_MARK 0x80 ///< Multi-purpose flag.
 #define REG_NONE 0x80 ///< Spilled or unallocated register flag.
 
@@ -89,7 +90,9 @@ union Node {
 };
 
 static bool is_effectful(enum SsaOp x) { return x <= IR_RET; }
-static bool is_nop(union Node x) { return x.reg == 0xff && !is_effectful(x.op); }
+static bool is_nop(union Node x) {
+	return x.reg == 0xff && !(x.ty & IR_EFFECTFUL || is_effectful(x.op));
+}
 
 /** Snapshot stack slot entry. */
 struct SnapshotEntry {
@@ -604,7 +607,11 @@ static void asm_guard(struct RegAlloc *ctx, enum Cc cc) {
 static void asm_type_guard(struct RegAlloc *ctx, Ref ref) {
 	uint8_t ty = IR_GET(ctx->state, ref).ty & IR_TYPE;
 	enum Register reg = reg_use(ctx, ref, -1);
-	if (ty != LISP_INTEGER) {
+	if (ty == LISP_NIL) {
+		asm_guard(ctx, CC_NE);
+		asm_grp1_imm(&ctx->as, 0, XG_CMP, reg, TAG_OBJ(offsetof(struct LispCtx, nil)));
+		return;
+	} else if (ty != LISP_INTEGER) {
 		asm_guard(ctx, CC_NE);
 		*--ctx->as.p = ty;
 		asm_rmrd(&ctx->as, 0, 0x80, (uint8_t) XG_CMP,
@@ -1027,16 +1034,12 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		result = emit_opt(state, (union Node) { .op = IR_GLOAD, TY_ANY, .a = sym });
 		break;
 	case GETUPVALUE: result = uref(state, bp, x.c); break;
-	case JMP: break;
 	case JNIL:
 		IrRef ref = SLOT(state, x.a);
-		uint8_t ty = ref >> REF_TYPE_SHIFT & IR_TYPE;
-		if (ty != TY_ANY) break; // Constant NIL comparison is a no-op
-		IrRef nil = emit_const(state, LISP_NIL, NIL(ctx));
-		take_snapshot(state);
-		emit_opt(state, (union Node)
-			{ .op = IR_EQ ^ !NILP(ctx, bp[x.a]), .ty = ty, .a = ref, .b = nil });
-		break;
+		if (!IS_VAR(ref)) break;
+		guard_type(state, state->bp + x.a, lisp_type(bp[x.a]));
+		IR_GET(state, ref).ty |= IR_EFFECTFUL; // Prevent DCE
+	case JMP: break;
 	case CALL:
 		switch (lisp_type(bp[x.a])) {
 		case LISP_CFUNCTION: result = record_c_call(ctx, state, bp, x); break;
