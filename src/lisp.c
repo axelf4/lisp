@@ -100,7 +100,7 @@ void lisp_print(struct LispCtx *ctx, LispObject x, FILE *stream) {
 
 bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b) {
 	if (LISP_EQ(a, b)) return true;
-	enum LispObjectType ty = lisp_type(a);
+	enum LispType ty = lisp_type(a);
 	if (lisp_type(b) != ty) return false;
 	switch (ty) {
 	case LISP_INTEGER: case LISP_SYMBOL: case LISP_CFUNCTION: case LISP_CLOSURE:
