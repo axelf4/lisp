@@ -68,7 +68,7 @@ typedef uintptr_t LispObject; ///< Tagged Lisp value pointer.
 typedef struct GcRef Lobj;
 
 /** Lisp object variant. */
-enum LispObjectType : unsigned char {
+enum LispType : unsigned char {
 	LISP_PAIR,
 	LISP_SYMBOL,
 	LISP_STRING,
@@ -82,10 +82,10 @@ enum LispObjectType : unsigned char {
 
 struct LispObjectHeader {
 	struct GcObjectHeader hdr;
-	enum LispObjectType tag;
+	enum LispType tag;
 };
 
-static inline enum LispObjectType lisp_type(LispObject p) {
+static inline enum LispType lisp_type(LispObject p) {
 	return IS_SMI(p) ? LISP_INTEGER : ((struct LispObjectHeader *) UNTAG_OBJ(p))->tag;
 }
 
@@ -213,7 +213,7 @@ void lisp_free(struct LispCtx *);
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
 static inline bool listp(LispObject x) {
-	enum LispObjectType ty = lisp_type(x);
+	enum LispType ty = lisp_type(x);
 	return ty == LISP_NIL || ty == LISP_PAIR;
 }
 

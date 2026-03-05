@@ -402,7 +402,7 @@ static bool guard_type(struct JitState *state, IrRef *ref, uint8_t ty) {
 
 static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 	if (!IS_VAR(*ref)) return;
-	enum LispObjectType ty = lisp_type(value);
+	enum LispType ty = lisp_type(value);
 	take_snapshot(state);
 	emit_opt(state, (union Node)
 		{ .op = IR_EQ, .ty = ty, .a = *ref, .b = emit_const(state, ty, value) });
