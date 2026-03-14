@@ -61,14 +61,14 @@ struct Ctx {
 	struct GcRef (*objects)[MAX_LIVE_OBJECTS];
 };
 
-void gc_object_visit(struct GcHeap *heap, void *p) {
+void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 	struct Ctx *ctx = (struct Ctx *) heap;
 	(*ctx->objects)[ctx->num_objects++] = GC_COMPRESS(p); // Record live object
 
 	struct Obj *obj = p;
 	gc_mark(object_size(obj), p);
 	for (unsigned i = 0; i < obj->used_slot_count; ++i)
-		obj->slots[i] = gc_trace(heap, obj->slots[i]);
+		GC_TRACE(heap, mark_color, obj->slots[i]);
 }
 
 size_t gc_object_size(void *p, size_t *alignment) {
@@ -76,13 +76,14 @@ size_t gc_object_size(void *p, size_t *alignment) {
 	return object_size(p);
 }
 
-void gc_trace_roots(struct GcHeap *heap) {
+void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 	struct Ctx *ctx = (struct Ctx *) heap;
 	ctx->num_objects = ctx->num_roots; // Start of GC: Reset live objects
 
-	for (unsigned i = 0; i < ctx->num_roots; ++i)
-		(*ctx->objects)[i] = GC_COMPRESS(gc_trace(heap,
-				(void *) GC_DECOMPRESS(heap, (*ctx->objects)[i])));
+	for (unsigned i = 0; i < ctx->num_roots; ++i) {
+		struct Obj *p = (struct Obj *) GC_DECOMPRESS(heap, (*ctx->objects)[i]);
+		if (GC_TRACE(heap, mark_color, p)) (*ctx->objects)[i] = GC_COMPRESS(p);
+	}
 }
 
 static bool is_obj_valid(struct Obj *x, bool mark_color) {

@@ -148,11 +148,6 @@ static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
 	set->capacity = new_capacity;
 }
 
-enum {
-	GC_MARK = 1, ///< Object mark bit: Ensures transitive closure terminates.
-	GC_FORWARDED = 2,
-};
-
 [[gnu::noinline]]
 static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size) {
 	struct BumpPointer *ptr = &heap->ptr;
@@ -211,7 +206,16 @@ void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
 	mark_stack_push(heap, src); // Add to remembered set
 }
 
-[[gnu::noinline]] static void *evacuate(struct GcHeap *heap, void *p) {
+enum { GC_FORWARDED = 2 };
+
+void gc_pin(struct GcHeap *heap, bool mark_color, void *p) {
+	struct GcObjectHeader *hdr = p;
+	assert(!(hdr->flags & GC_FORWARDED) && "already forwarded");
+	hdr->flags = mark_color | GC_UNLOGGED;
+	mark_stack_push(heap, p);
+}
+
+void *gc_evacuate(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
 	struct GcRef *fwd = (struct GcRef *) ALIGN_UP(hdr + 1, alignof(struct GcRef));
 	if ((hdr->flags & GC_MARK) == heap->mark_color) // Already traced
@@ -230,21 +234,6 @@ void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
 	return p;
 }
 
-void *gc_trace(struct GcHeap *heap, void *p) {
-	// Opportunistic evacuation if block is a defragmentation candidate
-	if (UNLIKELY(GC_BLOCK(p)->flag)) return evacuate(heap, p);
-	if ((((struct GcObjectHeader *) p)->flags & GC_MARK) != heap->mark_color)
-		gc_pin(heap, p);
-	return p;
-}
-
-void gc_pin(struct GcHeap *heap, void *p) {
-	struct GcObjectHeader *hdr = p;
-	assert(!(hdr->flags & GC_FORWARDED) && "already forwarded");
-	hdr->flags = heap->mark_color | GC_UNLOGGED;
-	mark_stack_push(heap, p);
-}
-
 extern void *__libc_stack_end; ///< Highest used stack address.
 [[gnu::no_sanitize_address]] static void scan_stack(struct GcHeap *heap) {
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
@@ -252,7 +241,7 @@ extern void *__libc_stack_end; ///< Highest used stack address.
 	for (struct GcRef *p = sp; (void *) p <= base; ++p) {
 		uintptr_t x = GC_DECOMPRESS(heap, *p) & ~1ull;
 		// Pin to not "forward" a false positive root
-		if (object_map_remove(heap, x)) gc_pin(heap, (void *) x);
+		if (object_map_remove(heap, x)) gc_pin(heap, heap->mark_color, (void *) x);
 	}
 }
 
@@ -336,7 +325,8 @@ void garbage_collect(struct GcHeap *heap) {
 	// Unlog remembered set
 	for (size_t i = 0; i < heap->mark_stack.len; ++i)
 		((struct GcObjectHeader *) heap->mark_stack.items[i])->flags |= GC_UNLOGGED;
-	heap->mark_color ^= 1; // Alternate liveness color to skip zeroing object marks
+	// Alternate liveness color to skip zeroing object marks
+	register bool mark_color = heap->mark_color ^= 1;
 
 	// Push callee-saved register onto the stack
 	ucontext_t ctx;
@@ -364,11 +354,11 @@ void garbage_collect(struct GcHeap *heap) {
 			memset(x, 0, (p.cursor - p.limit) / (GC_ALIGNMENT * CHAR_BIT));
 	}
 	heap->modset.len = 0;
-	gc_trace_roots(heap);
+	gc_trace_roots(heap, mark_color);
 	while (heap->mark_stack.len) { // Trace live objects
 		void *p = heap->mark_stack.items[--heap->mark_stack.len];
 		object_map_add(heap, p);
-		gc_object_visit(heap, p);
+		gc_object_visit(heap, mark_color, p);
 	}
 
 	heap->ptr = heap->overflow_ptr = NULL_BUMP_PTR(heap->blocks);
