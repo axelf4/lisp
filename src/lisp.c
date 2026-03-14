@@ -143,57 +143,57 @@ static size_t chunk_size(struct Chunk *x) {
 		+ x->count * sizeof(struct Instruction);
 }
 
-static void lisp_trace(struct GcHeap *heap, LispObject *p) {
-	if (!IS_SMI(*p)) *p = TAG_OBJ(gc_trace(heap, UNTAG_OBJ(*p)));
+static void lisp_trace(struct GcHeap *heap, bool mark_color, LispObject *v) {
+	void *p = UNTAG_OBJ(*v);
+	if (!IS_SMI(*v) && GC_TRACE(heap, mark_color, p)) *v = TAG_OBJ(p);
 }
-static void lisp_trace_compressed(struct GcHeap *heap, Lobj *p) {
-	if (IS_SMI(p->p)) return;
-	*p = GC_COMPRESS(TAG_OBJ(gc_trace(heap, UNTAG_OBJ(GC_DECOMPRESS(heap, *p)))));
+static void lisp_trace_compressed(struct GcHeap *heap, bool mark_color, Lobj *v) {
+	void *p = UNTAG_OBJ(GC_DECOMPRESS(heap, *v));
+	if (!IS_SMI(v->p) && GC_TRACE(heap, mark_color, p)) *v = GC_COMPRESS(TAG_OBJ(p));
 }
 
-void gc_object_visit(struct GcHeap *heap, void *p) {
+void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 	switch (((struct LispObjectHeader *) p)->tag) {
 	case LISP_INTEGER: default: unreachable();
 	case LISP_NIL: break;
 	case LISP_PAIR:
 		struct LispPair *pair = p;
 		gc_mark(sizeof *pair, p);
-		lisp_trace_compressed(heap, &pair->cdr);
-		lisp_trace_compressed(heap, &pair->car);
+		lisp_trace_compressed(heap, mark_color, &pair->cdr);
+		lisp_trace_compressed(heap, mark_color, &pair->car);
 		break;
 	case LISP_SYMBOL:
 		struct LispSymbol *sym = p;
 		gc_mark(sizeof *sym, p);
-		struct LispString *str
-			= gc_trace(heap, (char *) sym->name - offsetof(struct LispString, s));
-		sym->name = str->s;
-		lisp_trace(heap, &sym->value);
+		void *str = (char *) sym->name - offsetof(struct LispString, s);
+		if (GC_TRACE(heap, mark_color, str)) sym->name = ((struct LispString *) str)->s;
+		lisp_trace(heap, mark_color, &sym->value);
 		break;
 	case LISP_STRING: gc_mark(string_size(p), p); break;
 	case LISP_CFUNCTION: gc_mark(sizeof(struct LispCFunction), p); break;
 	case LISP_CLOSURE: {
-		struct Closure *x = p;
-		gc_mark(closure_size(x), p);
-		for (struct Upvalue **it = x->upvalues,
-					**end = it + x->prototype->num_upvalues; it < end; ++it)
-			*it = gc_trace(heap, *it);
+		struct Closure *f = p;
+		gc_mark(closure_size(f), p);
+		for (struct Upvalue **x = f->upvalues,
+					**end = x + f->prototype->num_upvalues; x < end; ++x)
+			GC_TRACE(heap, mark_color, *x);
 
-		char *chunk = gc_trace(heap, (char *) x->prototype - x->prototype->offset);
-		// Update prototype as chunk may have moved
-		x->prototype = (struct Prototype *) (chunk + x->prototype->offset);
+		char *chunk = (char *) f->prototype - f->prototype->offset;
+		if (GC_TRACE(heap, mark_color, chunk))
+			f->prototype = (struct Prototype *) (chunk + f->prototype->offset);
 		break;
 	}
 	case LISP_UPVALUE:
 		struct Upvalue *x = p;
 		gc_mark(sizeof *x, p);
-		if (IS_UV_OPEN(*x)) x->next = gc_trace(heap, x->next);
-		else lisp_trace(heap, x->location);
+		if (IS_UV_OPEN(*x)) GC_TRACE(heap, mark_color, x->next);
+		else lisp_trace(heap, mark_color, x->location);
 		break;
 	case LISP_BYTECODE_CHUNK:
 		struct Chunk *chunk = p;
 		gc_mark(chunk_size(p), p);
 		for (LispObject *x = chunk_constants(chunk), *end = x + chunk->num_consts;
-				x < end; ++x) lisp_trace(heap, x);
+				x < end; ++x) lisp_trace(heap, mark_color, x);
 		break;
 	}
 }
@@ -226,27 +226,28 @@ size_t gc_object_size(void *p, size_t *alignment) {
 	unreachable();
 }
 
-void gc_trace_roots(struct GcHeap *heap) {
+void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 	struct LispCtx *ctx = (struct LispCtx *) heap;
 
-	gc_pin(heap, &ctx->nil);
-#define X(var, _) gc_pin(heap, UNTAG_OBJ(LISP_CONST(ctx, var)));
+	gc_pin(heap, mark_color, &ctx->nil);
+#define X(var, _) gc_pin(heap, mark_color, UNTAG_OBJ(LISP_CONST(ctx, var)));
 	FOR_SYMBOL_CONSTS(X)
 #undef X
 
 	struct LispSymbol **sym;
 	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
-		*sym = gc_trace(heap, *sym);
+		GC_TRACE(heap, mark_color, *sym);
 
 	for (struct Upvalue **uv = &ctx->upvalues; *uv; uv = &(*uv)->next)
-		*uv = gc_trace(heap, *uv);
+		GC_TRACE(heap, mark_color, *uv);
 
 	// Trace stack
+	// TODO Need to pin bytecode chunks on the call stack
 	uintptr_t *end = (uintptr_t *) ctx->guard_end - 0xff,
 		*stack = end - STACK_LEN, *top = MIN(ctx->bp + 0x100, end);
-	// Non-LispObjects, i.a. return addresses, masquerade as SMIs by
+	// Non-LispObjects, i.a. return addresses, masquerade as SMIs via
 	// >1-byte alignment.
-	for (uintptr_t *x = stack; x < top; ++x) lisp_trace(heap, x);
+	for (uintptr_t *x = stack; x < top; ++x) lisp_trace(heap, mark_color, x);
 	// Zero unused stack to not resurrect GCd object
 	memset(top, 0, end - top);
 }

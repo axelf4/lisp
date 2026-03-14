@@ -71,7 +71,8 @@ void gc_free(struct GcHeap *heap);
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size);
 
 enum {
-	GC_UNLOGGED = 4, ///< Object is not already remembered (nor in the nursery).
+	GC_MARK = 1, ///< Object mark bit: Ensures transitive closure terminates.
+	GC_UNLOGGED = 2, ///< Object is not already remembered (nor in the nursery).
 };
 /** Remembers that a reference field of the object @a src was mutated.
  *
@@ -83,12 +84,19 @@ static inline void gc_write_barrier(struct GcHeap *heap, struct GcObjectHeader *
 	if (UNLIKELY(src->flags & GC_UNLOGGED)) gc_log_object(heap, src);
 }
 
+void gc_pin(struct GcHeap *heap, bool mark_color, void *p);
+void *gc_evacuate(struct GcHeap *heap, void *p);
 /** Traces the GC object @a p.
  *
- * @return The new address of @a p in case it moved.
+ * @param mark_color Object mark bit value if already traced.
+ * @param[in,out] p Address of the object.
+ * @return Whether @a p may have moved.
  */
-[[nodiscard]] void *gc_trace(struct GcHeap *heap, void *p);
-void gc_pin(struct GcHeap *heap, void *p);
+#define GC_TRACE(heap, mark_color, p) \
+	/* Opportunistic evacuation if block is a defragmentation candidate */ \
+	(UNLIKELY(GC_BLOCK(p)->flag) ? (p) = gc_evacuate(heap, p), true \
+		: (((struct GcObjectHeader *) (p))->flags & GC_MARK) != (mark_color) \
+		? gc_pin(heap, mark_color, p), false : false)
 
 /** Marks the lines containing the given pointee. */
 static inline void gc_mark(size_t len, const char p[static len]) {
@@ -104,7 +112,7 @@ void garbage_collect(struct GcHeap *heap);
 
 /** @name Embedder API */ ///@{
 
-void gc_object_visit(struct GcHeap *heap, void *p);
+void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p);
 
 /** Gets the size and alignment of the GC object.
  *
@@ -115,7 +123,7 @@ void gc_object_visit(struct GcHeap *heap, void *p);
 size_t gc_object_size(void *p, size_t *alignment);
 
 /** Traces all explicit GC roots. */
-void gc_trace_roots(struct GcHeap *heap);
+void gc_trace_roots(struct GcHeap *heap, bool mark_color);
 
 ///@}
 
