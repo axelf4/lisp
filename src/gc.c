@@ -69,7 +69,7 @@ struct GcHeap {
 
 	bool mark_color, inhibit_gc, is_major_gc, is_defrag;
 	char *object_map; ///< Bitset of object start positions.
-	struct MarkStack { size_t len, capacity; void **items; } mark_stack;
+	struct MarkStack { void **beg, **p, **end; } mark_stack;
 	struct ModSet { unsigned len, capacity; struct BumpPointer *xs; } modset;
 	struct GcBlock blocks[NUM_BLOCKS];
 };
@@ -118,7 +118,7 @@ struct GcHeap *gc_new() {
 
 void gc_free(struct GcHeap *heap) {
 	free(heap->modset.xs);
-	free(heap->mark_stack.items);
+	free(heap->mark_stack.beg);
 	free(heap->free);
 	free(heap->object_map);
 	munmap(heap, sizeof *heap);
@@ -188,17 +188,16 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 
 [[gnu::cold]] static void mark_stack_grow(struct GcHeap *heap) {
 	struct MarkStack *stack = &heap->mark_stack;
-	size_t new_capacity = stack->capacity ? 2 * stack->capacity : 8;
-	void **items;
-	if (!(items = realloc(stack->items, new_capacity * sizeof *items)))
+	size_t len = stack->p - stack->beg, new_capacity = len ? 2 * len : 8;
+	void **xs;
+	if (!(xs = realloc(stack->beg, new_capacity * sizeof *xs)))
 		die("malloc failed");
-	stack->items = items;
-	stack->capacity = new_capacity;
+	*stack = (struct MarkStack) { xs, xs + len, xs + new_capacity };
 }
 
 static void mark_stack_push(struct GcHeap *heap, void *x) {
-	if (heap->mark_stack.len >= heap->mark_stack.capacity) mark_stack_grow(heap);
-	heap->mark_stack.items[heap->mark_stack.len++] = x;
+	if (heap->mark_stack.p >= heap->mark_stack.end) mark_stack_grow(heap);
+	*heap->mark_stack.p++ = x;
 }
 
 void gc_log_object(struct GcHeap *heap, struct GcObjectHeader *src) {
@@ -321,10 +320,10 @@ volatile void *gc_nop_sink;
 void garbage_collect(struct GcHeap *heap) {
 	heap->inhibit_gc = true;
 	lttng_ust_tracepoint(lisp, garbage_collection, heap->is_major_gc + heap->is_defrag);
-	if (heap->is_major_gc) heap->mark_stack.len = 0; // Ignore remembered set
 	// Unlog remembered set
-	for (size_t i = 0; i < heap->mark_stack.len; ++i)
-		((struct GcObjectHeader *) heap->mark_stack.items[i])->flags |= GC_UNLOGGED;
+	if (heap->is_major_gc) heap->mark_stack.p = heap->mark_stack.beg; // Ignore it
+	for (void **p = heap->mark_stack.beg; p < heap->mark_stack.p; ++p)
+		((struct GcObjectHeader *) *p)->flags |= GC_UNLOGGED;
 	// Alternate liveness color to skip zeroing object marks
 	register bool mark_color = heap->mark_color ^= 1;
 
@@ -355,8 +354,8 @@ void garbage_collect(struct GcHeap *heap) {
 	}
 	heap->modset.len = 0;
 	gc_trace_roots(heap, mark_color);
-	while (heap->mark_stack.len) { // Trace live objects
-		void *p = heap->mark_stack.items[--heap->mark_stack.len];
+	while (heap->mark_stack.p > heap->mark_stack.beg) { // Trace live objects
+		void *p = *--heap->mark_stack.p;
 		object_map_add(heap, p);
 		gc_object_visit(heap, mark_color, p);
 	}
