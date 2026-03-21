@@ -1,7 +1,5 @@
 #include "gc.h"
-#include <stddef.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <assert.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -78,11 +76,9 @@ struct GcHeap {
 
 struct GcHeap *gc_new() {
 	struct GcHeap *heap;
-	size_t alignment =
+	size_t alignment = alignof(struct GcHeap);
 #if USE_COMPRESSED_PTRS
-		/* 4 GiB */ 1ull << 32;
-#else
-		alignof(struct GcHeap);
+	alignment = /* 4 GiB */ 1ull << 32;
 #endif
 	char *p;
 	if ((p = mmap(NULL, sizeof *heap + alignment - 1, PROT_READ | PROT_WRITE,
@@ -92,17 +88,19 @@ struct GcHeap *gc_new() {
 	munmap(p, (char *) heap - p);
 	munmap(heap + 1, p + sizeof *heap + alignment - 1 - (char *) (heap + 1));
 
+#ifndef __linux__
 	heap->mark_color = heap->inhibit_gc = heap->is_major_gc = heap->is_defrag = false;
 	heap->mark_stack = (struct MarkStack) {};
 	heap->modset = (struct ModSet) {};
 	heap->free = NULL;
+	heap->recycled_len = 0;
+#endif
 	if (!((heap->object_map = calloc(1, OBJECT_MAP_SIZE))
 			&& (heap->free = malloc(2 * NUM_BLOCKS * sizeof *heap->free)))) {
 		gc_free(heap);
 		return NULL;
 	}
 	heap->free_len = NUM_BLOCKS - 1;
-	heap->recycled_len = 0;
 	heap->recycled = heap->free + NUM_BLOCKS;
 
 	struct GcBlock *blocks = heap->blocks;
@@ -167,7 +165,7 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 		if ((p = bump_alloc(ptr = &heap->overflow_ptr, alignment, size))) return p;
 	}
 	// Acquire a free block
-	if (heap->free_len <= MIN_FREE) garbage_collect(heap);
+	if (heap->free_len <= MIN_FREE && !heap->inhibit_gc) garbage_collect(heap);
 	if (!heap->free_len) return NULL;
 	*ptr = block_bump_ptr(heap->free[--heap->free_len]);
 out_bump:
@@ -236,7 +234,7 @@ void *gc_evacuate(struct GcHeap *heap, void *p) {
 }
 
 extern void *__libc_stack_end; ///< Highest used stack address.
-[[gnu::no_sanitize_address]] static void scan_stack(struct GcHeap *heap) {
+static void scan_stack(struct GcHeap *heap) {
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
 	sp = (void *) ((uintptr_t) sp & ~(alignof(struct GcRef) - 1));
 	for (struct GcRef *p = sp; (void *) p <= base; ++p) {
@@ -320,7 +318,7 @@ volatile void *gc_nop_sink;
 #endif
 
 void garbage_collect(struct GcHeap *heap) {
-	if (heap->inhibit_gc) return; else heap->inhibit_gc = true;
+	heap->inhibit_gc = true;
 	lttng_ust_tracepoint(lisp, garbage_collection, heap->is_major_gc + heap->is_defrag);
 	// Unlog remembered set
 	if (heap->is_major_gc) heap->mark_stack.p = heap->mark_stack.beg; // Ignore it
@@ -331,10 +329,7 @@ void garbage_collect(struct GcHeap *heap) {
 
 	// Push callee-saved register onto the stack
 	ucontext_t ctx;
-	if (UNLIKELY(getcontext(&ctx))) {
-		fputs("getcontext() failed\n", stderr);
-		__builtin_unwind_init();
-	}
+	if (getcontext(&ctx)) __builtin_unwind_init();
 	scan_stack(heap); // Collect conservative roots
 	// Prevent prematurely popping register contents
 #ifdef __GNUC__
