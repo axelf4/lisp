@@ -55,10 +55,6 @@ static struct BumpPointer next_gap(struct GcBlock *block, char *top) {
 		: (struct BumpPointer) {};
 }
 
-static struct BumpPointer block_bump_ptr(struct GcBlock *block) {
-	return (struct BumpPointer) { (&block->data)[1], block->data };
-}
-
 struct GcHeap {
 	// Store at same offset to use a single pointer for both
 	struct LispCtx lisp_ctx;
@@ -167,7 +163,8 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 	// Acquire a free block
 	if (heap->free_len <= MIN_FREE && !heap->inhibit_gc) garbage_collect(heap);
 	if (!heap->free_len) return NULL;
-	*ptr = block_bump_ptr(heap->free[--heap->free_len]);
+	struct GcBlock *block = heap->free[--heap->free_len];
+	*ptr = (struct BumpPointer) { (&block->data)[1], block->data };
 out_bump:
 	ASAN_POISON_MEMORY_REGION(ptr->limit, ptr->cursor - ptr->limit);
 	if (heap->modset.len >= heap->modset.capacity) modset_grow(&heap->modset);

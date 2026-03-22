@@ -1,9 +1,25 @@
 /** @file
  * Generational conservative single-threaded immix garbage collector.
  *
- * During minor GCs, sticky mark bits curb the retracing of mature
- * objects. Hence, @ref gc_write_barrier() must be called upon
- * potential old-to-young edges.
+ * The heap is composed of blocks divided into lines. The allocator
+ * consumes free blocks and contiguous free lines, e.g.:
+ *
+ *      | Recycled Allocation Start                     -Limit |
+ *     +v-------+ +--------+ +--------+ +--------+     +-------v+
+ *     |/////X?/| |XXXXXXXX| |X?     /| | X?    X| ... | XX?    |
+ *     +--------+ +--------+ +--^---^-+ +--------+     +--------+
+ *                              |   |
+ *             Bump Pointer Limit   Bump Pointer Cursor
+ *     Legend
+ *     ' ' Free: unmarked in previous collection
+ *     'X' Live: marked in previous collection
+ *     '/' Freshly allocated
+ *     '?' Conservatively marked in previous collection
+ *
+ * The collector may mark surviving objects and containing line(s), or
+ * copy them to defragment. During minor GCs, sticky mark bits curb
+ * the retracing of mature objects. Hence, @ref gc_write_barrier()
+ * must be called upon potential old-to-young edges.
  *
  * For disambiguating tagged pointers from SMIs the LSB is reserved,
  * and on 64-bit platforms pointer compression (inspired by V8, see
