@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <signal.h>
-#include "gc.h"
 #include "lisp.h"
 
 static struct LispCtx *ctx;
@@ -14,9 +13,7 @@ static struct LispCtx *ctx;
 }
 
 int main() {
-	struct GcHeap *heap;
-	if (!((ctx = (struct LispCtx *) (heap = gc_new())) && lisp_init(ctx)))
-		return EXIT_FAILURE;
+	if (!(ctx = lisp_new())) return EXIT_FAILURE;
 
 	struct sigaction action;
 	action.sa_sigaction = signal_handler;
@@ -41,6 +38,5 @@ int main() {
 
 #ifndef NDEBUG
 	lisp_free(ctx);
-	gc_free(heap);
 #endif
 }

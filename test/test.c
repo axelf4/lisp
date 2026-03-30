@@ -209,14 +209,8 @@ static void test_man_or_boy(void **state) {
 	assert_lisp_equal(ctx, eval(ctx, s), TAG_SMI(-67));
 }
 
-static int setup(void **state) {
-	return !((*state = gc_new()) && lisp_init(*state));
-}
-static int teardown(void **state) {
-	lisp_free(*state);
-	gc_free(*state);
-	return 0;
-}
+static int setup(void **state) { return !(*state = lisp_new()); }
+static int teardown(void **state) { lisp_free(*state); return 0; }
 
 int main() {
 	const struct CMUnitTest tests[] = {

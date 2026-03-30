@@ -70,7 +70,7 @@ static inline size_t pthash_position(uint64_t hash, unsigned char k, size_t n) {
 struct Phf {
 	size_t n, n_prime, m;
 	unsigned char *pilots; ///< The bucket pilot table.
-	size_t *remap; ///< #n_prime-#n indices of free positions.
+	size_t *remap; ///< n' - n indices of free positions.
 };
 
 /** Looks up the index for @a hash given the perfect hash function @a f. */

@@ -65,12 +65,10 @@ out:
 int main(int argc, char *argv[]) {
 	const char *filename = argv[argc - 1];
 	int ret = 0;
-	struct GcHeap *heap;
-	if (!(heap = gc_new())) return EXIT_FAILURE;
-	struct LispCtx *ctx = (struct LispCtx *) heap;
-	if (!lisp_init(ctx)) { ret = EXIT_FAILURE; goto out_free_heap; }
 	FILE *f;
-	if (!(f = fopen(filename, "w"))) { ret = EXIT_FAILURE; goto out_free_lisp; }
+	if (!(f = fopen(filename, "w"))) return EXIT_FAILURE;
+	struct LispCtx *ctx;
+	if (!(ctx = lisp_new())) { ret = EXIT_FAILURE; goto out_close; }
 
 	fprintf(f,
 		"#include <stddef.h>\n\n"
@@ -95,8 +93,8 @@ int main(int argc, char *argv[]) {
 	if (!write_keyword_phf(ctx, f)) ret = EXIT_FAILURE;
 
 	if (ferror(f)) ret = EXIT_FAILURE;
+	lisp_free(ctx);
+out_close:
 	fclose(f);
-out_free_lisp: lisp_free(ctx);
-out_free_heap: gc_free(heap);
 	return ret;
 }

@@ -50,7 +50,7 @@ LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 
 struct LispString {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	unsigned int len;
+	unsigned len;
 	char s[];
 };
 
@@ -118,7 +118,7 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 		// Check if fault was within the stack guard pages
 		if ((uintptr_t) ctx->bp <= (uintptr_t) info->si_addr
 			&& (uintptr_t) info->si_addr < ctx->guard_end)
-			// Safety: SIGSEGV is a synchronous signal and run is
+			// Safety: SIGSEGV is a synchronous signal and run() is
 			// compiled with -fnon-call-exceptions.
 			throw(SIGSEGV); // Throw stack overflow exception
 	}
@@ -184,10 +184,9 @@ void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 		break;
 	}
 	case LISP_UPVALUE:
-		struct Upvalue *x = p;
-		gc_mark(sizeof *x, p);
-		if (IS_UV_OPEN(*x)) GC_TRACE(heap, mark_color, x->next);
-		else lisp_trace(heap, mark_color, x->location);
+		struct Upvalue *uv = p;
+		gc_mark(sizeof *uv, p);
+		lisp_trace(heap, mark_color, uv->location);
 		break;
 	case LISP_BYTECODE_CHUNK:
 		struct Chunk *chunk = p;
@@ -289,20 +288,28 @@ DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	return (int32_t) a < (int32_t) b ? LISP_CONST(ctx, t) : NIL(ctx);
 }
 
-bool lisp_init(struct LispCtx *ctx) {
+struct LispCtx *lisp_new() {
+	struct GcHeap *heap;
+	struct LispCtx *ctx;
+	if (!(ctx = (struct LispCtx *)(heap = gc_new()))) goto err;
+	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
+	ctx->upvalues = NULL;
+
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
 	// exception handlers not to immediately trigger another overflow.
-	uintptr_t *stack;
-	size_t size = STACK_LEN * sizeof *stack, guard_size = 0xff * sizeof *stack;
-	if ((ctx->bp = stack = mmap(NULL, size + guard_size, PROT_NONE,
-				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) goto err;
-	if (mprotect(stack, size, PROT_READ | PROT_WRITE)) goto err_free_stack;
-	ctx->guard_end = (uintptr_t) stack + size + guard_size;
-	*stack = 0;
+	size_t size = STACK_LEN * sizeof *ctx->bp, guard_size = 0xff * sizeof *ctx->bp;
+	if ((ctx->bp = mmap(NULL, size + guard_size, PROT_NONE,
+				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) goto err_free_heap;
+	if (mprotect(ctx->bp, size, PROT_READ | PROT_WRITE)) goto err_free_stack;
+	ctx->guard_end = (uintptr_t)ctx->bp + size + guard_size;
+	*ctx->bp = 0;
 
-	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
-	ctx->upvalues = NULL;
+#if ENABLE_JIT
+	if (!(ctx->traces = calloc(1, sizeof *ctx->traces))) goto err_free_stack;
+	if (!(ctx->jit_state = jit_new())) { free(ctx->traces); goto err_free_stack; }
+	ctx->current_trace = NULL;
+#endif
 
 	ctx->symbol_tbl = tbl_new();
 #ifdef LISP_GENERATED_FILE
@@ -313,7 +320,6 @@ bool lisp_init(struct LispCtx *ctx) {
 	FOR_SYMBOL_CONSTS(X)
 #undef X
 
-	struct GcHeap *heap = (struct GcHeap *) ctx;
 	struct LispCFunction *cfuns[]
 		= { &Seval, &Sprint, &Sequal, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };
 	for (size_t i = 0; i < LENGTH(cfuns); ++i) {
@@ -325,20 +331,13 @@ bool lisp_init(struct LispCtx *ctx) {
 		sym->value = TAG_OBJ(x);
 	}
 
-#if ENABLE_JIT
-	if (!(ctx->traces = calloc(1, sizeof *ctx->traces))) goto err_free_stack;
-	if (!(ctx->jit_state = jit_new())) goto err_free_traces;
-	ctx->current_trace = NULL;
-	return true;
-err_free_traces:
-	free(ctx->traces);
-#else
-	return true;
-#endif
+	return ctx;
 err_free_stack:
-	munmap(stack, size + guard_size);
+	munmap(ctx->bp, size + guard_size);
+err_free_heap:
+	gc_free(heap);
 err:
-	return false;
+	return NULL;
 }
 
 void lisp_free(struct LispCtx *ctx) {
@@ -348,5 +347,6 @@ void lisp_free(struct LispCtx *ctx) {
 	free(ctx->traces);
 #endif
 	symbol_tbl_free(&ctx->symbol_tbl);
-	munmap(ctx->bp, ctx->guard_end - (uintptr_t) ctx->bp);
+	munmap(ctx->bp, ctx->guard_end - (uintptr_t)ctx->bp);
+	gc_free((struct GcHeap *)ctx);
 }

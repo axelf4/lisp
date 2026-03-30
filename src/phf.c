@@ -43,7 +43,7 @@ enum PhfError phf_build(const struct PhfParameters *params,
 	struct Bucket { size_t size, start, i; } *buckets;
 	size_t *slots;
 	unsigned long *taken;
-	size_t taken_size = ALIGN_UP((n_prime + CHAR_BIT - 1) / CHAR_BIT, sizeof *taken);
+	size_t taken_size = ALIGN_UP(DIV_ROUND_UP(n_prime, CHAR_BIT), sizeof *taken);
 	if (!(buckets = malloc(m * sizeof *buckets + n_prime * sizeof *slots + taken_size)))
 		return PHF_NO_MEMORY;
 

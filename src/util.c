@@ -98,6 +98,7 @@ static _Unwind_Reason_Code eh_personality(int version, _Unwind_Action actions,
 		".cfi_adjust_cfa_offset 8\n\t"
 		"call rsi\n\t"
 		"xor eax, eax\n\t"
+		".globl pcall_landing_pad\n\t"
 		"pcall_landing_pad:\n\t"
 		"add rsp, 8\n\t"
 		".cfi_adjust_cfa_offset -8\n\t"

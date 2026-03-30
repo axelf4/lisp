@@ -48,7 +48,7 @@ def disassemble(n, xs, indent=0):
             case Op.SETGLOBAL:
                 s += f"SETGLOBAL {a} -> [{k_sym()}]\n"
             case Op.GETUPVALUE:
-                s += f"SETUPVALUE {a} <- {c}\n"
+                s += f"GETUPVALUE {a} <- {c}\n"
             case Op.SETUPVALUE:
                 s += f"SETUPVALUE {a} -> {c}\n"
             case Op.JMP:
@@ -56,7 +56,7 @@ def disassemble(n, xs, indent=0):
             case Op.JNIL:
                 s += f"JMP if {a} == NIL => {i + b:04}\n"
             case Op.CALL | Op.TAILCALL:
-                prefix = "TAIL" if x["op"] == Op.TAIL_CALL else ""
+                prefix = "TAIL" if x["op"] == Op.TAILCALL else ""
                 args = "".join(f" {a + 2 + j}" for j in range(c))
                 s += f"{prefix}CALL {a} <- ({a}{args})\n"
             case Op.RET:

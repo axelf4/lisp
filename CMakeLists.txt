@@ -12,7 +12,7 @@ find_package(LTTngUST 2.14.0)
 find_package(cmocka 1.1.0)
 
 check_c_source_runs("#include <stdlib.h>
-int main(void) { void *ptr = &&foo; goto *ptr; return EXIT_FAILURE; foo: }"
+int main() { void *ptr = &&foo; goto *ptr; return EXIT_FAILURE; foo: }"
   HAVE_COMPUTED_GOTO)
 check_c_source_runs([[int main() { register int x __asm__ ("rbp");
   __asm__ volatile ("xor %%ebp, %%ebp" : "=r" (x)); }]] HAVE_GENERAL_PURPOSE_RBP)

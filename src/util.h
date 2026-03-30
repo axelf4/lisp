@@ -19,7 +19,13 @@
 #define _CAT(a, b) a ## b
 #define CAT(a, b) _CAT(a, b)
 
-#if defined __has_builtin && __has_builtin(__builtin_expect)
+#ifdef __has_builtin
+#define HAS_BUILTIN(x) __has_builtin(x)
+#else
+#define HAS_BUILTIN(x) 0
+#endif
+
+#if HAS_BUILTIN(__builtin_expect)
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
 #else
@@ -27,7 +33,7 @@
 #define UNLIKELY(x) (x)
 #endif
 
-#if defined __has_builtin && __has_builtin(__builtin_assume_aligned)
+#if HAS_BUILTIN(__builtin_assume_aligned)
 #define ASSUME_ALIGNED(x, align) __builtin_assume_aligned(x, align)
 #else
 #define ASSUME_ALIGNED(x, align) ((void *) (x))
@@ -52,6 +58,7 @@
 #define IS_POWER_OF_TWO(x) ((x) && !((x) & ((x) - 1)))
 /** The smallest multiple of the power of 2 @a a greater than or equal to @a x. */
 #define ALIGN_UP(x, a) (((uintptr_t) (x) + (a) - 1) & ~((a) - 1))
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
 /** Iterates over the indices of set bits in @a x. */
 #define FOR_ONES(var, x) for (typeof(x) _i = (x), var; \

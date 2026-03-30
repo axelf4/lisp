@@ -113,7 +113,7 @@ struct Str { size_t len; const char *p; };
 struct NodeSlice { size_t len; Node **xs; };
 
 static struct NodeSlice segment_chunks(size_t size, size_t count, struct Str segments[static count]) {
-	size_t capacity = (size + MAX_BYTES - 1) / MAX_BYTES;
+	size_t capacity = DIV_ROUND_UP(size, MAX_BYTES);
 	Node **nodes, **p;
 	if (!(p = nodes = malloc(capacity * sizeof *nodes))) return (struct NodeSlice) {};
 	for (Node **node = nodes; node < nodes + capacity; ++node) {
