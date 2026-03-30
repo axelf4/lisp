@@ -582,7 +582,7 @@ static enum Register reg_use(struct RegAlloc *ctx, Ref ref, RegSet mask) {
 	return x->reg = reg;
 }
 
-static void asm_exit_trampolines(struct Assembler *as) {
+static void asm_exit_trampolines(struct Assembler *restrict as) {
 	void side_exit_handler();
 	asm_write32(as, REL32(as->p, side_exit_handler));
 	*--as->p = XI_JMP;

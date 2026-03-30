@@ -20,16 +20,11 @@ struct Assembler {
 	uint8_t *p, *buf;
 };
 
-static void asm_write(struct Assembler *ctx, size_t n, unsigned char xs[static n]) {
-	memcpy(ctx->p -= n, xs, n);
+static inline void asm_write32(struct Assembler *restrict ctx, uint32_t x) {
+	memcpy(ctx->p -= sizeof x, &x, sizeof x);
 }
-
-static inline void asm_write32(struct Assembler *ctx, uint32_t x) {
-	asm_write(ctx, sizeof x, (unsigned char *) &x);
-}
-
-static inline void asm_write64(struct Assembler *ctx, uint64_t x) {
-	asm_write(ctx, sizeof x, (unsigned char *) &x);
+static inline void asm_write64(struct Assembler *restrict ctx, uint64_t x) {
+	memcpy(ctx->p -= sizeof x, &x, sizeof x);
 }
 
 static inline int32_t rel32(uintptr_t p, uintptr_t target) {
@@ -42,7 +37,7 @@ static inline int32_t rel32(uintptr_t p, uintptr_t target) {
 #ifdef __x86_64__
 #define JMP_RANGE 31 // +-2^31
 
-#define MODRM(mod, reg, rm) ((mod) << 6 | ((reg) & 7) << 3 | (rm & 7))
+#define MODRM(mod, reg, rm) ((mod) << 6 | ((reg) & 7) << 3 | ((rm) & 7))
 #define SIB MODRM
 /** Formats a REX prefix.
  *
@@ -91,7 +86,7 @@ enum {
 };
 
 /** Emits @a op with operands @a reg and @a rm. */
-static inline void asm_rr(struct Assembler *ctx, bool w, uint8_t op,
+static inline void asm_rr(struct Assembler *restrict ctx, bool w, uint8_t op,
 	enum Register reg, enum Register rm) {
 	*--ctx->p = MODRM(MOD_REG, reg, rm);
 	*--ctx->p = op;
@@ -103,7 +98,7 @@ static inline void asm_rr(struct Assembler *ctx, bool w, uint8_t op,
  *
  * @a op determines which is Operand1 and Operand2 respectively.
  */
-static inline void asm_rmrd(struct Assembler *ctx, bool w, uint8_t op,
+static inline void asm_rmrd(struct Assembler *restrict ctx, bool w, uint8_t op,
 	enum Register reg, enum Register base, int32_t disp) {
 	enum Mod mod;
     if (!disp && (base & 0b111) != rbp) mod = MOD_DISP0;
@@ -115,7 +110,7 @@ static inline void asm_rmrd(struct Assembler *ctx, bool w, uint8_t op,
 	EMIT_REX(ctx, w, reg, 0, base);
 }
 
-static inline void asm_loadu64(struct Assembler *ctx, enum Register r, uint64_t x) {
+static inline void asm_loadu64(struct Assembler *restrict ctx, enum Register r, uint64_t x) {
 	if ((uint32_t) x != x) {
 		asm_write64(ctx, x);
 		*--ctx->p = XI_MOVri + (r & 7);
@@ -128,7 +123,7 @@ static inline void asm_loadu64(struct Assembler *ctx, enum Register r, uint64_t 
 	}
 }
 
-static inline void asm_mov_mi64(struct Assembler *ctx,
+static inline void asm_mov_mi64(struct Assembler *restrict ctx,
 	enum Register base, int32_t disp, uint64_t i) {
 	asm_write32(ctx, i >> 32);
 	asm_rmrd(ctx, 0, XI_MOVmi, 0, base, disp + sizeof(int32_t));
@@ -139,14 +134,14 @@ static inline void asm_mov_mi64(struct Assembler *ctx,
 enum ImmGrp1 { XG_ADD, XG_SUB = 5, XG_CMP = 7 };
 
 /** Gets the Immediate Group 1 instruction opcode and emits its operand. */
-static inline uint8_t asm_imm_grp1_op(struct Assembler *ctx, int32_t i) {
+static inline uint8_t asm_imm_grp1_op(struct Assembler *restrict ctx, int32_t i) {
 	if ((int8_t) i == i) { *--ctx->p = i; return 0x83; }
 	else { asm_write32(ctx, i); return 0x81; }
 }
 
 /** Emits an Immediate Group 1 instruction with a register as 2nd operand. */
-static inline void asm_grp1_imm(struct Assembler *ctx, bool w, enum ImmGrp1 reg,
-	enum Register rm, int32_t i) {
+static inline void asm_grp1_imm(struct Assembler *restrict ctx,
+	bool w, enum ImmGrp1 reg, enum Register rm, int32_t i) {
 	asm_rr(ctx, w, asm_imm_grp1_op(ctx, i), (uint8_t) reg, rm);
 }
 
@@ -213,19 +208,19 @@ do_loop:
 /** Reserves space for machine code. */
 static inline bool asm_init(struct Assembler *ctx) {
 	uint8_t *p;
-	size_t length = MCODE_CAPACITY;
+	size_t len = MCODE_CAPACITY;
 	// Force within range of relative jumps/CALLs to our code
 	uintptr_t target = (uintptr_t) asm_init & ~0xffff,
-		range = (1u << (JMP_RANGE - 1)) - (1u << 21),
-		hint = 0, state = FXHASH_K;
+		range = (1u << (JMP_RANGE - 1)) - (1u << 21), hint = 0;
+	uint64_t state = FXHASH_K;
 	for (unsigned i = 0; i < JMP_RANGE; ++i) {
-		if ((p = mmap((void *) hint, length, PROT_READ | PROT_WRITE,
+		if ((p = mmap((void *) hint, len, PROT_READ | PROT_WRITE,
 					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) break;
-		if ((uintptr_t) p - target < range || target - (uintptr_t) p < range + length) {
-			*ctx = (struct Assembler) { .buf = p, .p = p + length };
+		if ((uintptr_t) p - target < range || target - (uintptr_t) p < range + len) {
+			*ctx = (struct Assembler) { .buf = p, .p = p + len };
 			return true;
 		}
-		munmap(p, length);
+		munmap(p, len);
 		// Probe random 64K-aligned addresses
 		hint = ((state = fxhash(state, hint)) & (2 * range - 0x10000)) + target - range;
 	}
