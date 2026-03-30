@@ -21,11 +21,7 @@
 enum VmaType {
 	VMA_REGULAR = 1 << 0, ///< Regular memory area to be dumped and restored.
 	VMA_FILE = 1 << 1, ///< Memory-mapped file.
-	/** Injected by kernel for virtual syscall implementation.
-	 *
-	 * Not to be dumped.
-	 */
-	VMA_VSYSCALL = 1 << 2,
+	VMA_VSYSCALL = 1 << 2, ///< Injected by kernel for virtual syscall implementation.
 	/** Need to take care of guard page. */
 	VMA_STACK = 1 << 8,
 	/* vDSO area. */
@@ -334,8 +330,8 @@ static bool map_segment(int fd, ElfW(Phdr) *phdr, char *hint) {
 
 	int prot = (phdr->p_flags & PF_R ? PROT_READ : 0)
 		| (phdr->p_flags & PF_W ? PROT_WRITE : 0)
-		| (phdr->p_flags & PF_X ? PROT_EXEC : 0);
-	prot |= PROT_WRITE;
+		| (phdr->p_flags & PF_X ? PROT_EXEC : 0)
+		| PROT_WRITE;
 	if (mmap(hint + mapstart, mapend - mapstart, prot,
 			MAP_FIXED | MAP_PRIVATE, fd, mapoff) == MAP_FAILED)
 		return false;

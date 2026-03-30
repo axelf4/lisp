@@ -92,7 +92,7 @@ static inline enum LispType lisp_type(LispObject p) {
 /** Interned string with a value slot. */
 struct LispSymbol {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	unsigned int len; ///< Byte length of #name.
+	unsigned len; ///< Byte length of #name.
 	const char *name; ///< Name string (not NULL-terminated).
 	LispObject value;
 };
@@ -201,7 +201,6 @@ bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b);
  *
  * @return Whether the signal was handled.
  */
-[[gnu::cold]]
 bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext, struct LispCtx *ctx);
 
 [[gnu::cold]] void lisp_interrupt(struct LispCtx *ctx);
@@ -313,11 +312,11 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 	return (struct Instruction *) (chunk_constants(chunk) + chunk->num_consts);
 }
 
-[[gnu::malloc]] struct JitState *jit_new();
+[[nodiscard, gnu::malloc]] struct JitState *jit_new();
 
 void jit_free(struct JitState *state);
 
-void jit_init_root(struct JitState *state, struct Instruction *pc);
+void jit_init(struct JitState *state, struct Instruction *pc);
 
 /** Records instruction preceding @a pc prior to it being executed. */
 bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);

@@ -50,7 +50,7 @@ LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 
 struct LispString {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	unsigned int len;
+	unsigned len;
 	char s[];
 };
 
@@ -118,7 +118,7 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 		// Check if fault was within the stack guard pages
 		if ((uintptr_t) ctx->bp <= (uintptr_t) info->si_addr
 			&& (uintptr_t) info->si_addr < ctx->guard_end)
-			// Safety: SIGSEGV is a synchronous signal and run is
+			// Safety: SIGSEGV is a synchronous signal and run() is
 			// compiled with -fnon-call-exceptions.
 			throw(SIGSEGV); // Throw stack overflow exception
 	}
