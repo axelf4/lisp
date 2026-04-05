@@ -64,7 +64,7 @@ struct GcHeap {
 	size_t free_len, recycled_len;
 
 	bool mark_color, inhibit_gc, is_major_gc, is_defrag;
-	char *object_map; ///< Bitset of object start positions.
+	unsigned *object_map; ///< Bitset of object start positions.
 	struct MarkStack { void **beg, **p, **end; } mark_stack;
 	struct ModSet { unsigned len, capacity; struct BumpPointer *xs; } modset;
 	struct GcBlock blocks[NUM_BLOCKS];
@@ -122,18 +122,22 @@ void gc_free(struct GcHeap *heap) {
 
 /** Remembers @a p as a live allocated object location. */
 static void object_map_add(struct GcHeap *heap, char *p) {
-	size_t i = (p - (char *) heap) / GC_ALIGNMENT;
-	heap->object_map[i / CHAR_BIT] |= 1 << i % CHAR_BIT;
+	size_t i = (p - (char *)heap) / GC_ALIGNMENT, n = CHAR_BIT * sizeof *heap->object_map;
+	heap->object_map[i / n] |= 1u << i % n;
 }
 
 /** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
-	size_t i = (x - (uintptr_t) heap) / GC_ALIGNMENT;
-	if (x % GC_ALIGNMENT || x - (uintptr_t) heap->blocks >= sizeof heap->blocks)
+	if (x % GC_ALIGNMENT || x - (uintptr_t)heap->blocks >= sizeof heap->blocks)
 		return false;
-	char *v = heap->object_map + i / CHAR_BIT, mask = 1 << i % CHAR_BIT;
-	if (*v & mask) { *v &= ~mask; return true; }
-	return false;
+	size_t i = (x - (uintptr_t)heap) / GC_ALIGNMENT, n = CHAR_BIT * sizeof *heap->object_map;
+	unsigned *v = heap->object_map + i / n, mask = 1u << i % n, ret = *v & mask;
+#if __x86_64__ && __GNUC__
+	__asm__ ("btr %0, %k2" : "+m" (*heap->object_map), "=@ccc" (ret) : "Ir" (i) : "cc");
+#else
+	*v &= ~mask;
+#endif
+	return ret;
 }
 
 [[gnu::cold]] static void modset_grow(struct ModSet *set) {
@@ -346,7 +350,7 @@ void garbage_collect(struct GcHeap *heap) {
 	} else for (size_t i = 0; i < heap->modset.len; ++i) {
 			struct BumpPointer p = heap->modset.xs[i];
 			// Clear portions of object map that were allocated into
-			char *x = heap->object_map + (p.limit - (char *) heap) / (GC_ALIGNMENT * CHAR_BIT);
+			char *x = (char *)heap->object_map + (p.limit - (char *)heap) / (GC_ALIGNMENT * CHAR_BIT);
 			memset(x, 0, (p.cursor - p.limit) / (GC_ALIGNMENT * CHAR_BIT));
 	}
 	heap->modset.len = 0;
