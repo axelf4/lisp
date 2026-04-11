@@ -57,11 +57,11 @@ enum SsaOp : uint8_t {
 	// Comparisons are ordered such that flipping the LSB inverts them
 	IR_LT, IR_GE, IR_LE, IR_GT,
 	IR_EQ, IR_NEQ,
-	IR_LOOP,
-	IR_PHI,
 	IR_CALL, ///< Call C function.
 	IR_CALLARG, ///< Argument for #IR_CALL.
 	IR_RET,
+	IR_LOOP,
+	IR_PHI,
 	IR_SLOAD, ///< Load stack slot.
 	IR_GLOAD, ///< Load global.
 	IR_ULOAD, ///< Load upvalue.
@@ -88,11 +88,6 @@ union Node {
 	};
 	LispObject v; ///< Object constant.
 };
-
-static bool is_effectful(enum SsaOp x) { return x <= IR_RET; }
-static bool is_nop(union Node x) {
-	return x.reg == 0xff && !(x.ty & IR_EFFECTFUL || is_effectful(x.op));
-}
 
 /** Snapshot stack slot entry. */
 struct SnapshotEntry {
@@ -289,10 +284,11 @@ out_no_cse: return emit(state, x);
  * @return Whether the type of @a ref was compatible with @a ty.
  */
 static bool guard_type(struct JitState *state, IrRef *ref, uint8_t ty) {
-	uint8_t ty2 = *ref >> REF_TYPE_SHIFT & IR_TYPE;
-	if (ty == TY_ANY || ty2 == ty) return true;
+	uint8_t ty1 = ty & IR_TYPE, ty2 = *ref >> REF_TYPE_SHIFT & IR_TYPE;
+	if (ty1 == TY_ANY || ty2 == ty1) return true;
 	// If ty </: ref->ty, then type error is imminent
 	if (IS_VAR(*ref))
+		// TODO This can remove IR_EFFECTFUL from *ref
 		*ref = (IR_GET(state, *ref).ty = IR_GUARD | ty) << REF_TYPE_SHIFT | (Ref)*ref;
 	return ty2 == TY_ANY;
 }
@@ -302,7 +298,7 @@ static void guard_value(struct JitState *state, IrRef *ref, LispObject value) {
 	take_snapshot(state);
 	enum LispType ty = IR_GET(state, *ref).ty = lisp_type(value);
 	IrRef k = emit_const(state, ty, value);
-	emit_opt(state, (union Node) { .op = IR_EQ, ty, .a = *ref, .b = k });
+	emit_opt(state, (union Node) {{ IR_EQ, IR_EFFECTFUL | ty, *ref, k, {} }});
 	*ref = k;
 }
 
@@ -369,7 +365,7 @@ static void peel_loop(struct JitState *state) {
 	unsigned preamble_end = state->end, num_phis = 0;
 	struct Snapshot *s = state->snapshots, *loopsnap = s + state->num_snapshots - 1;
 	// Separate preamble from loop body by LOOP instruction
-	emit(state, (union Node) { .op = IR_LOOP, .ty = TY_ANY });
+	emit(state, (union Node) { .op = IR_LOOP, .ty = IR_EFFECTFUL | TY_ANY });
 	++loopsnap->beg;
 
 	Ref subst_buf[MAX_TRACE_LEN], phis[12];
@@ -391,7 +387,7 @@ static void peel_loop(struct JitState *state) {
 			} else if (!ref) continue;
 			// In case of type-instability, need to emit conversion
 			// since later instructions expect the previous type.
-			if (!guard_type(state, &ref, insn.ty & IR_TYPE)) rec_err(state);
+			if (!guard_type(state, &ref, insn.ty)) rec_err(state);
 		}
 		SUBST_GET(subst, i) = ref;
 	}
@@ -402,7 +398,7 @@ static void peel_loop(struct JitState *state) {
 		// TODO φ:s whose arguments are the same or other redundant
 		// φ:s are in turn redundant and eliminable.
 		if (lref == rref) continue; // Redundant φ
-		emit(state, (union Node) {{ IR_PHI, TY_ANY, lref, rref, {} }});
+		emit(state, (union Node) {{ IR_PHI, IR_EFFECTFUL | TY_ANY, lref, rref, {} }});
 	}
 }
 
@@ -430,6 +426,8 @@ static bool is_asm_full(struct RegAlloc *ctx) {
 #endif
 	return UNLIKELY(ctx->as.p < ctx->as.buf);
 }
+
+static bool is_nop(union Node x) { return x.reg == 0xff && !(x.ty & IR_EFFECTFUL); }
 
 /** Spills @a ref, emitting a reload. */
 static enum Register reload(struct RegAlloc *ctx, Ref ref) {
@@ -922,8 +920,8 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 		enum SsaOp cmp_op = IR_EQ; // TODO Only for types with referential equality
 	do_record_cmp:
 		LispObject value = f->f(ctx, x.c, bp + x.a + 2);
-		emit_opt(state, (union Node)
-			{ .op = cmp_op ^ NILP(ctx, value), .ty = TY_ANY, .a = a, .b = b });
+		enum SsaOp op = cmp_op ^ NILP(ctx, value);
+		emit_opt(state, (union Node) {{ op, IR_EFFECTFUL | TY_ANY, a, b, {} }});
 		return emit_const(state, lisp_type(value), value);
 	case JIT_F_LT:
 		cmp_op = IR_LT;
@@ -955,10 +953,10 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 	guard_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
 	IrRef result = emit(state, (union Node)
-		{ .op = IR_CALL, .ty = TY_ANY, .a = ref, .b = x.c });
+		{ .op = IR_CALL, .ty = IR_EFFECTFUL | TY_ANY, .a = ref, .b = x.c });
 	for (unsigned i = 0; i < x.c; ++i) {
 		IrRef arg = SLOT(state, x.a + 2 + i);
-		uint8_t ty = arg >> REF_TYPE_SHIFT & IR_TYPE;
+		uint8_t ty = IR_EFFECTFUL | (arg >> REF_TYPE_SHIFT & IR_TYPE);
 		emit(state, (union Node) { .op = IR_CALLARG, .ty = ty, .a = arg });
 	}
 	state->max_slot = x.a; // CALL always uses highest register
@@ -987,10 +985,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		break;
 	case GETUPVALUE: result = uref(state, bp, x.c); break;
 	case JNIL:
-		IrRef ref = SLOT(state, x.a);
-		if (!IS_VAR(ref)) break;
-		guard_type(state, state->bp + x.a, lisp_type(bp[x.a]));
-		IR_GET(state, ref).ty |= IR_EFFECTFUL; // Prevent DCE
+		guard_type(state, state->bp + x.a, IR_EFFECTFUL | lisp_type(bp[x.a]));
 	case JMP: break;
 	case CALL:
 		switch (lisp_type(bp[x.a])) {
@@ -1032,7 +1027,8 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		emit_const(state, LISP_BYTECODE_CHUNK, TAG_OBJ(chunk)); // Pin bytecode
 		Ref pc_ref = emit_const(state, TY_RET_ADDR, (uintptr_t) npc);
 		take_snapshot(state);
-		emit(state, (union Node) { .op = IR_RET, TY_ANY, .a = pc_ref, .b = offset });
+		emit(state, (union Node)
+			{ .op = IR_RET, IR_EFFECTFUL | TY_ANY, .a = pc_ref, .b = offset });
 		memset(state->bp, 0, offset * sizeof *state->bp); // Clear frame below
 		state->need_snapshot = true;
 		// Too deep down-recursion?
