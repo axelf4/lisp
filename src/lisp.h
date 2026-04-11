@@ -240,21 +240,21 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 #define FOR_JIT_OPS(X)
 #endif
 #define FOR_OPS(X) \
-	X(RET) /* Return R(A) */ \
-	X(LOAD_NIL) /* R(A) <- NIL */ \
-	X(LOAD_OBJ) /* R(A) <- K(B) */ \
-	X(LOAD_SHORT) /* R(A) <- sB */ \
-	X(GETGLOBAL) /* R(A) <- G[K[PC, B]] */ \
-	X(SETGLOBAL) /* G[K[PC, B]] <- R(A) */ \
+	X(MOV) /* R(A) <- R(C) */ \
+	X(LOADNIL) /* R(A) <- NIL */ \
+	X(LOADOBJ) /* R(A) <- K(B) */ \
+	X(LOADSHORT) /* R(A) <- sB */ \
+	X(GETGLOBAL) /* R(A) <- G[K(B)] */ \
+	X(SETGLOBAL) /* G[K(B)] <- R(A) */ \
 	X(GETUPVALUE) /* R(A) <- U[C] */ \
 	X(SETUPVALUE) /* U[C] <- R(A) */ \
+	X(JMP) /* PC += B */ \
+	X(JNIL) /* If NILP(R(A)) then PC += B */ \
 	X(CALL) /* R(A) <- R(A)(R(A+2), ..., R(A+2+C-1)) */ \
-	X(TAIL_CALL) \
-	X(MOV) /* R(A) <- R(C) */ \
-	X(JMP) /* PC += sB */ \
-	X(JNIL) /* If NILP(R(A)) then PC += sB */ \
-	X(CLOS) \
-	X(CLOSE_UPVALS) /* Close stack variables up to R(A). */ \
+	X(TAILCALL) \
+	X(RET) /* Return R(A) */ \
+	X(FNEW) /* Instantiate closure. */ \
+	X(CLO) /* Close stack variables up to R(A). */ \
 	FOR_JIT_OPS(X)
 
 /** Bytecode operation code. */

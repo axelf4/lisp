@@ -1022,12 +1022,13 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 	struct Instruction x = (state->pc = pc)[-1];
 	IrRef result = 0;
 	switch (x.op) {
-	case LOAD_NIL: result = emit_const(state, LISP_NIL, NIL(ctx)); break;
-	case LOAD_OBJ:
+	case MOV: result = SLOT(state, x.c); break;
+	case LOADNIL: result = emit_const(state, LISP_NIL, NIL(ctx)); break;
+	case LOADOBJ:
 		LispObject obj = *(LispObject *) (pc - x.b);
 		result = emit_const(state, lisp_type(obj), obj);
 		break;
-	case LOAD_SHORT:
+	case LOADSHORT:
 		result = emit_const(state, LISP_INTEGER, TAG_SMI((int16_t) x.b));
 		break;
 	case GETGLOBAL:
@@ -1036,7 +1037,6 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		result = emit_opt(state, (union Node) { .op = IR_GLOAD, TY_ANY, .a = sym });
 		break;
 	case GETUPVALUE: result = uref(state, bp, x.c); break;
-	case MOV: result = SLOT(state, x.c); break;
 	case JMP: break;
 	case JNIL:
 		IrRef ref = SLOT(state, x.a);
@@ -1057,7 +1057,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		default: break;
 		}
 		break;
-	case TAIL_CALL:
+	case TAILCALL:
 		switch (lisp_type(bp[x.a])) {
 		case LISP_CFUNCTION: state->bp[x.a] = record_c_call(ctx, state, bp, x); goto do_ret;
 		case LISP_CLOSURE:

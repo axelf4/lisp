@@ -35,14 +35,14 @@ def disassemble(n, xs, indent=0):
 
         s += " " * indent + f"{i:04} "
         match x["op"]:
-            case Op.RET:
-                s += f"RET {a}\n"
-            case Op.LOAD_NIL:
-                s += f"LOAD_NIL {a} <- NIL\n"
-            case Op.LOAD_OBJ:
-                s += f"LOAD_OBJ {a} <- {int(k()):x}\n"
-            case Op.LOAD_SHORT:
-                s += f"LOAD_SHORT {a} <- {(b ^ 0x8000) - 0x8000}\n"
+            case Op.MOV:
+                s += f"MOV {a} <- {c}\n"
+            case Op.LOADNIL:
+                s += f"LOADNIL {a} <- NIL\n"
+            case Op.LOADOBJ:
+                s += f"LOADOBJ {a} <- {int(k()):x}\n"
+            case Op.LOADSHORT:
+                s += f"LOADSHORT {a} <- {(b ^ 0x8000) - 0x8000}\n"
             case Op.GETGLOBAL:
                 s += f"GETGLOBAL {a} <- [{k_sym()}]\n"
             case Op.SETGLOBAL:
@@ -51,27 +51,27 @@ def disassemble(n, xs, indent=0):
                 s += f"SETUPVALUE {a} <- {c}\n"
             case Op.SETUPVALUE:
                 s += f"SETUPVALUE {a} -> {c}\n"
-            case Op.CALL | Op.TAIL_CALL:
-                prefix = "TAIL_" if x["op"] == Op.TAIL_CALL else ""
-                args = "".join(f" {a + 2 + j}" for j in range(c))
-                s += f"{prefix}CALL {a} <- ({a}{args})\n"
-            case Op.MOV:
-                s += f"MOV {a} <- {c}\n"
             case Op.JMP:
                 s += f"JMP => {i + b:04}\n"
             case Op.JNIL:
                 s += f"JMP if {a} == NIL => {i + b:04}\n"
-            case Op.CLOS:
+            case Op.CALL | Op.TAILCALL:
+                prefix = "TAIL" if x["op"] == Op.TAIL_CALL else ""
+                args = "".join(f" {a + 2 + j}" for j in range(c))
+                s += f"{prefix}CALL {a} <- ({a}{args})\n"
+            case Op.RET:
+                s += f"RET {a}\n"
+            case Op.FNEW:
                 proto = (xs + i).cast(Prototype.pointer())
                 arity = int(proto["arity"])
                 num_upvals = int(proto["num_upvalues"])
-                s += f"CLOS {a} <- (arity: {arity} num_upvals: {num_upvals}):\n"
+                s += f"FNEW {a} <- (arity: {arity} num_upvals: {num_upvals}):\n"
                 metadata_size = Prototype.sizeof + num_upvals + x.type.sizeof - 1
                 body = proto["body"].dereference().address
                 s += disassemble(b - metadata_size // x.type.sizeof, body, indent + 2)
                 i += b
-            case Op.CLOSE_UPVALS:
-                s += "CLOSE_UPVALS >= {a}\n"
+            case Op.CLO:
+                s += "CLO >= {a}\n"
             case Op.FHDR | Op.FHDR_INTERPR | Op.FHDR_JIT:
                 s += "FHDR\n"
             case _:

@@ -116,15 +116,10 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 #define LOAD_CONST (*(LispObject *) (pc - ins.b))
 
 	VM_BEGIN
-		DEFINE_OP(RET) {
-		if (!LIKELY(pc = (struct Instruction *) bp[1])) return ins.a[ctx->bp = bp];
-		*bp = bp[ins.a]; // Copy return value to R(A) of CALL instruction
-		bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
-		NEXT;
-	}
-	DEFINE_OP(LOAD_NIL) { bp[ins.a] = NIL(ctx); NEXT; }
-	DEFINE_OP(LOAD_OBJ) { bp[ins.a] = LOAD_CONST; NEXT; }
-	DEFINE_OP(LOAD_SHORT) { bp[ins.a] = TAG_SMI((int16_t) ins.b); NEXT; }
+	DEFINE_OP(MOV) { bp[ins.a] = bp[ins.c]; NEXT; }
+	DEFINE_OP(LOADNIL) { bp[ins.a] = NIL(ctx); NEXT; }
+	DEFINE_OP(LOADOBJ) { bp[ins.a] = LOAD_CONST; NEXT; }
+	DEFINE_OP(LOADSHORT) { bp[ins.a] = TAG_SMI((int16_t) ins.b); NEXT; }
 	DEFINE_OP(GETGLOBAL) {
 		bp[ins.a] = ((struct LispSymbol *) UNTAG_OBJ(LOAD_CONST))->value;
 		NEXT;
@@ -145,6 +140,8 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		gc_write_barrier((struct GcHeap *) ctx, &upvalue->hdr.hdr);
 		NEXT;
 	}
+	DEFINE_OP(JMP) { pc += ins.b; NEXT; }
+	DEFINE_OP(JNIL) { if (NILP(ctx, bp[ins.a])) JMP_TO_LABEL(JMP); NEXT; }
 
 	DEFINE_OP(CALL) {
 		LispObject *frame = bp + ins.a;
@@ -164,7 +161,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		}
 		NEXT;
 	}
-	DEFINE_OP(TAIL_CALL) {
+	DEFINE_OP(TAILCALL) {
 		LispObject *frame = bp + ins.a;
 		switch (lisp_type(*frame)) {
 		case LISP_CFUNCTION:
@@ -181,11 +178,14 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		default: die("Bad function");
 		}
 	}
+	DEFINE_OP(RET) {
+		if (!LIKELY(pc = (struct Instruction *) bp[1])) return ins.a[ctx->bp = bp];
+		*bp = bp[ins.a]; // Copy return value to R(A) of CALL instruction
+		bp -= pc[-1].a; // Operand A of the CALL was the base pointer offset
+		NEXT;
+	}
 
-	DEFINE_OP(MOV) { bp[ins.a] = bp[ins.c]; NEXT; }
-	DEFINE_OP(JMP) { pc += ins.b; NEXT; }
-	DEFINE_OP(JNIL) { if (NILP(ctx, bp[ins.a])) JMP_TO_LABEL(JMP); NEXT; }
-	DEFINE_OP(CLOS) {
+	DEFINE_OP(FNEW) {
 		struct Prototype *proto = (struct Prototype *) pc;
 		struct Closure *closure = gc_alloc(
 			(struct GcHeap *) ctx, alignof(struct Closure),
@@ -202,7 +202,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		bp[ins.a] = TAG_OBJ(closure);
 		NEXT;
 	}
-	DEFINE_OP(CLOSE_UPVALS) {
+	DEFINE_OP(CLO) {
 		while (ctx->upvalues && ctx->upvalues->location >= bp + ins.a) {
 			struct Upvalue *x = ctx->upvalues;
 			ctx->upvalues = x->next;
@@ -385,7 +385,7 @@ static void emit(struct ByteCompCtx *ctx, struct Instruction ins) {
 static void emit_close_upvalues(struct ByteCompCtx *ctx, uint8_t vars_start, uint8_t regs_start) {
 	for (unsigned i = vars_start; i < ctx->num_vars; ++i)
 		if (ctx->vars[i].is_captured) {
-			emit(ctx, (struct Instruction) { .op = CLOSE_UPVALS, .a = regs_start });
+			emit(ctx, (struct Instruction) { .op = CLO, .a = regs_start });
 			break;
 		}
 }
@@ -412,17 +412,17 @@ static void emit_load_obj(struct ByteCompCtx *ctx, LispObject x, struct Destinat
 	if (dst.discarded) return;
 	struct Instruction insn;
 	switch (lisp_type(x)) {
-	case LISP_NIL: insn = (struct Instruction) { .op = LOAD_NIL, .a = dst.reg }; break;
+	case LISP_NIL: insn = (struct Instruction) { .op = LOADNIL, .a = dst.reg }; break;
 	case LISP_INTEGER:
 		int i = UNTAG_SMI(x);
 		if (INT16_MIN <= i && i <= INT16_MAX) {
-			insn = (struct Instruction) { .op = LOAD_SHORT, .a = dst.reg, .b = i };
+			insn = (struct Instruction) { .op = LOADSHORT, .a = dst.reg, .b = i };
 			break;
 		}
 		[[fallthrough]];
 	default:
 		uint16_t slot = constant_slot(ctx, x);
-		insn = (struct Instruction) { .op = LOAD_OBJ, .a = dst.reg, .b = slot };
+		insn = (struct Instruction) { .op = LOADOBJ, .a = dst.reg, .b = slot };
 		break;
 	}
 	emit(ctx, insn);
@@ -486,7 +486,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			static_assert(IS_POWER_OF_TWO(sizeof *ctx->insns));
 			while ((ctx->len + 1) * sizeof *ctx->insns % alignof(struct Prototype))
 				emit(ctx, (struct Instruction) { .op = JMP }); // Align with NOPs
-			emit(ctx, (struct Instruction) { .op = CLOS, .a = dst.reg });
+			emit(ctx, (struct Instruction) { .op = FNEW, .a = dst.reg });
 			size_t proto_beg = ctx->len;
 			ctx->len += sizeof(struct Prototype) / sizeof *ctx->insns;
 
@@ -605,7 +605,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			if (dst.is_return) {
 				// Close upvalues before tail-call, since there is no opportunity later
 				emit_close_upvalues(ctx, ctx->fn->vars_start, 0);
-				emit(ctx, (struct Instruction) { .op = TAIL_CALL, .a = reg, .c = num_args });
+				emit(ctx, (struct Instruction) { .op = TAILCALL, .a = reg, .c = num_args });
 				return COMP_NORETURN;
 			} else {
 				emit(ctx, (struct Instruction) { .op = CALL, .a = reg, .c = num_args, });
