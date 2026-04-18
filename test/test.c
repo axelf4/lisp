@@ -20,6 +20,16 @@ static void test_rotate_left(void **) {
 	assert_uint_equal(rol64(UINT64_C(1) << 63 | 0b10, 65), 0b101);
 }
 
+static void test_for_ones(void **) {
+	unsigned i = 0;
+	FOR_ONES(x, UINT64_C(1) << 63 | 1) switch (i++) {
+	case 0: assert_uint_equal(x, 0); break;
+	case 1: assert_uint_equal(x, 63); break;
+	default: fail();
+	}
+	assert_uint_equal(i, 2);
+}
+
 static void do_nothing(void *) {}
 static void do_throw_error(void *) { throw(42); fail(); }
 
@@ -222,6 +232,7 @@ static int teardown(void **state) {
 int main() {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_rotate_left),
+		cmocka_unit_test(test_for_ones),
 		cmocka_unit_test(test_exception),
 		cmocka_unit_test(test_hash_table),
 		cmocka_unit_test(test_gc_traces_live_object),
