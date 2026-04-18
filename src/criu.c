@@ -57,52 +57,40 @@ typedef void restore_fn(uintptr_t hint, struct CheckpointHdr *hdr);
 #pragma GCC diagnostic ignored "-Wcast-align"
 
 #if IS_RESTORER_DSO
-static int _munmap(void *addr, size_t len) {
-	int ret;
-	__asm__ volatile ("syscall"
-		: "=a" (ret)
-		: "0" (__NR_munmap), "D" (addr), "S" (len)
-        : "rcx", "r11", "cc", "memory");
-	return ret;
-}
+#define SYS_VAR0()
+#define SYS_VAR1(_1) SYS_VAR0()
+#define SYS_VAR2(_1, _2) SYS_VAR1(_1)
+#define SYS_VAR3(_1, _2, _3) SYS_VAR2(_1, _2)
+#define SYS_VAR4(_1, _2, _3, _4) SYS_VAR3(_1, _2, _3) register long _a4 __asm__ ("r10") = _4;
+#define SYS_VAR5(_1, _2, _3, _4, _5) SYS_VAR4(_1, _2, _3, _4) register long _a5 __asm__ ("r8") = _5;
+#define SYS_VAR6(_1, _2, _3, _4, _5, _6) SYS_VAR5(_1, _2, _3, _4, _5) register long _a6 __asm__ ("r9") = _6;
+#define SYS_IN0()
+#define SYS_IN1(_1) SYS_IN0(), "D" (_1)
+#define SYS_IN2(_1, _2) SYS_IN1(_1), "S" (_2)
+#define SYS_IN3(_1, _2, _3) SYS_IN2(_1, _2), "d" (_3)
+#define SYS_IN4(_1, _2, _3, _4) SYS_IN3(_1, _2, _3), "r" (_a4)
+#define SYS_IN5(_1, _2, _3, _4, _5) SYS_IN4(_1, _2, _3, _4), "r" (_a5)
+#define SYS_IN6(_1, _2, _3, _4, _5, _6) SYS_IN5(_1, _2, _3, _4, _5), "r" (_a6)
+#define SYS_BODY(n, type, name, ...) { SYS_VAR##n(__VA_ARGS__) long ret; \
+		__asm__ volatile ("syscall" : "=a" (ret)						\
+			: "0" (__NR_##name) SYS_IN##n(__VA_ARGS__)					\
+			: "rcx", "r11", "cc", "memory");							\
+		return (type)ret; }
 
-static void *_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
-	register int flags2 __asm__ ("r10") = flags;
-	register int fd2 __asm__ ("r8") = fd;
-	register int offset2 __asm__ ("r9") = offset;
-	void *ret;
-	__asm__ volatile ("syscall"
-		: "=a" (ret)
-		: "0" (__NR_mmap), "D" (addr), "S" (length), "d" (prot),
-		"r" (flags2), "r" (fd2), "r" (offset2)
-        : "rcx", "r11", "cc");
-	return ret;
-}
+#define SYSCALL1(type, name, t1, a1) type _##name(t1 a1) SYS_BODY(1, type, name, a1)
+#define SYSCALL2(type, name, t1, a1, t2, a2) \
+	type _##name(t1 a1, t2 a2) SYS_BODY(2, type, name, a1, a2)
+#define SYSCALL3(type, name, t1, a1, t2, a2, t3, a3) \
+	type _##name(t1 a1, t2 a2, t3 a3) SYS_BODY(3, type, name, a1, a2, a3)
+#define SYSCALL6(type, name, t1, a1, t2, a2, t3, a3, t4, a4, t5, a5, t6, a6) \
+	type _##name(t1 a1, t2 a2, t3 a3, t4 a4, t5 a5, t6 a6) \
+	SYS_BODY(6, type, name, a1, a2, a3, a4, a5, a6)
 
-static int _open(const char *pathname, int flags) {
-	int ret;
-	__asm__ volatile ("syscall"
-		: "=a" (ret)
-		: "0" (__NR_open), "D" (pathname), "S" (flags)
-        : "rcx", "r11", "cc");
-	return ret;
-}
-
-static int _close(int fd) {
-	int ret;
-	__asm__ volatile ("syscall" : "=a" (ret) : "0" (__NR_close), "D" (fd)
-        : "cc", "rcx", "r11");
-	return ret;
-}
-
-static ssize_t _readv(int fd, const struct iovec *iov, int iovcnt) {
-	ssize_t ret;
-	__asm__ volatile ("syscall"
-		: "=a" (ret)
-		: "0" (__NR_readv), "D" (fd), "S" (iov), "d" (iovcnt)
-        : "rcx", "r11", "cc", "memory");
-	return ret;
-}
+static SYSCALL2(int, munmap, void *, addr, size_t, len)
+static SYSCALL6(void *, mmap, void *, addr, size_t, length, int, prot, int, flags, int, fd, off_t, offset)
+static SYSCALL1(int, close, int, fd)
+static SYSCALL2(int, open, const char *, pathname, int, flags)
+static SYSCALL3(ssize_t, readv, int, fd, const struct iovec *, iov, int, iovcnt)
 
 static bool restore_map(struct Map *map) {
 	int prot = map->prot | PROT_WRITE, fd = -1;
