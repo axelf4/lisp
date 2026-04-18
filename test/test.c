@@ -13,6 +13,8 @@
 static_assert(SAR(-1, 1) == -1);
 static_assert(IS_POWER_OF_TWO(16));
 static_assert(!IS_POWER_OF_TWO(10));
+static_assert(ALIGN_UP(20, 8) == 24);
+static_assert(ALIGN_UP(16, 8) == 16);
 
 static void test_rotate_left(void **) {
 	assert_uint_equal(rol64(UINT64_C(1) << 63 | 0b10, 65), 0b101);
