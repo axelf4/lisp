@@ -21,7 +21,6 @@ endif()
 
 set(LG_PAGE "Detect" CACHE STRING "Explicit log2 page size; \"Detect\" or \"Dynamic\".")
 option(WITH_JIT "Enable just-in-time compilation." ON)
-option(WITH_TAIL_CALL_INTERP "Enable tail-calling interpreter.")
 option(PRESERVE_FRAME_POINTER "Disable RBP usage as a general-purpose register."
   ${preserve_frame_pointer})
 option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore.")
@@ -71,7 +70,6 @@ target_compile_definitions(lisplib PUBLIC
   ENABLE_JIT=$<BOOL:${WITH_JIT}>)
 target_compile_definitions(lisplib PRIVATE
   HAVE_COMPUTED_GOTO=$<BOOL:${HAVE_COMPUTED_GOTO}>
-  ENABLE_TAIL_CALL_INTERP=$<BOOL:${WITH_TAIL_CALL_INTERP}>
   PRESERVE_FRAME_POINTER=$<BOOL:${PRESERVE_FRAME_POINTER}>
   ENABLE_TRACING=$<BOOL:${WITH_TRACING}>
   LIBRESTORE_SO="${CMAKE_INSTALL_FULL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}restore${CMAKE_SHARED_LIBRARY_SUFFIX}")

@@ -37,7 +37,7 @@ static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *prototype,
 	return n;
 }
 
-#if ENABLE_TAIL_CALL_INTERP
+#if __has_c_attribute(clang::musttail)
 #ifdef __clang__
 #define PRESERVE_NONE [[clang::preserve_none]]
 #elifdef __GNUC__
@@ -70,11 +70,13 @@ static struct Handler { LispTailCallFunc *hnd; }
 #define DISPATCH_MAIN(op) do [[clang::musttail]] return \
 			main_dispatch_table[op].hnd(TAIL_CALL_ARGS); while (0)
 
-#define VM_BEGIN											\
-	struct Handler *dispatch_table = main_dispatch_table;	\
-	struct Instruction ins = *pc++;							\
-	return dispatch_table[ins.op].hnd(TAIL_CALL_ARGS);
-#define VM_END
+#define VM_BEGIN														\
+	struct Handler *dispatch_table = main_dispatch_table;				\
+	struct Instruction ins = *pc++;										\
+	return dispatch_table[ins.op].hnd(TAIL_CALL_ARGS);					\
+	_Pragma("GCC diagnostic push")										\
+	_Pragma("GCC diagnostic ignored \"-Wmaybe-musttail-local-addr\"")
+#define VM_END _Pragma("GCC diagnostic pop")
 #elif HAVE_COMPUTED_GOTO
 #define DEFINE_OP(op) op_ ## op:
 // Use token-threading to be able to swap dispatch table when recording
