@@ -17,9 +17,6 @@
       doCheck = true;
 
       hardeningDisable = [ "all" ];
-      cmakeFlags = [
-        "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE"
-      ];
       env.CFLAGS = "-march=x86-64-v3 -fomit-frame-pointer";
     };
 

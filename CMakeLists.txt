@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 include(CheckCSourceRuns)
+include(CheckIPOSupported)
 include(GNUInstallDirs)
 include(CTest)
 find_package(LTTngUST 2.14.0)
@@ -25,6 +26,11 @@ option(PRESERVE_FRAME_POINTER "Disable RBP usage as a general-purpose register."
   ${preserve_frame_pointer})
 option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore.")
 option(WITH_TRACING "Enable tracing instrumentation." ${LTTngUST_FOUND})
+
+check_ipo_supported(RESULT ipo_supported)
+if(ipo_supported)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
 
 add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
