@@ -83,6 +83,7 @@ target_include_directories(lisplib PRIVATE src)
 target_link_libraries(lisplib PRIVATE $<$<BOOL:${WITH_TRACING}>:LTTng::UST>)
 
 add_executable(lisp src/main.c)
+target_compile_definitions(lisp PRIVATE DATADIR="${CMAKE_INSTALL_DATADIR}")
 target_link_libraries(lisp lisplib)
 
 if(BUILD_TESTING)
@@ -98,3 +99,4 @@ endif()
 
 install(TARGETS lisp)
 install(FILES lisp-gdb.py TYPE BIN RENAME $<TARGET_FILE_NAME:lisp>-gdb.py)
+install(DIRECTORY lisp DESTINATION ${CMAKE_INSTALL_DATADIR})

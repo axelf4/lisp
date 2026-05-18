@@ -81,3 +81,8 @@
                   x)) ; Avoid recursing down the list to append nothing
             lst)))
     (concatenate xs)))
+
+(defmacro (def x . body)
+  (cons 'set (if (consp x)
+                 `(,(car x) (let (,(car x) (fn ,(cdr x) . ,body)) ,(car x)))
+               (cons x body))))
