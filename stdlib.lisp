@@ -81,3 +81,27 @@
                   x)) ; Avoid recursing down the list to append nothing
             lst)))
     (concatenate xs)))
+
+(defmacro (def x . body)
+  (cons 'set (if (consp x)
+                 `(,(car x) (let (,(car x) (fn ,(cdr x) . ,body)) ,(car x)))
+               (cons x body))))
+
+(def (fib n)
+  (if (< n 2)
+      n
+    (+ (fib (+ n -1)) (fib (+ n -2)))))
+
+;; (print (fib 40))
+;; (die)
+
+;; (def (id x) x)
+
+;; (def (my-f n)
+;;   (let (f (fn (acc n b)
+;;             (if (< n 1)
+;;                 acc
+;; 			  (let (b2 (if b nil (set acc (+ acc n)) t))
+;;                 (f (id acc) (+ n -1) b2)))))
+;; 	(f 0 n nil)))
+;; (print (my-f 50000))
