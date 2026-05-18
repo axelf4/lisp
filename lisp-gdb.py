@@ -71,7 +71,7 @@ def disassemble(n, xs, indent=0):
                 s += disassemble(b - metadata_size // x.type.sizeof, body, indent + 2)
                 i += b
             case Op.CLO:
-                s += "CLO >= {a}\n"
+                s += "CLO\n"
             case Op.FHDR | Op.FHDR_INTERPR | Op.FHDR_JIT:
                 s += "FHDR\n"
             case _:

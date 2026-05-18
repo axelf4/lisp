@@ -253,7 +253,7 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 	X(TAILCALL) \
 	X(RET) /* Return R(A) */ \
 	X(FNEW) /* Instantiate closure. */ \
-	X(CLO) /* Close stack variables up to R(A). */ \
+	X(CLO) /* Close stack variables up to R(0). */ \
 	FOR_JIT_OPS(X)
 
 /** Bytecode operation code. */

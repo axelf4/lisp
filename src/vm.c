@@ -205,7 +205,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		NEXT;
 	}
 	DEFINE_OP(CLO) {
-		while (ctx->upvalues && ctx->upvalues->location >= bp + insn.a) {
+		while (ctx->upvalues && ctx->upvalues->location >= bp) {
 			struct Upvalue *x = ctx->upvalues;
 			ctx->upvalues = x->next;
 			*x = (struct Upvalue) { x->hdr, .value = *x->location, &x->value };
@@ -314,11 +314,11 @@ typedef uint8_t Register;
 struct Local {
 	Lobj symbol;
 	Register slot; ///< The register.
-	bool is_captured;
 };
 
 struct FnState {
 	uint8_t prev_num_regs, vars_beg, num_upvalues;
+	bool has_uvs;
 	struct FnState *prev;
 	uint8_t upvalues[MAX_UPVALUES];
 };
@@ -345,7 +345,7 @@ enum CompileError {
 
 static uint8_t resolve_upvalue(struct FnState *fn, uint8_t i, struct Local *var) {
 	uint8_t upvalue = i >= fn->prev->vars_beg
-		? var->is_captured = true, var->slot | UV_INSTACK
+		? fn->prev->has_uvs = true, var->slot | UV_INSTACK
 		: resolve_upvalue(fn->prev, i, var);
 	// Check if this prototype already has the upvalue
 #pragma GCC novector
@@ -381,15 +381,6 @@ static struct VarRef {
 static void emit(struct ByteCompCtx *ctx, struct Instruction insn) {
 	if (ctx->len >= ctx->capacity) chunk_grow(ctx);
 	ctx->insns[ctx->len++] = insn;
-}
-
-/** Emits instructions to move variables greater than or equal to @a var_limit to the heap. */
-static void emit_close_upvalues(struct ByteCompCtx *ctx, uint8_t vars_start, uint8_t regs_start) {
-	for (unsigned i = vars_start; i < ctx->num_vars; ++i)
-		if (ctx->vars[i].is_captured) {
-			emit(ctx, (struct Instruction) { .op = CLO, .a = regs_start });
-			break;
-		}
 }
 
 static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
@@ -475,7 +466,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 
 	Register reg = ctx->num_regs++; // Return register
 	if (!compile_progn(ctx, x, (struct Destination) { .reg = reg, .is_return = true })) {
-		emit_close_upvalues(ctx, fn.vars_beg, 0);
+		if (fn.has_uvs) emit(ctx, (struct Instruction) { .op = CLO });
 		emit(ctx, (struct Instruction) { .op = RET, .a = reg });
 	}
 
@@ -528,7 +519,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		case LISP_KW_QUOTE: emit_load_obj(ctx, pop(lisp_ctx, &x), dst); break;
 		case LISP_KW_FN: compile_fn(ctx, x, dst); break;
 		case LISP_KW_LET: {
-			uint8_t prev_num_regs = ctx->num_regs, prev_num_vars = ctx->num_vars;
+			uint8_t prev_num_vars = ctx->num_vars;
 			for (LispObject defs = pop(lisp_ctx, &x); !NILP(lisp_ctx, defs);) {
 				LispObject var = pop(lisp_ctx, &defs), init = pop(lisp_ctx, &defs);
 				Register reg = ctx->num_regs;
@@ -537,11 +528,9 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				compile_form(ctx, init, (struct Destination) { .reg = reg });
 				++ctx->num_regs;
 			}
-			if (compile_progn(ctx, x, dst)) return COMP_NORETURN;
-			emit_close_upvalues(ctx, prev_num_vars, prev_num_regs);
-			ctx->num_regs = prev_num_regs;
+			enum CompileResult ret = compile_progn(ctx, x, dst);
 			ctx->num_vars = prev_num_vars;
-			break;
+			return ret;
 		}
 		case LISP_KW_SET: {
 			LispObject var = pop(lisp_ctx, &x), value = pop(lisp_ctx, &x);
@@ -601,7 +590,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 
 			if (dst.is_return) {
 				// Close upvalues before tail-call, since there is no opportunity later
-				emit_close_upvalues(ctx, ctx->fn->vars_beg, 0);
+				if (ctx->fn->has_uvs) emit(ctx, (struct Instruction) { .op = CLO });
 				emit(ctx, (struct Instruction) { .op = TAILCALL, .a = reg, .c = num_args });
 				return COMP_NORETURN;
 			} else {
@@ -626,9 +615,11 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 		.fn = &fn, // Dummy top-level function context
 		.consts = tbl_new(),
 	};
-	fn.vars_beg = 0;
-	if (!compile_form(&ctx, form, (struct Destination) { .reg = 2, .is_return = true }))
+	fn.vars_beg = fn.has_uvs = 0;
+	if (!compile_form(&ctx, form, (struct Destination) { .reg = 2, .is_return = true })) {
+		if (fn.has_uvs) emit(&ctx, (struct Instruction) { .op = CLO });
 		emit(&ctx, (struct Instruction) { .op = RET, .a = 2 });
+	}
 
 	struct Chunk *chunk = gc_alloc((struct GcHeap *)lisp_ctx, alignof(struct Chunk),
 		sizeof *chunk + ctx.consts.len * sizeof(LispObject) + ctx.len * sizeof *ctx.insns);
