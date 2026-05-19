@@ -286,11 +286,13 @@ struct Chunk {
 struct Prototype {
 	uint8_t arity, num_upvalues;
 	unsigned offset; ///< Byte offset within chunk.
+	unsigned next_sibling;
 	struct Instruction body[];
 };
 
 struct Upvalue {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
+	bool is_mut;
 	union {
 		struct Upvalue *next; ///< Next unclosed in list sorted by stack locations.
 		LispObject value; ///< The closed over object.

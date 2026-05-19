@@ -9,10 +9,11 @@
 #include "fxhash.h"
 
 #define UV_INSTACK 0x80 ///< The upvalue captures a local instead of an upvalue.
+#define UV_MUTABLE 0x40
 
 static_assert(sizeof(LispObject) % sizeof(struct Instruction) == 0);
 
-static struct Upvalue *find_uv(struct LispCtx *ctx, LispObject *slot) {
+static struct Upvalue *find_uv(struct LispCtx *ctx, LispObject *slot, bool is_mut) {
 	struct Upvalue **p = &ctx->upvalues;
 	while (*p && (*p)->location > slot) p = &(*p)->next;
 	if (*p && (*p)->location == slot) return *p;
@@ -20,7 +21,7 @@ static struct Upvalue *find_uv(struct LispCtx *ctx, LispObject *slot) {
 	struct GcHeap *heap = (struct GcHeap *)ctx;
 	struct Upvalue *new = gc_alloc(heap, alignof(struct Upvalue), sizeof *new);
 	*new = (struct Upvalue) { { new->hdr.hdr, LISP_UPVALUE },
-		.next = *p, .location = slot };
+		.is_mut = is_mut, .next = *p, .location = slot };
 	return *p = new;
 }
 
@@ -196,9 +197,9 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		*closure = (struct Closure) { { closure->hdr.hdr, LISP_CLOSURE }, proto };
 		// Read upvalues
 		for (unsigned i = 0; i < proto->num_upvalues; ++i) {
-			uint8_t uv = upvalues[i], idx = uv % UV_INSTACK;
+			uint8_t uv = upvalues[i], idx = uv % UV_MUTABLE;
 			closure->upvalues[i] = uv & UV_INSTACK
-				? find_uv(ctx, bp + idx)
+				? find_uv(ctx, bp + idx, uv & UV_MUTABLE)
 				: ((struct Closure *) UNTAG_OBJ(*bp))->upvalues[idx];
 		}
 		bp[insn.a] = TAG_OBJ(closure);
@@ -208,7 +209,8 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		while (ctx->upvalues && ctx->upvalues->location >= bp) {
 			struct Upvalue *x = ctx->upvalues;
 			ctx->upvalues = x->next;
-			*x = (struct Upvalue) { x->hdr, .value = *x->location, &x->value };
+			x->value = *x->location;
+			x->location = &x->value;
 		}
 		NEXT;
 	}
@@ -282,7 +284,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	return run(ctx, proto->body);
 }
 
-#define MAX_LOCAL_VARS 192
+#define MAX_LOCAL_VARS 128
 #define MAX_UPVALUES 64
 
 #ifndef LISP_GENERATED_FILE
@@ -314,11 +316,13 @@ typedef uint8_t Register;
 struct Local {
 	Lobj symbol;
 	Register slot; ///< The register.
+	bool is_mutable;
 };
 
 struct FnState {
 	uint8_t prev_num_regs, vars_beg, num_upvalues;
 	bool has_uvs;
+	unsigned children;
 	struct FnState *prev;
 	uint8_t upvalues[MAX_UPVALUES];
 };
@@ -343,10 +347,10 @@ enum CompileError {
 	COMP_TOO_MANY_CONSTS,
 };
 
-static uint8_t resolve_upvalue(struct FnState *fn, uint8_t i, struct Local *var) {
+static uint8_t resolve_upvalue(struct FnState *fn, uint8_t i) {
 	uint8_t upvalue = i >= fn->prev->vars_beg
-		? fn->prev->has_uvs = true, var->slot | UV_INSTACK
-		: resolve_upvalue(fn->prev, i, var);
+		? fn->prev->has_uvs = true, i | UV_INSTACK
+		: resolve_upvalue(fn->prev, i);
 	// Check if this prototype already has the upvalue
 #pragma GCC novector
 	for (unsigned i = 0; i < fn->num_upvalues; ++i)
@@ -359,15 +363,30 @@ static uint8_t resolve_upvalue(struct FnState *fn, uint8_t i, struct Local *var)
 static struct VarRef {
 	uint8_t slot;
 	enum VarRefType : unsigned char { VAR_LOCAL, VAR_UPVALUE, VAR_GLOBAL } type;
+	struct Local *var;
 } lookup(struct ByteCompCtx *ctx, LispObject sym) {
 	for (unsigned i = ctx->num_vars; i--;) {
 		struct Local *var = ctx->vars + i;
 		if (var->symbol.p == GC_COMPRESS(sym).p)
 			return i < ctx->fn->vars_beg
-				? (struct VarRef) { resolve_upvalue(ctx->fn, i, var), VAR_UPVALUE }
-				: (struct VarRef) { var->slot, VAR_LOCAL };
+				? (struct VarRef) { resolve_upvalue(ctx->fn, i), VAR_UPVALUE, var }
+				: (struct VarRef) { var->slot, VAR_LOCAL, var };
 	}
 	return (struct VarRef) { .type = VAR_GLOBAL };
+}
+
+static void fixup_uvs(struct ByteCompCtx *ctx) {
+	for (unsigned p = ctx->fn->children; p;) {
+		struct Prototype *proto = (struct Prototype *)(ctx->insns + p);
+		struct Instruction *insns = (struct Instruction *)proto;
+		uint8_t *upvalues = (uint8_t *)(insns + insns[-1].b) - proto->num_upvalues;
+		for (unsigned i = 0; i < proto->num_upvalues; ++i) {
+			struct Local var = ctx->vars[upvalues[i] % UV_INSTACK];
+			if (upvalues[i] & UV_INSTACK)
+				upvalues[i] = var.slot | UV_INSTACK | (var.is_mutable ? UV_MUTABLE : 0);
+		}
+		p = proto->next_sibling;
+	}
 }
 
 [[gnu::cold]] static void chunk_grow(struct ByteCompCtx *ctx) {
@@ -469,13 +488,16 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 		if (fn.has_uvs) emit(ctx, (struct Instruction) { .op = CLO });
 		emit(ctx, (struct Instruction) { .op = RET, .a = reg });
 	}
+	fixup_uvs(ctx);
 
 	struct Prototype *prototype = (struct Prototype *)(ctx->insns + proto_beg);
 	*prototype = (struct Prototype) {
 		.arity = num_args, .num_upvalues = fn.num_upvalues,
 		.offset = ctx->prototypes,
+		.next_sibling = fn.prev->children,
 	};
 	ctx->prototypes = proto_beg;
+	fn.prev->children = proto_beg;
 
 	size_t uv_len = DIV_ROUND_UP(fn.num_upvalues * sizeof *fn.upvalues, sizeof *ctx->insns);
 	if (ctx->capacity < ctx->len + uv_len) chunk_grow(ctx);
@@ -539,10 +561,12 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			compile_form(ctx, value, (struct Destination) { .reg = dst.reg });
 			switch (v.type) {
 			case VAR_LOCAL:
+				v.var->is_mutable = true;
 				if (v.slot == dst.reg) break;
 				emit(ctx, (struct Instruction) { .op = MOV, .a = v.slot, .c = dst.reg });
 				break;
 			case VAR_UPVALUE:
+				v.var->is_mutable = true;
 				emit(ctx, (struct Instruction) { .op = SETUPVALUE, .a = dst.reg, .c = v.slot });
 				break;
 			case VAR_GLOBAL:
@@ -615,11 +639,12 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 		.fn = &fn, // Dummy top-level function context
 		.consts = tbl_new(),
 	};
-	fn.vars_beg = fn.has_uvs = 0;
+	fn.children = fn.vars_beg = fn.has_uvs = 0;
 	if (!compile_form(&ctx, form, (struct Destination) { .reg = 2, .is_return = true })) {
 		if (fn.has_uvs) emit(&ctx, (struct Instruction) { .op = CLO });
 		emit(&ctx, (struct Instruction) { .op = RET, .a = 2 });
 	}
+	fixup_uvs(&ctx);
 
 	struct Chunk *chunk = gc_alloc((struct GcHeap *)lisp_ctx, alignof(struct Chunk),
 		sizeof *chunk + ctx.consts.len * sizeof(LispObject) + ctx.len * sizeof *ctx.insns);
