@@ -493,6 +493,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 	struct Prototype *prototype = (struct Prototype *)(ctx->insns + proto_beg);
 	*prototype = (struct Prototype) {
 		.arity = num_args, .num_upvalues = fn.num_upvalues,
+		.is_toplevel = !fn.prev->vars_beg,
 		.offset = ctx->prototypes,
 		.next_sibling = fn.prev->children,
 	};
