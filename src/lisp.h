@@ -279,6 +279,13 @@ struct Chunk {
 	alignas(LispObject) alignas(struct Instruction) char data[];
 };
 
+static inline LispObject *chunk_consts(struct Chunk *chunk) {
+	return (LispObject *)chunk->data;
+}
+static inline struct Instruction *chunk_insns(struct Chunk *chunk) {
+	return (struct Instruction *)(chunk_consts(chunk) + chunk->num_consts);
+}
+
 #define PROTO_VARIADIC 0x80
 
 /** Lisp closure prototype. */
@@ -292,6 +299,10 @@ struct Prototype {
 	};
 	struct Instruction body[];
 };
+
+static inline struct Chunk *prototype_chunk(struct Prototype *p) {
+	return (struct Chunk *)((char *)p - p->offset);
+}
 
 struct Upvalue {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
@@ -309,13 +320,6 @@ struct Closure {
 	struct Upvalue *upvalues[];
 	// TODO Add plist as an alternative to https://zenodo.org/records/6228797
 };
-
-static inline LispObject *chunk_constants(struct Chunk *chunk) {
-	return (LispObject *) chunk->data;
-}
-static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
-	return (struct Instruction *) (chunk_constants(chunk) + chunk->num_consts);
-}
 
 struct LispEntry {
 	LispObject obj;
