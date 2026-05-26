@@ -222,8 +222,7 @@ static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
 		}
 
 		if (!has_mut) {
-			struct Chunk *chunk = (struct Chunk *)((char *)proto - proto->offset);
-			gc_write_barrier((struct GcHeap *)ctx, &chunk->hdr.hdr);
+			gc_write_barrier((struct GcHeap *)ctx, &prototype_chunk(proto)->hdr.hdr);
 			proto->cache = closure;
 		}
 
@@ -679,10 +678,10 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 		.num_consts = ctx.consts.len, .count = ctx.len };
 	struct ConstantEntry *constant;
 	for (size_t i = 0; constant_tbl_iter_next(&ctx.consts, &i, &constant);)
-		chunk_constants(chunk)[chunk->num_consts - constant->slot] = constant->obj;
-	memcpy(chunk_instructions(chunk), ctx.insns, ctx.len * sizeof *ctx.insns);
+		chunk_consts(chunk)[chunk->num_consts - constant->slot] = constant->obj;
+	memcpy(chunk_insns(chunk), ctx.insns, ctx.len * sizeof *ctx.insns);
 	for (size_t p = ctx.prototypes; p;) { // Patch prototype chunk offsets
-		struct Prototype *proto = (struct Prototype *)(chunk_instructions(chunk) + p);
+		struct Prototype *proto = (struct Prototype *)(chunk_insns(chunk) + p);
 		p = proto->offset;
 		proto->offset = (char *)proto - (char *)chunk;
 	}
@@ -694,5 +693,5 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
-	return run(ctx, chunk_instructions(chunk));
+	return run(ctx, chunk_insns(chunk));
 }

@@ -178,9 +178,9 @@ void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 					**end = x + f->prototype->num_upvalues; x < end; ++x)
 			GC_TRACE(heap, mark_color, *x);
 
-		char *chunk = (char *) f->prototype - f->prototype->offset;
+		struct Chunk *chunk = prototype_chunk(f->prototype);
 		if (GC_TRACE(heap, mark_color, chunk))
-			f->prototype = (struct Prototype *) (chunk + f->prototype->offset);
+			f->prototype = (struct Prototype *)((char *)chunk + f->prototype->offset);
 		break;
 	}
 	case LISP_UPVALUE:
@@ -191,7 +191,7 @@ void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 	case LISP_BYTECODE_CHUNK:
 		struct Chunk *chunk = p;
 		gc_mark(chunk_size(p), p);
-		for (LispObject *x = chunk_constants(chunk), *end = x + chunk->num_consts;
+		for (LispObject *x = chunk_consts(chunk), *end = x + chunk->num_consts;
 				x < end; ++x) lisp_trace(heap, mark_color, x);
 		break;
 	}
