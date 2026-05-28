@@ -1209,6 +1209,13 @@ struct SideExitResult trace_exec(struct LispCtx *ctx, struct LispTrace *trace) {
 	return result;
 }
 
+void trace_trace(struct GcHeap *heap, bool mark_color, struct LispTrace *trace) {
+	if (!trace) return;
+	union Node *insns = (union Node *)trace->data;
+	for (unsigned i = 0; i < trace->num_consts; ++i)
+		if (!IS_SMI(insns[i].v)) gc_pin(heap, mark_color, UNTAG_OBJ(insns[i].v));
+}
+
 void trace_free(struct LispTrace *trace) {
 	if (!trace) return;
 	union Node *insns = (union Node *) trace->data;

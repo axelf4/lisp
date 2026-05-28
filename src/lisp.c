@@ -233,6 +233,11 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 	FOR_SYMBOL_CONSTS(X)
 #undef X
 
+#if ENABLE_JIT
+	for (unsigned i = 0; i < LENGTH(*ctx->traces); ++i)
+		trace_trace(heap, mark_color, (*ctx->traces)[i]);
+#endif
+
 	struct LispSymbol **sym;
 	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
 		GC_TRACE(heap, mark_color, *sym);
