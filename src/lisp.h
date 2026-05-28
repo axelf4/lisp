@@ -331,6 +331,8 @@ struct SideExitResult {
 	};
 } trace_exec(struct LispCtx *ctx, struct LispTrace *trace);
 
+void trace_trace(struct GcHeap *heap, bool mark_color, struct LispTrace *trace);
+
 void trace_free(struct LispTrace *trace);
 
 #endif

@@ -112,7 +112,6 @@ struct Snapshot {
 		base_offset,
 		hotcount;
 	struct GcRef pc; ///< Instruction pointer after this point.
-	struct LispTrace *trace; ///< Side trace.
 };
 #define FOR_SNAPSHOT_ENTRIES(snapshot, entries, entry) \
 	for (struct SnapshotEntry *entry = (entries) + (snapshot)->offset, \
@@ -131,6 +130,7 @@ struct LispTrace {
 	uint8_t num_consts, num_snapshots, num_spill_slots;
 	uint32_t mcode_size,
 		mcode_tail; ///< Offset from #f to end of machine code block.
+	struct LispTrace *next; ///< Side trace list.
 	alignas(union Node) char data[];
 };
 
@@ -749,8 +749,6 @@ static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
 }
 
 static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTrace *trace) {
-	union Node *insns = (union Node *) parent->data;
-	struct Snapshot *snapshot = (struct Snapshot *) (insns + parent->len) + exit_num;
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 	uint8_t *beg = (uint8_t *) parent->f, *end = beg + parent->mcode_size,
@@ -758,7 +756,7 @@ static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTr
 		*trampoline = EXIT_TRAMPOLINE(beg + parent->mcode_tail, exit_num);
 #pragma GCC diagnostic pop
 
-	snapshot->trace = trace;
+	parent->next = trace;
 	if (mprotect(page, end - page, PROT_READ | PROT_WRITE))
 		err: die("mprotect failed");
 	for (uint8_t *p = beg; p < end; p += asm_insn_len(p)) {
@@ -938,6 +936,7 @@ do_retry:
 		.num_spill_slots = ctx.num_spill_slots,
 		.mcode_size = ctx.end - ctx.as.p,
 		.mcode_tail = ctx.as.buf - ASM_HIWATER + MCODE_CAPACITY - ctx.as.p,
+		.next = state->parent ? state->parent->next : NULL,
 	};
 	char *p = result->data;
 	size_t size = len * sizeof *state->trace;
@@ -1127,7 +1126,6 @@ static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintpt
 	struct SnapshotEntry *entries
 		= (struct SnapshotEntry *) (snapshots + trace->num_snapshots);
 	lttng_ust_tracepoint(lisp, side_exit, trace, exit_num);
-	assert(!snapshot->trace);
 	FOR_SNAPSHOT_ENTRIES(snapshot, entries, e) {
 		union Node insn = insns[trace->num_consts + e->ref - IR_BIAS];
 		ctx->bp[e->slot] = IS_VAR(e->ref)
@@ -1189,11 +1187,16 @@ struct SideExitResult trace_exec(struct LispCtx *ctx, struct LispTrace *trace) {
 	return result;
 }
 
+void trace_trace(struct GcHeap *heap, bool mark_color, struct LispTrace *trace) {
+	if (!trace) return;
+	union Node *insns = (union Node *)trace->data;
+	for (unsigned i = 0; i < trace->num_consts; ++i)
+		if (!IS_SMI(insns[i].v)) gc_pin(heap, mark_color, UNTAG_OBJ(insns[i].v));
+	trace_trace(heap, mark_color, trace->next);
+}
+
 void trace_free(struct LispTrace *trace) {
 	if (!trace) return;
-	union Node *insns = (union Node *) trace->data;
-	struct Snapshot *snapshots = (struct Snapshot *) (insns + trace->len);
-	for (struct Snapshot *s = snapshots, *end = s + trace->num_snapshots; s < end; ++s)
-		trace_free(s->trace);
+	trace_free(trace->next);
 	free(trace);
 }
