@@ -8,6 +8,7 @@
 #include "util.h"
 
 #define STACK_LEN 0x1000
+#define MAX_FRAME 0x100
 
 #define COMMA ,
 #define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
@@ -128,8 +129,8 @@ bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *uconte
 void lisp_interrupt(struct LispCtx *ctx) {
 	// TODO Handle SIGINT by PROT_NONE mprotect:ing the stack and
 	// catching the resulting SIGSEGV.
-	uintptr_t *stack = (uintptr_t *) ctx->guard_end - (STACK_LEN + 0xff);
-	mprotect(stack, (uintptr_t *) ctx->guard_end - stack, PROT_NONE);
+	uintptr_t *stack = (uintptr_t *)ctx->guard_end - (STACK_LEN + MAX_FRAME);
+	mprotect(stack, (uintptr_t *)ctx->guard_end - stack, PROT_NONE);
 }
 
 static size_t string_size(struct LispString *x) { return sizeof *x + x->len; }
@@ -157,10 +158,10 @@ void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 	case LISP_INTEGER: default: unreachable();
 	case LISP_NIL: break;
 	case LISP_PAIR:
-		struct LispPair *pair = p;
-		gc_mark(sizeof *pair, p);
-		lisp_trace_compressed(heap, mark_color, &pair->cdr);
-		lisp_trace_compressed(heap, mark_color, &pair->car);
+		struct LispPair *cell = p;
+		gc_mark(sizeof *cell, p);
+		lisp_trace_compressed(heap, mark_color, &cell->cdr);
+		lisp_trace_compressed(heap, mark_color, &cell->car);
 		break;
 	case LISP_SYMBOL:
 		struct LispSymbol *sym = p;
@@ -226,7 +227,7 @@ size_t gc_object_size(void *p, size_t *alignment) {
 }
 
 void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
-	struct LispCtx *ctx = (struct LispCtx *) heap;
+	struct LispCtx *ctx = (struct LispCtx *)heap;
 
 	gc_pin(heap, mark_color, &ctx->nil);
 #define X(var, _) gc_pin(heap, mark_color, UNTAG_OBJ(LISP_CONST(ctx, var)));
@@ -238,22 +239,27 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 		trace_trace(heap, mark_color, (*ctx->traces)[i]);
 #endif
 
+	// TODO What about 1st chunk (without any closure)?
+
+	// Trace stack
+	uintptr_t *end = (uintptr_t *)ctx->guard_end - MAX_FRAME,
+		*stack = end - STACK_LEN, *top = MIN(ctx->bp + MAX_FRAME, end);
+	// Non-LispObjects, i.a. return addresses, masquerade as SMIs via
+	// >1-byte alignment.
+	for (uintptr_t *x = stack; x < top; ++x) {
+		if (lisp_type(*x) == LISP_CLOSURE) // Pin bytecode on return stack
+			gc_pin(heap, mark_color,
+				prototype_chunk(((struct Closure *)UNTAG_OBJ(*x))->prototype));
+		lisp_trace(heap, mark_color, x);
+	}
+	memset(top, 0, end - top); // Zero unused stack to not resurrect GCd object
+
 	struct LispSymbol **sym;
 	for (size_t i = 0; symbol_tbl_iter_next(&ctx->symbol_tbl, &i, &sym);)
 		GC_TRACE(heap, mark_color, *sym);
 
 	for (struct Upvalue **uv = &ctx->upvalues; *uv; uv = &(*uv)->next)
 		GC_TRACE(heap, mark_color, *uv);
-
-	// Trace stack
-	// TODO Need to pin bytecode chunks on the call stack
-	uintptr_t *end = (uintptr_t *) ctx->guard_end - 0xff,
-		*stack = end - STACK_LEN, *top = MIN(ctx->bp + 0x100, end);
-	// Non-LispObjects, i.a. return addresses, masquerade as SMIs via
-	// >1-byte alignment.
-	for (uintptr_t *x = stack; x < top; ++x) lisp_trace(heap, mark_color, x);
-	// Zero unused stack to not resurrect GCd object
-	memset(top, 0, end - top);
 }
 
 DEFUN("eval", eval, (struct LispCtx *ctx, LispObject form)) { return lisp_eval(ctx, form); }
@@ -303,7 +309,7 @@ struct LispCtx *lisp_new() {
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
 	// exception handlers not to immediately trigger another overflow.
-	size_t size = STACK_LEN * sizeof *ctx->bp, guard_size = 0xff * sizeof *ctx->bp;
+	size_t size = STACK_LEN * sizeof *ctx->bp, guard_size = MAX_FRAME * sizeof *ctx->bp;
 	if ((ctx->bp = mmap(NULL, size + guard_size, PROT_NONE,
 				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) goto err_free_heap;
 	if (mprotect(ctx->bp, size, PROT_READ | PROT_WRITE)) goto err_free_stack;
