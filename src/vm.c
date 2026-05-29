@@ -118,10 +118,11 @@ enum { main_dispatch_table, RECORD = 0x1f, recording_dispatch_table = RECORD };
 #define VM_END }
 #endif
 
-[[gnu::optimize ("-fnon-call-exceptions"), gnu::hot]]
-static LispObject run(struct LispCtx *ctx, struct Instruction *pc) {
+[[gnu::optimize ("-fnon-call-exceptions")]]
+static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instruction *pc) {
 	uintptr_t *bp = ctx->bp;
-	bp[1] = (uintptr_t) NULL; // TODO Reentrancy
+	bp[0] = (uintptr_t)chunk;
+	bp[1] = (uintptr_t)NULL; // TODO Reentrancy
 #if ENABLE_JIT
 	assert(!ctx->current_trace && "TODO");
 #define JIT_THRESHOLD 4
@@ -304,7 +305,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 
 	if (n < m || !(is_variadic || NILP(ctx, xs))) die("Wrong number of arguments");
 	ctx->bp[2 + m] = xs;
-	return run(ctx, proto->body);
+	return run(ctx, prototype_chunk(proto), proto->body);
 }
 
 #define MAX_LOCAL_VARS 128
@@ -676,5 +677,5 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 
 LispObject lisp_eval(struct LispCtx *ctx, LispObject form) {
 	struct Chunk *chunk = compile(ctx, form);
-	return run(ctx, chunk_insns(chunk));
+	return run(ctx, chunk, chunk_insns(chunk));
 }
