@@ -815,10 +815,7 @@ do_retry:
 		x->spill_slot = 0;
 		switch (x->op) {
 		case IR_PLOAD: x->reg = x->a | REG_NONE; x->spill_slot = x->b; break;
-		case IR_CALL:
-			ctx.clobbers |= REG_ALL & ~CALLEE_SAVED_REGS;
-			x->reg = rax | REG_NONE;
-			break;
+		case IR_CALL: x->reg = rax | REG_NONE; break;
 		case IR_PHI:
 			union Node *in = &IR_GET(state, x->a);
 			// Pick φ registers from opposite end to reduce collisions

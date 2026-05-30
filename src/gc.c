@@ -61,7 +61,7 @@ struct GcHeap {
 
 	struct BumpPointer ptr, overflow_ptr; ///< Bump pointer for medium objects.
 	struct GcBlock **free, **recycled;
-	size_t free_len, recycled_len;
+	unsigned free_len, recycled_len;
 
 	bool mark_color, inhibit_gc, is_major_gc, is_defrag;
 	unsigned *object_map; ///< Bitset of object start positions.
@@ -141,7 +141,7 @@ static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
 }
 
 [[gnu::cold]] static void modset_grow(struct ModSet *set) {
-	size_t new_capacity = set->capacity ? 2 * set->capacity : 8;
+	unsigned new_capacity = set->capacity ? 2 * set->capacity : 8;
 	struct BumpPointer *xs;
 	if (!(xs = realloc(set->xs, new_capacity * sizeof *xs))) die("malloc failed");
 	set->xs = xs;

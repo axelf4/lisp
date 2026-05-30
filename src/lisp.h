@@ -55,7 +55,7 @@
 
 #define NIL(ctx) TAG_OBJ(&(ctx)->nil)
 #if USE_COMPRESSED_PTRS
-#define NILP(ctx, x) LISP_EQ(x, TAG_OBJ(offsetof(struct LispCtx, nil)))
+#define NILP(ctx, x) ((void)ctx, LISP_EQ(x, TAG_OBJ(offsetof(struct LispCtx, nil))))
 #else
 #define NILP(ctx, x) LISP_EQ(x, NIL(ctx))
 #endif

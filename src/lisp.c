@@ -32,11 +32,9 @@
 static uint64_t symbol_hash(struct LispSymbol *x) {
 	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
 }
-
 static bool symbol_equal(struct LispSymbol *a, struct LispSymbol *b) {
 	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
 }
-
 #define NAME symbol
 #define KEY struct LispSymbol *
 #include "tbl.h"
