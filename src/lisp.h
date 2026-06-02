@@ -154,7 +154,6 @@ struct LispCtx {
 #include LISP_GENERATED_FILE
 #else
 #define LISP_CONST(ctx, name) (ctx)->name
-#define LISP_CONST_COMPRESSED(ctx, name) GC_COMPRESS(LISP_CONST(ctx, name))
 #endif
 
 struct LispCFunction {

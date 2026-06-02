@@ -79,13 +79,12 @@ int main(int argc, char *argv[]) {
 #define Y(...) "{%" PRIu32 "},"
 		"static constexpr struct LispConstants lisp_consts = {" FOR_SYMBOL_CONSTS(Y) "};\n"
 
-		"#define LISP_CONST_COMPRESSED(ctx, name) "
+		"#define LISP_CONST(ctx, name) "
 #if USE_COMPRESSED_PTRS
-		"lisp_consts.name"
+		"GC_DECOMPRESS(ctx, lisp_consts.name)\n"
 #else
-		"(struct GcRef) { lisp_consts.name.p + (uintptr_t) (ctx) }"
+		"((uintptr_t)ctx + lisp_consts.name.p)\n"
 #endif
-		"\n#define LISP_CONST(ctx, name) GC_DECOMPRESS(ctx, LISP_CONST_COMPRESSED(ctx, name))\n"
 
 #define Z(var, _) , (uint32_t) (LISP_CONST(ctx, var) - (uintptr_t) ctx)
 		FOR_SYMBOL_CONSTS(Z));
