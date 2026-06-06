@@ -24,8 +24,9 @@ set(LG_PAGE "Detect" CACHE STRING "Explicit log2 page size; \"Detect\" or \"Dyna
 option(WITH_JIT "Enable just-in-time compilation." ON)
 option(PRESERVE_FRAME_POINTER "Disable RBP usage as a general-purpose register."
   ${preserve_frame_pointer})
-option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore.")
 option(WITH_TRACING "Enable tracing instrumentation." ${LTTngUST_FOUND})
+option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore.")
+option(USE_SJLJ "Use setjmp/longjmp exception handling." ON)
 option(WITH_FUZZ "Enable building fuzzers.")
 
 check_ipo_supported(RESULT ipo_supported)
@@ -79,9 +80,14 @@ target_compile_definitions(lisplib PRIVATE
   HAVE_COMPUTED_GOTO=$<BOOL:${HAVE_COMPUTED_GOTO}>
   PRESERVE_FRAME_POINTER=$<BOOL:${PRESERVE_FRAME_POINTER}>
   ENABLE_TRACING=$<BOOL:${WITH_TRACING}>
-  LIBRESTORE_SO="${CMAKE_INSTALL_FULL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}restore${CMAKE_SHARED_LIBRARY_SUFFIX}")
+  LIBRESTORE_SO="${CMAKE_INSTALL_FULL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}restore${CMAKE_SHARED_LIBRARY_SUFFIX}"
+  USE_SJLJ=$<BOOL:${USE_SJLJ}>)
 target_include_directories(lisplib PRIVATE src)
 target_link_libraries(lisplib PRIVATE $<$<BOOL:${WITH_TRACING}>:LTTng::UST>)
+
+if(USE_SJLJ AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(lisplib PUBLIC -fno-exceptions -fno-asynchronous-unwind-tables)
+endif()
 
 add_executable(lisp src/main.c)
 target_link_libraries(lisp lisplib)
