@@ -211,9 +211,8 @@ void lisp_free(struct LispCtx *);
 
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
-static inline bool listp(LispObject x) {
-	enum LispType ty = lisp_type(x);
-	return ty == LISP_NIL || ty == LISP_PAIR;
+static inline bool listp(struct LispCtx *ctx, LispObject x) {
+	return NILP(ctx, x) || lisp_type(x) == LISP_PAIR;
 }
 
 static inline LispObject car(struct LispCtx *ctx, LispObject x) {

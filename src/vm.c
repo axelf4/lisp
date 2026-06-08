@@ -455,7 +455,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 static enum CompileResult compile_progn(struct ByteCompCtx *ctx, LispObject x, struct Destination dst) {
 	enum CompileResult ret;
 	do {
-		if (!listp(x)) throw(COMP_EXPECTED_LIST);
+		if (!listp(ctx->lisp_ctx, x)) throw(COMP_EXPECTED_LIST);
 		LispObject form = pop(ctx->lisp_ctx, &x);
 		struct Destination d = dst;
 		if (!NILP(ctx->lisp_ctx, x)) { d.discarded = true; d.is_return = false; }
@@ -479,7 +479,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 	ctx->len += sizeof(struct Prototype) / sizeof *ctx->insns;
 
 	uint8_t num_args = 0;
-	for (LispObject args = pop(ctx->lisp_ctx, &x); !NILP(lisp_ctx, args);) {
+	for (LispObject args = pop(ctx->lisp_ctx, &x); !NILP(ctx->lisp_ctx, args);) {
 		LispObject sym;
 		if (consp(args)) { sym = pop(ctx->lisp_ctx, &args); ++num_args; }
 		else { sym = args; args = NIL(ctx->lisp_ctx); num_args |= PROTO_VARIADIC; }
@@ -545,7 +545,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 	case LISP_CFUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
 	case LISP_PAIR:
 		LispObject head = pop(lisp_ctx, &x);
-		if (!listp(x)) throw(COMP_INVALID_FORM);
+		if (!listp(lisp_ctx, x)) throw(COMP_INVALID_FORM);
 		switch (lisp_symbol_to_keyword(lisp_ctx, head)) {
 		case LISP_KW_QUOTE: emit_load_obj(ctx, pop(lisp_ctx, &x), dst); break;
 		case LISP_KW_FN: compile_fn(ctx, x, dst); break;
