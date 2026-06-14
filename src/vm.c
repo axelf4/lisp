@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <string.h>
 #include "lisp.h"
-#include "fxhash.h"
 
 #define UV_INSTACK 0x80 ///< The upvalue captures a local instead of an upvalue.
 #define UV_MUTABLE 0x40
@@ -295,22 +294,6 @@ static enum LispKeyword lisp_symbol_to_keyword(struct LispCtx *ctx, LispObject s
 }
 #endif
 
-struct ConstantEntry {
-	LispObject obj;
-	uint16_t slot;
-};
-
-static uint64_t constant_hash(struct ConstantEntry x) {
-	return fxhash_finish(fxhash(0, x.obj));
-}
-static bool constant_equal(struct ConstantEntry a, struct ConstantEntry b) {
-	return a.obj == b.obj;
-}
-
-#define NAME constant
-#define KEY struct ConstantEntry
-#include "tbl.h"
-
 typedef uint8_t Register;
 
 struct Local {
@@ -403,8 +386,8 @@ static void emit(struct ByteCompCtx *ctx, struct Instruction insn) {
 }
 
 static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
-	struct ConstantEntry *entry, key = { .obj = x };
-	if (!(constant_tbl_entry(&ctx->consts, key, &entry))) {
+	struct LispEntry *entry, key = { .obj = x };
+	if (!(lisp_tbl_entry(&ctx->consts, key, &entry))) {
 		if (!entry) die("malloc failed");
 		entry->slot = ctx->consts.len;
 	}
@@ -651,8 +634,8 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 		sizeof *chunk + ctx.consts.len * sizeof(LispObject) + ctx.len * sizeof *ctx.insns);
 	*chunk = (struct Chunk) { { chunk->hdr.hdr, LISP_BYTECODE_CHUNK },
 		.num_consts = ctx.consts.len, .count = ctx.len };
-	struct ConstantEntry *constant;
-	for (size_t i = 0; constant_tbl_iter_next(&ctx.consts, &i, &constant);)
+	struct LispEntry *constant;
+	for (size_t i = 0; lisp_tbl_iter_next(&ctx.consts, &i, &constant);)
 		chunk_constants(chunk)[chunk->num_consts - constant->slot] = constant->obj;
 	memcpy(chunk_instructions(chunk), ctx.insns, ctx.len * sizeof *ctx.insns);
 	for (size_t p = ctx.prototypes; p;) { // Patch prototype chunk offsets
@@ -661,7 +644,7 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 		proto->offset = (char *)proto - (char *)chunk;
 	}
 
-	constant_tbl_free(&ctx.consts);
+	lisp_tbl_free(&ctx.consts);
 	free(ctx.insns);
 	return chunk;
 }

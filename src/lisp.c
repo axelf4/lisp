@@ -98,19 +98,88 @@ void lisp_print(struct LispCtx *ctx, LispObject x, FILE *stream) {
 	}
 }
 
-bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b) {
+static uint64_t lisp_hash(struct LispEntry x) { return fxhash_finish(fxhash(0, x.obj)); }
+static bool lisp_equal(struct LispEntry a, struct LispEntry b) { return a.obj == b.obj; }
+#define NAME lisp
+#define KEY struct LispEntry
+#include "tbl.h"
+
+/** Locates the representative of the equivalence class of @a b. */
+static struct LispEntry *find(struct Table *table, struct LispEntry *x) {
+	for (struct LispEntry *n; !IS_SMI(x->next); x = n) {
+		n = lisp_tbl_find(table, (struct LispEntry) { .obj = x->next });
+		if (!IS_SMI(n->next)) x->next = n->next; // Path compression by splitting
+	}
+	return x;
+}
+
+static bool union_find(struct Table *table, LispObject x, LispObject y) {
+	struct LispEntry *ax, *ay;
+	bool has_x = lisp_tbl_entry(table, (struct LispEntry) { .obj = x, .next = TAG_SMI(1) }, &ax),
+		has_y = lisp_tbl_entry(table, (struct LispEntry) { .obj = y, .next = x }, &ay);
+	if (has_x && has_y) {
+		struct LispEntry *rx = find(table, ax), *ry = find(table, ay);
+		if (rx == ry) return true;
+		if (rx->next < ry->next) { struct LispEntry *tmp = rx; rx = ry; ry = tmp; }
+		rx->next += ry->next;
+		ry->next = rx->obj;
+	} else if (has_x) ay->next = find(table, ax)->obj;
+	else if (has_y) ax->next = find(table, ay)->obj;
+	return false;
+}
+
+#define EQ_PARAMS struct LispCtx *ctx, LispObject a, LispObject b, int *k, struct Table *table
+static bool eq_precheck(EQ_PARAMS), eq(EQ_PARAMS);
+
+enum EqualityMode { EQ_PRECHECK, EQ_FAST, EQ_SLOW };
+[[gnu::always_inline]] static inline bool eq_check(EQ_PARAMS, enum EqualityMode mode) {
 	if (LISP_EQ(a, b)) return true;
 	enum LispType ty = lisp_type(a);
 	if (lisp_type(b) != ty) return false;
+	auto f = mode == EQ_PRECHECK ? eq_precheck : eq;
 	switch (ty) {
 	case LISP_INTEGER: case LISP_SYMBOL: case LISP_CFUNCTION: case LISP_CLOSURE:
 		return false;
 	case LISP_PAIR:
+		if (mode == EQ_SLOW && union_find(table, a, b)) {
+			*k = 0; // If one equivalence was found more are likely to follow
+			return true;
+		}
 		struct LispPair *x = UNTAG_OBJ(a), *y = UNTAG_OBJ(b);
-		return lisp_eq(ctx, GC_DECOMPRESS(ctx, x->car), GC_DECOMPRESS(ctx, y->car))
-			&& lisp_eq(ctx, GC_DECOMPRESS(ctx, x->cdr), GC_DECOMPRESS(ctx, y->cdr));
+		return (--*k || mode != EQ_PRECHECK)
+			&& f(ctx, GC_DECOMPRESS(ctx, x->car), GC_DECOMPRESS(ctx, y->car), k, table)
+			&& f(ctx, GC_DECOMPRESS(ctx, x->cdr), GC_DECOMPRESS(ctx, y->cdr), k, table);
 	default: unreachable();
 	}
+}
+static bool eq_precheck(EQ_PARAMS) {  return eq_check(ctx, a, b, k, table, EQ_PRECHECK); }
+static bool eq_fast(EQ_PARAMS) { return eq_check(ctx, a, b, k, table, EQ_FAST); }
+[[gnu::cold]] static bool eq_slow(EQ_PARAMS) { return eq_check(ctx, a, b, k, table, EQ_SLOW); }
+
+#define K0 256
+#define KB (-20)
+
+static bool eq(EQ_PARAMS) {
+	// Interleave tree-equality checking with union-find.
+	//
+	// See: ADAMS, Michael D.; DYBVIG, R. Kent. Efficient
+	//      nondestructive equality checking for trees and graphs. In:
+	//      Proceedings of the 13th ACM SIGPLAN international
+	//      conference on Functional programming. 2008. p. 179-188.
+	return LIKELY(*k > 0) ? eq_fast(ctx, a, b, k, table)
+		: *k <= KB ? *k = table->len % K0, eq_fast(ctx, a, b, k, table)
+		: eq_slow(ctx, a, b, k, table);
+}
+
+bool lisp_eq(struct LispCtx *ctx, LispObject a, LispObject b) {
+	int k = K0;
+	bool result = eq_precheck(ctx, a, b, &k, NULL);
+	if (k) return result;
+
+	struct Table table = tbl_new();
+	result = eq(ctx, a, b, &k, &table);
+	lisp_tbl_free(&table);
+	return result;
 }
 
 bool lisp_signal_handler(int sig, siginfo_t *info, [[maybe_unused]] void *ucontext, struct LispCtx *ctx) {

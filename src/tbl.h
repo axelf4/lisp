@@ -113,7 +113,7 @@ KEY *CAT(NAME, _tbl_find)(struct Table *table, KEY key) {
  * @param[out] entry Location to store the next entry.
  * @return False if iteration is done.
  */
-static bool CAT(NAME, _tbl_iter_next)(struct Table *table, size_t *i, KEY **entry) {
+bool CAT(NAME, _tbl_iter_next)(struct Table *table, size_t *i, KEY **entry) {
 	while (*i <= table->bucket_mask)
 		if (IS_FULL(table->ctrl[(*i)++])) {
 			*entry = (KEY *) table->ctrl - *i;

@@ -314,6 +314,18 @@ static inline struct Instruction *chunk_instructions(struct Chunk *chunk) {
 	return (struct Instruction *) (chunk_constants(chunk) + chunk->num_consts);
 }
 
+struct LispEntry {
+	LispObject obj;
+	union {
+		LispObject next; ///< Equivalence class size as SMI or next in chain.
+		uint16_t slot; ///< Constant table index.
+	};
+};
+
+void lisp_tbl_free(struct Table *table);
+bool lisp_tbl_iter_next(struct Table *table, size_t *i, struct LispEntry **entry);
+bool lisp_tbl_entry(struct Table *table, struct LispEntry key, struct LispEntry **entry);
+
 [[nodiscard, gnu::malloc]] struct JitState *jit_new();
 
 void jit_free(struct JitState *state);

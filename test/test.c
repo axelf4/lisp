@@ -149,6 +149,23 @@ static void assert_read_whole_equal(struct LispCtx *ctx, const char *s, LispObje
 	assert_lisp_equal(ctx, x, expected);
 }
 
+static void test_cyclic_eq(void **state) {
+	struct LispCtx *ctx = *state;
+	LispObject a = cons(ctx, NIL(ctx), NIL(ctx)),
+		b = cons(ctx, NIL(ctx), NIL(ctx));
+	struct LispPair *cell;
+
+	cell = UNTAG_OBJ(a);
+	cell->car = GC_COMPRESS(a);
+	cell->cdr = GC_COMPRESS(a);
+
+	cell = UNTAG_OBJ(b);
+	cell->car = GC_COMPRESS(b);
+	cell->cdr = GC_COMPRESS(b);
+
+	assert_true(lisp_eq(ctx, a, b));
+}
+
 static void test_intern_reuses_sym(void **state) {
 	struct LispCtx *ctx = *state;
 	assert_lisp_equal(ctx, intern(ctx, 1, "x"), intern(ctx, 1, "x"));
@@ -223,6 +240,7 @@ int main() {
 		cmocka_unit_test(test_phf_is_bijective),
 		cmocka_unit_test(test_asm),
 		cmocka_unit_test(test_insn_len_disasm),
+		cmocka_unit_test(test_cyclic_eq),
 		cmocka_unit_test(test_intern_reuses_sym),
 		cmocka_unit_test(test_intern_recognizes_nil),
 		cmocka_unit_test(test_reader),
