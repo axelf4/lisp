@@ -134,6 +134,7 @@ struct LispCtx {
 	struct LispObjectHeader nil;
 	struct Table symbol_tbl;
 	struct Upvalue *upvalues; ///< Sorted list of open upvalues.
+	struct Table consts; ///< Byte compilation constant table.
 
 #if ENABLE_JIT
 	unsigned char hotcounts[64];

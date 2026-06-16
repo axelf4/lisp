@@ -72,6 +72,13 @@ static inline struct Table tbl_new() {
 	return (struct Table) { .ctrl = (unsigned char *) &empty_ctrl };
 }
 
+static inline void tbl_clear(struct Table *table) {
+	if (!table->bucket_mask) return;
+	memset(table->ctrl, EMPTY, table->bucket_mask + 1 + sizeof(Group));
+	table->growth_left += table->len;
+	table->len = 0;
+}
+
 static inline size_t find_insert_slot(struct Table *table, uint64_t h) {
 	PROBE(table, h, bucket, group) {
 		size_t x = match_empty_or_deleted(group);
