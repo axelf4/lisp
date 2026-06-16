@@ -310,6 +310,10 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 
 	for (struct Upvalue **uv = &ctx->upvalues; *uv; uv = &(*uv)->next)
 		GC_TRACE(heap, mark_color, *uv);
+
+	struct LispEntry *constant;
+	for (size_t i = 0; lisp_tbl_iter_next(&ctx->consts, &i, &constant);)
+		lisp_trace(heap, mark_color, &constant->obj);
 }
 
 void lisp_defsubr(struct LispCtx *ctx, const struct LispCFunction *fn) {
@@ -365,6 +369,7 @@ struct LispCtx *lisp_new() {
 	if (!(ctx = (struct LispCtx *)(heap = gc_new()))) goto err;
 	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
 	ctx->upvalues = NULL;
+	ctx->consts = tbl_new();
 
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
@@ -410,6 +415,7 @@ void lisp_free(struct LispCtx *ctx) {
 	for (unsigned i = 0; i < LENGTH(*ctx->traces); ++i) trace_free((*ctx->traces)[i]);
 	free(ctx->traces);
 #endif
+	lisp_tbl_free(&ctx->consts);
 	symbol_tbl_free(&ctx->symbol_tbl);
 	munmap(ctx->bp, ctx->guard_end - (uintptr_t)ctx->bp);
 	gc_free((struct GcHeap *)ctx);
