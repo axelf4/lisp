@@ -7,7 +7,6 @@
 
 #include <stdckdint.h>
 #include <stdio.h>
-#include <inttypes.h>
 #include <assert.h>
 #include "lisp.h"
 #include "asm.h"
@@ -181,87 +180,6 @@ void jit_init(struct JitState *state, struct Instruction *pc) {
 	state->need_snapshot = true;
 	state->start_pc = pc;
 }
-
-#ifdef DEBUG
-static void print_ref(struct JitState *state, Ref ref) {
-	if (IS_VAR(ref)) { printf("%.4u", ref - IR_BIAS); return; }
-	LispObject v = IR_GET(state, ref).v;
-	switch (lisp_type(v)) {
-	case LISP_NIL: printf("nil "); break;
-	case LISP_INTEGER: printf("%+" PRIi32, UNTAG_SMI(v)); break;
-	case LISP_SYMBOL:
-		struct LispSymbol *sym = UNTAG_OBJ(v);
-		printf("[%.*s]", sym->len, sym->name);
-		break;
-	case LISP_CFUNCTION:
-		printf("<%s>", ((struct LispCFunction *) UNTAG_OBJ(v))->name);
-		break;
-	case LISP_CLOSURE: default: printf("%#" PRIxPTR, v); break;
-	}
-}
-
-static void print_trace(struct JitState *state, enum TraceLink link) {
-	const char *ops[] = {
-		"LT", "GE", "LE", "GT", "EQ", "NEQ", NULL, "PHI",
-		[IR_ADD] = "ADD",
-	}, *type_names[]
-		= { "AxB", "sym", "str", "cfn", "clo", NULL, NULL, "nil", "int", "___" },
-		*link_names[] = { "loop", "root", "interpreter", "up-recursion" };
-
-	puts("\n---- TRACE IR");
-	for (unsigned i = REF_FIRST, snap_idx = 0; ; ++i) {
-		struct Snapshot *snap = state->snapshots + snap_idx;
-		if (snap_idx < state->num_snapshots && i >= snap->beg) {
-			printf("....         SNAP  #%-3u [ ", snap_idx++);
-			unsigned j = 0;
-			FOR_SNAPSHOT_ENTRIES(snap, state->stack_entries, entry) {
-				while (j++ < entry->slot) printf("---- ");
-				print_ref(state, entry->ref);
-				putchar(' ');
-			}
-			puts("]");
-		}
-		if (i >= state->end) break;
-
-		union Node x = IR_GET(state, i);
-		printf("%.4u %c%c %s %3u ", i - IR_BIAS, x.ty & IR_GUARD ? '>' : ' ',
-			x.spill_slot ? '~' : ' ', type_names[x.ty & IR_TYPE], x.reg);
-		switch (x.op) {
-		case IR_SLOAD: printf("SLOAD #%" PRIu16 "\n", x.a); break;
-		case IR_GLOAD:
-			printf("GLOAD "); print_ref(state, x.a); putchar('\n'); break;
-		case IR_ULOAD:
-			printf("ULOAD #%" PRIu16 " from ", x.b);
-			print_ref(state, x.a);
-			putchar('\n');
-			break;
-		case IR_PLOAD: printf("PLOAD %3u %u\n", x.a, x.b); break;
-		case IR_CALL: printf("CALL  ");
-			print_ref(state, x.a);
-			printf("  (");
-			for (unsigned j = 0; j < x.b; ++j) {
-				union Node arg = IR_GET(state, ++i);
-				if (j) putchar(' ');
-				print_ref(state, arg.a);
-			}
-			puts(")");
-			break;
-		case IR_CALLARG: unreachable();
-		case IR_RET: puts("RET"); break;
-		case IR_LOOP: puts("LOOP ------------"); break;
-		default:
-			printf("%-5s ", ops[x.op]);
-			if (x.a) {
-				print_ref(state, x.a);
-				if (x.b) { printf("  "); print_ref(state, x.b); }
-			}
-			putchar('\n');
-			break;
-		}
-	}
-	printf("---- TRACE stop -> %s\n", link_names[link]);
-}
-#endif
 
 [[gnu::cold]]
 static void rec_err(struct JitState *state) { state->status = REC_NYI; }
@@ -903,9 +821,6 @@ do_retry:
 		|| !(result = malloc(sizeof *result + len * sizeof *state->trace
 				+ state->num_snapshots * sizeof *state->snapshots
 				+ state->num_stack_entries * sizeof *state->stack_entries))) goto err;
-#ifdef DEBUG
-	print_trace(state, link_type);
-#endif
 
 	uintptr_t target = (uintptr_t) ctx.as.p;
 	switch (link_type) {
