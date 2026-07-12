@@ -60,6 +60,32 @@
 #define NILP(ctx, x) LISP_EQ(x, NIL(ctx))
 #endif
 
+#define _LISP_ARGS_1
+#define _LISP_ARGS_2 *_args
+#define _LISP_ARGS_3 _LISP_ARGS_2, _args[1]
+#define _LISP_ARGS_4 _LISP_ARGS_3, _args[2]
+#define _LISP_ARGS_5 _LISP_ARGS_4, _args[3]
+
+/** Defines a built-in function for calling from Lisp.
+ *
+ * Register using #lisp_defsubr().
+ *
+ * @param lname Name to give the function in Lisp.
+ * @param cname Name of the function in C.
+ * @param args Parameter list consisting of a LispCtx pointer and zero
+ *     or more LispObject arguments.
+ */
+#define DEFUN(lname, cname, args, ...)									\
+	static LispObject _ ## cname args;									\
+	static LispObject F ## cname(struct LispCtx *ctx, size_t n, const LispObject *_args) { \
+		if (n != VA_COUNT args - 1) throw(1);							\
+		return _ ## cname(ctx, CAT(_LISP_ARGS_, VA_COUNT args));		\
+	}																	\
+	static struct LispCFunction S ## cname = {							\
+		.hdr.tag = LISP_CFUNCTION, .nargs = VA_COUNT args - 1,			\
+		.f = F ## cname, .name = lname };								\
+	static LispObject _ ## cname args
+
 #if __DOXYGEN__
 #define ENABLE_JIT 1
 #endif
@@ -208,6 +234,9 @@ bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext, struct LispCt
 
 void lisp_free(struct LispCtx *);
 
+
+/** Defines the symbol for @a fn at start-up time. */
+void lisp_defsubr(struct LispCtx *ctx, const struct LispCFunction *fn);
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
 static inline bool listp(LispObject x) {

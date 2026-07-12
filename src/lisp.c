@@ -10,25 +10,6 @@
 #define STACK_LEN 0x1000
 #define MAX_FRAME 0x100
 
-#define COMMA ,
-#define NUM_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
-#define NUM_ARGS(...) NUM_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, 2, 1, 0)
-#define MAP_ARGS_IMPL(_8, _7, _6, _5, _4, _3, _2, _1, n, ...) n
-#define MAP_ARGS(...) MAP_ARGS_IMPL(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, *_args COMMA _args[1], *_args, )
-
-#define DEFUN(lname, cname, args, ...)									\
-	static LispObject _ ## cname args;									\
-	static LispObject F ## cname(struct LispCtx *ctx, size_t n, const LispObject _args[static n]) { \
-		if (n != NUM_ARGS args) throw(1);								\
-		return _ ## cname(ctx, MAP_ARGS args);							\
-	}																	\
-	static struct LispCFunction S ## cname = {							\
-		.hdr.tag = LISP_CFUNCTION, .nargs = NUM_ARGS args,				\
-		.f = F ## cname,												\
-		.name = lname,													\
-	};																	\
-	static LispObject _ ## cname args
-
 static uint64_t symbol_hash(struct LispSymbol *x) {
 	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
 }
@@ -331,6 +312,16 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 		GC_TRACE(heap, mark_color, *uv);
 }
 
+void lisp_defsubr(struct LispCtx *ctx, const struct LispCFunction *fn) {
+	struct LispCFunction *x
+		= gc_alloc((struct GcHeap *)ctx, alignof(struct LispCFunction), sizeof *x);
+	struct GcObjectHeader hdr = x->hdr.hdr;
+	*x = *fn;
+	x->hdr.hdr = hdr;
+	struct LispSymbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
+	sym->value = TAG_OBJ(x);
+}
+
 DEFUN("eval", eval, (struct LispCtx *ctx, LispObject form)) { return lisp_eval(ctx, form); }
 
 DEFUN("print", print, (struct LispCtx *ctx, LispObject x)) {
@@ -402,14 +393,7 @@ struct LispCtx *lisp_new() {
 
 	struct LispCFunction *cfuns[]
 		= { &Seval, &Sprint, &Sequal, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };
-	for (size_t i = 0; i < LENGTH(cfuns); ++i) {
-		struct LispCFunction *x = gc_alloc(heap, alignof(struct LispCFunction), sizeof *x);
-		struct GcObjectHeader hdr = x->hdr.hdr;
-		*x = *cfuns[i];
-		x->hdr.hdr = hdr;
-		struct LispSymbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
-		sym->value = TAG_OBJ(x);
-	}
+	for (size_t i = 0; i < LENGTH(cfuns); ++i) lisp_defsubr(ctx, cfuns[i]);
 
 	return ctx;
 err_free_stack:

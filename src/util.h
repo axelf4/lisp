@@ -19,6 +19,10 @@
 #define _CAT(a, b) a ## b
 #define CAT(a, b) _CAT(a, b)
 
+#define _VA_COUNT(_7, _6, _5, _4, _3, _2, _1, n, ...) n
+/** Expands to the number of arguments in the macro invocation. */
+#define VA_COUNT(...) _VA_COUNT(__VA_ARGS__ __VA_OPT__(,) 7, 6, 5, 4, 3, 2, 1, 0)
+
 #ifdef __has_builtin
 #define HAS_BUILTIN(x) __has_builtin(x)
 #else
