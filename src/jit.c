@@ -967,6 +967,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		case LISP_CFUNCTION: state->bp[x.a] = record_c_call(ctx, state, bp, x); goto do_ret;
 		case LISP_CLOSURE:
 			if (/* need reload? */ bp[x.a] != *bp) *state->bp = state->bp[x.a];
+			for (unsigned i = 0; i < x.c; ++i) SLOT(state, x.a + 2 + i);
 			// Move arguments down to current frame
 			memmove(state->bp + 2, state->bp + x.a + 2, x.c * sizeof *state->bp);
 			state->max_slot = 2 + x.c - 1;
