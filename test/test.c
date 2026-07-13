@@ -237,6 +237,19 @@ static void test_fibonnaci(void **state) {
 	assert_lisp_equal(ctx, eval(ctx, s), TAG_SMI(55));
 }
 
+static void test_ackermann(void **state) {
+	struct LispCtx *ctx = *state;
+	const char *s =
+		"(let (ack (fn (m n)\n"
+		"            (if (< m 1)\n"
+		"                (+ n 1)\n"
+		"              (if (= n 0)\n"
+		"                  (ack (+ m -1) 1)\n"
+		"                (ack (+ m -1) (ack m (+ n -1)))))))\n"
+		"  (ack 3 7))";
+	assert_lisp_equal(ctx, eval(ctx, s), TAG_SMI(1021));
+}
+
 static int setup(void **state) { return !(*state = lisp_new()); }
 static int teardown(void **state) { lisp_free(*state); return 0; }
 
@@ -261,6 +274,7 @@ int main() {
 		cmocka_unit_test(test_macros_work),
 		cmocka_unit_test(test_man_or_boy),
 		cmocka_unit_test(test_fibonnaci),
+		cmocka_unit_test(test_ackermann),
 	};
 	return cmocka_run_group_tests(tests, setup, teardown);
 }
