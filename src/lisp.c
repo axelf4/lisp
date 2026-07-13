@@ -7,7 +7,7 @@
 #include "fxhash.h"
 #include "util.h"
 
-#define STACK_LEN 0x1000
+#define STACK_LEN 0x10000
 #define MAX_FRAME 0x100
 
 static uint64_t symbol_hash(struct LispSymbol *x) {
