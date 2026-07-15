@@ -320,7 +320,7 @@ static inline struct Instruction *chunk_insns(struct Chunk *chunk) {
 
 /** Lisp closure prototype. */
 struct Prototype {
-	uint8_t arity, num_upvalues;
+	uint8_t arity, num_upvalues, frame_size;
 	bool is_toplevel;
 	unsigned offset; ///< Byte offset within chunk.
 	unsigned next_sibling;

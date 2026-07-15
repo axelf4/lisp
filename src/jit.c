@@ -1002,8 +1002,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 			((char *) pc - offsetof(struct Prototype, body[1]));
 		// TODO Guard on prototype only
 		guard_value(state, state->bp, *bp); // Specialize to this function
-		if (prototype->arity & PROTO_VARIADIC) rec_err(state);
-		else if (pc == state->start_pc) {
+		if (pc == state->start_pc) {
 			enum TraceLink link_type
 				= state->base_offset ? TRACE_LINK_UPREC : TRACE_LINK_LOOP;
 			struct LispTrace *trace;
@@ -1013,7 +1012,8 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 			(*ctx->traces)[trace_num] = trace;
 			pc[-1] = (struct Instruction) { .op = FHDR_JIT, .b = trace_num };
 			return false;
-		}
+		} else if (prototype->frame_size > LENGTH(state->slots) - state->base_offset)
+			rec_err(state);
 		break;
 	case FHDR_JIT:
 		if (!state->parent) { rec_err(state); break; } // Await side trace

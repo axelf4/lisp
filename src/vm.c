@@ -304,7 +304,7 @@ struct Local {
 };
 
 struct FnState {
-	uint8_t prev_num_regs, vars_beg, num_upvalues;
+	uint8_t prev_num_regs, vars_beg, num_upvalues, prev_frame_size;
 	bool has_uvs;
 	unsigned children;
 	struct FnState *prev;
@@ -312,8 +312,7 @@ struct FnState {
 };
 
 struct ByteCompCtx {
-	uint8_t num_regs,
-		num_vars;
+	uint8_t num_regs, num_vars, frame_size;
 	unsigned len, capacity,
 		prototypes; ///< Linked list of function prototype offsets.
 	struct Instruction *insns;
@@ -441,8 +440,9 @@ static enum CompileResult compile_progn(struct ByteCompCtx *ctx, LispObject x, s
 
 static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination dst) {
 	if (UNLIKELY(dst.discarded)) return;
-	struct FnState fn
-		= { .prev = ctx->fn, .prev_num_regs = ctx->num_regs, .vars_beg = ctx->num_vars };
+	struct FnState fn = {
+		.prev = ctx->fn, .prev_num_regs = ctx->num_regs, .vars_beg = ctx->num_vars,
+		.prev_frame_size = ctx->frame_size };
 	ctx->fn = &fn;
 	ctx->num_regs = 2; // Reserve closure and PC registers
 
@@ -463,10 +463,12 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 			= (struct Local) { .symbol = GC_COMPRESS(sym), .slot = ctx->num_regs++ };
 	}
 #if ENABLE_JIT
-	emit(ctx, (struct Instruction) { .op = FHDR });
+	enum Op hdr = num_args & PROTO_VARIADIC ? FHDR_INTERPR : FHDR;
+	emit(ctx, (struct Instruction) { .op = hdr });
 #endif
 
 	Register reg = ctx->num_regs++; // Return register
+	ctx->frame_size = ctx->num_regs;
 	if (!compile_progn(ctx, x, (struct Destination) { .reg = reg, .is_return = true })) {
 		if (fn.has_uvs) emit(ctx, (struct Instruction) { .op = CLO });
 		emit(ctx, (struct Instruction) { .op = RET, .a = reg });
@@ -476,7 +478,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 	struct Prototype *prototype = (struct Prototype *)(ctx->insns + proto_beg);
 	*prototype = (struct Prototype) {
 		.arity = num_args, .num_upvalues = fn.num_upvalues,
-		.is_toplevel = !fn.prev->vars_beg,
+		.frame_size = ctx->frame_size, .is_toplevel = !fn.prev->vars_beg,
 		.offset = ctx->prototypes,
 		.next_sibling = fn.prev->children,
 	};
@@ -492,6 +494,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 	ctx->fn = fn.prev;
 	ctx->num_regs = fn.prev_num_regs;
 	ctx->num_vars = fn.vars_beg;
+	ctx->frame_size = fn.prev_frame_size;
 }
 
 /** Byte-compiles the form @a x. */
@@ -534,6 +537,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				compile_form(ctx, init, (struct Destination) { .reg = reg });
 				++ctx->num_regs;
 			}
+			ctx->frame_size = MAX(ctx->num_regs, ctx->frame_size);
 			enum CompileResult ret = compile_progn(ctx, x, dst);
 			ctx->num_vars = prev_num_vars;
 			return ret;
@@ -593,6 +597,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				++num_args;
 				compile_form(ctx, pop(lisp_ctx, &x), (struct Destination) { .reg = ctx->num_regs++ });
 			}
+			ctx->frame_size = MAX(ctx->num_regs, ctx->frame_size);
 			compile_form(ctx, head, (struct Destination) { .reg = reg });
 			ctx->num_regs = prev_num_regs;
 
