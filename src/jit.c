@@ -189,7 +189,7 @@ static void take_snapshot(struct JitState *state) {
 	state->need_snapshot = false;
 	uint8_t max_slot = state->base_offset + state->max_slot;
 	if (state->num_snapshots >= MAX_SNAPSHOTS / 2
-		|| state->num_stack_entries + max_slot >= MAX_SNAPSHOT_ENTRIES / 2) // TODO
+		|| state->num_stack_entries + max_slot >= MAX_SNAPSHOT_ENTRIES)
 		rec_err(state); // Too many snapshots
 	struct Snapshot *snapshot = state->snapshots + state->num_snapshots++;
 	*snapshot = (struct Snapshot)
@@ -329,7 +329,9 @@ static void subst_snapshot(struct JitState *state, uintptr_t subst,
 	struct Snapshot *ns = state->snapshots + state->num_snapshots;
 	unsigned offset = ns[-1].beg < state->end
 		? ++state->num_snapshots, state->num_stack_entries
-		: (--ns)->offset; // Overwrite previous snapshot
+		: (--ns)->offset, // Overwrite previous snapshot
+		lim = os->num_entries + loopsnap->num_entries;
+	if (MAX_SNAPSHOT_ENTRIES - offset < lim) { rec_err(state); return; }
 	struct SnapshotEntry
 		*o = state->stack_entries + os->offset, *oend = o + os->num_entries,
 		*l = state->stack_entries + loopsnap->offset, *lend = l + loopsnap->num_entries,
