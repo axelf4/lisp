@@ -28,11 +28,13 @@ LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 	return TAG_OBJ(cell);
 }
 
-struct LispString {
-	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	unsigned len;
-	char s[];
-};
+LispObject lisp_str(struct LispCtx *ctx, size_t len, const char s[static len]) {
+	struct LispString *x
+		= gc_alloc((struct GcHeap *)ctx, alignof(struct LispString), sizeof *x + len);
+	x->hdr.tag = LISP_STRING;
+	memcpy(x->s, s, x->len = len);
+	return TAG_OBJ(x);
+}
 
 LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	if (len == 3 && memcmp(s, "nil", 3) == 0) return NIL(ctx);
@@ -42,11 +44,7 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	if (!symbol_tbl_entry(&ctx->symbol_tbl, &key, &entry)) {
 		if (!entry) die("malloc failed");
 		*entry = (struct LispSymbol *) &ctx->nil;
-
-		struct LispString *name
-			= gc_alloc(heap, alignof(struct LispString), sizeof *name + len);
-		name->hdr.tag = LISP_STRING;
-		memcpy(name->s, s, name->len = len);
+		struct LispString *name = UNTAG_OBJ(lisp_str(ctx, len, s));
 
 		*entry = gc_alloc(heap, alignof(struct LispSymbol), sizeof **entry);
 		**entry = (struct LispSymbol) { { (*entry)->hdr.hdr, LISP_SYMBOL },
@@ -65,6 +63,10 @@ void lisp_print(struct LispCtx *ctx, LispObject x, FILE *stream) {
 		while (consp(x = cdr(ctx, x)) && (putc(' ', stream), true));
 		if (!NILP(ctx, x)) { fputs(" . ", stream); lisp_print(ctx, x, stream); }
 		putc(')', stream);
+		break;
+	case LISP_STRING:
+		struct LispString *str = UNTAG_OBJ(x);
+		fprintf(stream, "\"%.*s\"", str->len, str->s);
 		break;
 	case LISP_SYMBOL:
 		struct LispSymbol *sym = UNTAG_OBJ(x);
@@ -129,6 +131,9 @@ enum EqualityMode { EQ_PRECHECK, EQ_FAST, EQ_SLOW };
 		return (--*k || mode != EQ_PRECHECK)
 			&& f(ctx, GC_DECOMPRESS(ctx, x->car), GC_DECOMPRESS(ctx, y->car), k, table)
 			&& f(ctx, GC_DECOMPRESS(ctx, x->cdr), GC_DECOMPRESS(ctx, y->cdr), k, table);
+	case LISP_STRING:
+		struct LispString *s0 = UNTAG_OBJ(a), *s1 = UNTAG_OBJ(b);
+		return s0->len == s1->len && !memcmp(s0->s, s1->s, s0->len);
 	default: unreachable();
 	}
 }

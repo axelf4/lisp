@@ -232,6 +232,14 @@ struct LispCFunction {
 /** Defines the symbol for @a fn at start-up time. */
 void lisp_defsubr(struct LispCtx *ctx, const struct LispCFunction *fn);
 
+struct LispString {
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
+	unsigned len;
+	char s[];
+};
+
+LispObject lisp_str(struct LispCtx *ctx, size_t len, const char s[static len]);
+
 /** Interned string with a value slot. */
 struct LispSymbol {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
