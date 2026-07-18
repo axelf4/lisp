@@ -335,7 +335,7 @@ DEFUN("print", print, (struct LispCtx *ctx, LispObject x)) {
 }
 
 DEFUN("=", equal, (struct LispCtx *ctx, LispObject a, LispObject b)) {
-	return lisp_eq(ctx, a, b) ? LISP_CONST(ctx, t) : NIL(ctx);
+	return LISP_BOOL(ctx, lisp_eq(ctx, a, b));
 }
 
 DEFUN("cons", cons, (struct LispCtx *ctx, LispObject car, LispObject cdr)) {
@@ -343,7 +343,7 @@ DEFUN("cons", cons, (struct LispCtx *ctx, LispObject car, LispObject cdr)) {
 }
 
 DEFUN("consp", consp, (struct LispCtx *ctx, LispObject x)) {
-	return consp(x) ? LISP_CONST(ctx, t) : NIL(ctx);
+	return LISP_BOOL(ctx, consp(x));
 }
 
 DEFUN("car", car, (struct LispCtx *ctx, LispObject x)) { return car(ctx, x); }
@@ -360,7 +360,7 @@ DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
 
 DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
-	return (int32_t) a < (int32_t) b ? LISP_CONST(ctx, t) : NIL(ctx);
+	return LISP_BOOL(ctx, (int32_t)a < (int32_t)b);
 }
 
 struct LispCtx *lisp_new() {

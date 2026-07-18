@@ -60,6 +60,8 @@
 #define NILP(ctx, x) LISP_EQ(x, NIL(ctx))
 #endif
 
+#define LISP_BOOL(ctx, x) ((x) ? LISP_CONST(ctx, t) : NIL(ctx))
+
 #define _LISP_ARGS_1
 #define _LISP_ARGS_2 *_args
 #define _LISP_ARGS_3 _LISP_ARGS_2, _args[1]
