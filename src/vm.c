@@ -264,7 +264,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	switch (lisp_type(function)) {
 	case LISP_CFUNCTION:
 		struct LispCFunction *fn = UNTAG_OBJ(function);
-		if (!(n == fn->nargs && NILP(ctx, xs))) die("TODO");
+		if (!NILP(ctx, xs)) die("TODO");
 		return fn->f(ctx, n, args);
 	case LISP_CLOSURE: break;
 	default: throw(1);

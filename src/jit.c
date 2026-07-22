@@ -890,7 +890,7 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 	struct LispCFunction *f = UNTAG_OBJ(bp[x.a]);
 	enum SsaOp cmp_op;
 
-	switch (f->nargs) {
+	switch (x.c) {
 	case 2: b = state->bp[x.a + 2 + 1]; [[fallthrough]];
 	case 1: a = SLOT(state, x.a + 2);
 	case 0: default: break;

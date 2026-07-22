@@ -63,29 +63,39 @@
 #define LISP_BOOL(ctx, x) ((x) ? LISP_CONST(ctx, t) : NIL(ctx))
 
 #define _LISP_ARGS_1
-#define _LISP_ARGS_2 *_args
-#define _LISP_ARGS_3 _LISP_ARGS_2, _args[1]
-#define _LISP_ARGS_4 _LISP_ARGS_3, _args[2]
-#define _LISP_ARGS_5 _LISP_ARGS_4, _args[3]
-
+#define _LISP_ARGS_2 *argv
+#define _LISP_ARGS_3 _LISP_ARGS_2, argv[1]
+#define _LISP_ARGS_4 _LISP_ARGS_3, argv[2]
+#define _LISP_ARGS_5 _LISP_ARGS_4, argv[3]
+/** Defines a built-in variadic function. @see #DEFUN() */
+#define DEFUN_VA(lname, cname)											\
+	static LispObject F ## cname(struct LispCtx *ctx, size_t argc, const LispObject *argv); \
+	static struct LispCFunction S ## cname = {							\
+		.hdr.tag = LISP_CFUNCTION, .f = F ## cname, .name = lname };	\
+	static LispObject F ## cname([[maybe_unused]] struct LispCtx *ctx,	\
+		[[maybe_unused]] size_t argc, [[maybe_unused]] const LispObject *argv)
 /** Defines a built-in function for calling from Lisp.
  *
- * Register using #lisp_defsubr().
+ * Follow by the function body. Register with #lisp_defsubr(), passing
+ * @p cname prefixed by "S" as @p fn.
+ *
+ * @par Examples
+ * ```
+ * DEFUN("identity", id, (struct LispCtx *, LispObject x)) { return x; }
+ * lisp_defsubr(ctx, &Sid);
+ * ```
  *
  * @param lname Name to give the function in Lisp.
  * @param cname Name of the function in C.
  * @param args Parameter list consisting of a LispCtx pointer and zero
  *     or more LispObject arguments.
  */
-#define DEFUN(lname, cname, args, ...)									\
-	static LispObject _ ## cname args;									\
-	static LispObject F ## cname(struct LispCtx *ctx, size_t n, const LispObject *_args) { \
-		if (n != VA_COUNT args - 1) throw(1);							\
-		return _ ## cname(ctx, CAT(_LISP_ARGS_, VA_COUNT args));		\
-	}																	\
-	static struct LispCFunction S ## cname = {							\
-		.hdr.tag = LISP_CFUNCTION, .nargs = VA_COUNT args - 1,			\
-		.f = F ## cname, .name = lname };								\
+#define DEFUN(lname, cname, args)									\
+	static LispObject _ ## cname args;								\
+	DEFUN_VA(lname, cname) {										\
+		if (argc != VA_COUNT args - 1) throw(1);					\
+		return _ ## cname(ctx, CAT(_LISP_ARGS_, VA_COUNT args));	\
+	}																\
 	static LispObject _ ## cname args
 
 #if __DOXYGEN__
@@ -187,7 +197,6 @@ struct LispCtx {
 
 struct LispCFunction {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	unsigned char nargs;
 	LispObject (*f)(struct LispCtx *, size_t n, const LispObject args[static n]);
 	const char *name;
 };
