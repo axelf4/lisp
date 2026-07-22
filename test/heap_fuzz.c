@@ -22,6 +22,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include "fxhash.h"
+#define GC_HEAP_SIZE /* 4 MiB */ 0x400000
 #include "gc.c"
 #include "util.c"
 
@@ -30,6 +31,7 @@
 #endif
 
 #define MAX_EVENTS 1024 ///< Number of events limit per scenario.
+#define MAX_LIVE_OBJECTS /* each event allocates at most 1 object */ MAX_EVENTS
 
 /** Approximates Gaussian sampling using POPCNT.
  *
@@ -57,7 +59,6 @@ static size_t object_size(struct Obj *obj) {
 
 struct Ctx {
 	unsigned num_objects, num_roots;
-#define MAX_LIVE_OBJECTS /* each event allocates at most 1 object */ MAX_EVENTS
 	struct GcRef (*objects)[MAX_LIVE_OBJECTS];
 };
 
@@ -90,11 +91,11 @@ static bool is_obj_valid(struct Obj *x, bool mark_color) {
 	return (x->hdr.flags & GC_MARK) == mark_color;
 }
 
-static bool validate_heap(struct GcHeap *heap) {
-	struct Ctx *ctx = (struct Ctx *) heap;
+static bool is_heap_valid(struct GcHeap *heap) {
+	struct Ctx *ctx = (struct Ctx *)heap;
 	bool mark_color = heap->mark_color ^ !heap->is_major_gc;
 	for (unsigned i = 0; i < ctx->num_objects; ++i) {
-		struct Obj *obj = (struct Obj *) GC_DECOMPRESS(heap, (*ctx->objects)[i]);
+		struct Obj *obj = (struct Obj *)GC_DECOMPRESS(heap, (*ctx->objects)[i]);
 
 		if (!is_obj_valid(obj, mark_color)) return false;
 		for (unsigned j = 0; j < obj->used_slot_count; ++j)
@@ -121,22 +122,73 @@ static size_t gen_obj_data_size(uint64_t u) {
 	return (x + (max << CHAR_BIT * sizeof max / 2)) % max;
 }
 
+static bool do_event(struct GcHeap *heap, uint64_t *state) {
+	struct Ctx *ctx = (struct Ctx *)heap;
+	uint64_t b = *state = fxhash(*state, 0);
+	switch (gen_event_type(b)) {
+	case EVENT_ALLOC: {
+		struct Obj *obj;
+		size_t data_size = gen_obj_data_size(b), size = sizeof *obj + data_size,
+			num_slots = data_size / sizeof *obj->slots;
+		if (!(obj = gc_alloc(heap, alignof(struct Obj), size))) {
+			fputs("gc_alloc failed\n", stderr);
+			return false;
+		}
+		*obj = (struct Obj) { .hdr = obj->hdr, .num_slots = num_slots };
+
+		unsigned i = ctx->num_objects++;
+		bool is_root = !(b & 0x700);
+		if (is_root) {
+			unsigned j = ctx->num_roots++;
+			(*ctx->objects)[i] = (*ctx->objects)[j];
+			i = j;
+		}
+		(*ctx->objects)[i] = GC_COMPRESS(obj);
+		break;
+	}
+	case EVENT_MUTATE: {
+		if (!ctx->num_objects) break;
+		unsigned i = (b >> 8) % ctx->num_objects,
+			j = (b >> 40) % ctx->num_objects;
+		struct Obj *src = (struct Obj *)GC_DECOMPRESS(heap, (*ctx->objects)[i]),
+			*dst = (struct Obj *)GC_DECOMPRESS(heap, (*ctx->objects)[j]);
+		if (!src->num_slots) break;
+		unsigned k = b % MIN(src->num_slots, UINT8_MAX - 1);
+		if (k >= src->used_slot_count) k = src->used_slot_count++;
+
+		src->slots[k] = dst;
+		gc_write_barrier(heap, &src->hdr);
+		break;
+	}
+	case EVENT_GC:
+		garbage_collect(heap);
+		if (!is_heap_valid(heap)) return false;
+		if (b < 0.6 * UINT64_MAX) {
+			heap->mark_color ^= !heap->is_major_gc;
+			heap->is_major_gc = true;
+			heap->is_defrag |= b < 0.3 * UINT64_MAX;
+		}
+		break;
+	default: unreachable();
+	}
+	return true;
+}
+
 static volatile uint64_t this_seed;
 
 static void death_callback() {
 	fprintf(stderr, "Failure! seed: %" PRIx64 "\n", this_seed);
 }
-
-static volatile sig_atomic_t should_stop;
-static void sigalrm_handler([[maybe_unused]] int sig) { should_stop = true; }
-
-static void sig_handler(int sig) {
+static void sigsegv_handler(int sig) {
 	death_callback();
 	signal(sig, SIG_DFL); // TODO Reduce test case using ddmin
 }
 
+static volatile sig_atomic_t should_stop;
+static void sigalrm_handler([[maybe_unused]] int sig) { should_stop = true; }
+
 int main() {
-	if (signal(SIGSEGV, sig_handler) == SIG_ERR
+	if (signal(SIGSEGV, sigsegv_handler) == SIG_ERR
 		|| signal(SIGALRM, sigalrm_handler) == SIG_ERR)
 		die("signal failed");
 	// Set timeout
@@ -156,60 +208,10 @@ int main() {
 	do {
 		this_seed = state;
 		if (!(heap = gc_new())) goto err_free_objects;
-		struct Ctx *ctx = (struct Ctx *) heap;
-		*ctx = (struct Ctx) { .objects = objects };
+		*(struct Ctx *)heap = (struct Ctx) { .objects = objects };
 
-		for (unsigned i = MAX_EVENTS; i--;) {
-			uint64_t b = state = fxhash(state, 0);
-			switch (gen_event_type(b)) {
-			case EVENT_ALLOC: {
-				struct Obj *obj;
-				size_t data_size = gen_obj_data_size(b),
-					num_slots = data_size / sizeof *obj->slots;
-				if (!(obj = gc_alloc(heap, alignof(struct Obj), sizeof *obj + data_size))) {
-					fputs("gc_alloc failed\n", stderr);
-					goto err_free_heap;
-				}
-				*obj = (struct Obj) { .hdr = obj->hdr, .num_slots = num_slots };
-
-				unsigned i = ctx->num_objects++;
-				bool is_root = !(b & 0x700);
-				if (is_root) {
-					unsigned j = ctx->num_roots++;
-					(*objects)[i] = (*objects)[j];
-					i = j;
-				}
-				(*objects)[i] = GC_COMPRESS(obj);
-				break;
-			}
-
-			case EVENT_MUTATE: {
-				if (!ctx->num_objects) break;
-				unsigned i = (b >> 8) % ctx->num_objects,
-					j = (b >> 40) % ctx->num_objects;
-				struct Obj *src = (struct Obj *) GC_DECOMPRESS(heap, (*objects)[i]),
-					*dst = (struct Obj *) GC_DECOMPRESS(heap, (*objects)[j]);
-				if (!src->num_slots) break;
-				unsigned k = b % MIN(src->num_slots, UINT8_MAX - 1);
-				if (k >= src->used_slot_count) k = src->used_slot_count++;
-
-				src->slots[k] = dst;
-				gc_write_barrier(heap, &src->hdr);
-				break;
-			}
-
-			case EVENT_GC:
-				garbage_collect(heap);
-				if (!validate_heap(heap)) goto err_free_heap;
-				if (b < 0.6 * (double) UINT64_MAX) {
-					heap->mark_color ^= !heap->is_major_gc;
-					heap->is_major_gc = true;
-					heap->is_defrag |= b < 0.3 * (double) UINT64_MAX;
-				}
-				break;
-			default: unreachable();
-			}
-		}
+		for (unsigned i = MAX_EVENTS; i--;)
+			if (!do_event(heap, &state)) goto err_free_heap;
 
 		gc_free(heap);
 	} while (++scenario_count, !should_stop);

@@ -19,10 +19,10 @@
 #endif
 
 #ifndef GC_HEAP_SIZE
-#define GC_HEAP_SIZE 0x800000 ///< GC heap allocation size in bytes.
+#define GC_HEAP_SIZE /* 64 MiB */ 0x4000000 ///< GC heap allocation size in bytes.
 #endif
-#define NUM_BLOCKS (GC_HEAP_SIZE / sizeof(struct GcBlock) - 1)
-#define MIN_FREE (NUM_BLOCKS * 3 / 100)
+#define NUM_BLOCKS (GC_HEAP_SIZE / GC_BLOCK_SIZE - 1)
+#define MIN_FREE (0.3 * NUM_BLOCKS)
 #define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_ALIGNMENT * CHAR_BIT))
 #define NULL_BUMP_PTR(block) (struct BumpPointer) { (block)->data, (block)->data }
 
@@ -61,7 +61,7 @@ struct GcHeap {
 
 	struct BumpPointer ptr, overflow_ptr; ///< Bump pointer for medium objects.
 	struct GcBlock **free, **recycled;
-	size_t free_len, recycled_len;
+	unsigned free_len, recycled_len;
 
 	bool mark_color, inhibit_gc, is_major_gc, is_defrag;
 	unsigned *object_map; ///< Bitset of object start positions.
@@ -82,7 +82,7 @@ struct GcHeap *gc_new() {
 		== MAP_FAILED) return NULL;
 	heap = (struct GcHeap *) ALIGN_UP(p, alignment);
 	munmap(p, (char *) heap - p);
-	munmap(heap + 1, p + sizeof *heap + alignment - 1 - (char *) (heap + 1));
+	munmap(heap + 1, p + alignment - 1 - (char *) heap);
 
 #ifndef __linux__
 	heap->mark_color = heap->inhibit_gc = heap->is_major_gc = heap->is_defrag = false;
@@ -166,7 +166,7 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 	}
 	// Acquire a free block
 	if (heap->free_len <= MIN_FREE && !heap->inhibit_gc) garbage_collect(heap);
-	if (!heap->free_len) return NULL;
+	if (!heap->free_len) die("gc_alloc failed");
 	struct GcBlock *block = heap->free[--heap->free_len];
 	*ptr = (struct BumpPointer) { (&block->data)[1], block->data };
 out_bump:
@@ -264,7 +264,6 @@ static struct BlockStats {
 	block->flag = 0;
 	unsigned unavailable_lines = 0;
 #ifdef __AVX2__
-	static_assert(GC_LINE_COUNT == 127);
 	__m256i_u *ys = (__m256i_u *) (block->line_marks - 1);
 	__m256i *xs = (__m256i *) block->line_marks, as[] = {
 		_mm256_or_si256(_mm256_load_si256(xs),
@@ -302,14 +301,13 @@ static struct BlockStats {
 	do available_space -= GC_LINE_SIZE * mark_histogram[--bin];
 	while (available_space > 0 && bin);
 
-	for (size_t i = 0; i < heap->recycled_len;) {
+	for (size_t i = 0; i < heap->recycled_len; ++i) {
 		struct GcBlock *block = heap->recycled[i];
 		bool is_defrag_candidate = block->flag > bin;
 		block->flag = is_defrag_candidate ? 1 : 2;
 		if (is_defrag_candidate)
 			// Remove from recycled list to not evacuate into itself
-			heap->recycled[i] = heap->recycled[--heap->recycled_len];
-		else ++i;
+			heap->recycled[i--] = heap->recycled[--heap->recycled_len];
 	}
 	GC_BLOCK(heap->ptr.cursor)->flag = 2;
 }

@@ -217,8 +217,8 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 #if ENABLE_JIT
 	/** Decrements hotcount, triggering trace recorder at zero. */
 #define DECR_HOTCOUNT() do {											\
-		unsigned char _hash = (uintptr_t) pc / sizeof *pc,				\
-			*hotcount = ctx->hotcounts + _hash % LENGTH(ctx->hotcounts); \
+		unsigned char hash = (uintptr_t)pc / sizeof *pc,				\
+			*hotcount = ctx->hotcounts + hash % LENGTH(ctx->hotcounts); \
 		if (!ckd_sub(hotcount, *hotcount, 1)) break;					\
 		*hotcount = JIT_THRESHOLD;										\
 		if (dispatch_table == recording_dispatch_table) break;			\
@@ -240,7 +240,7 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 	DEFINE_OP(RECORD) {
 		if (!jit_record(ctx, pc, bp)) {
 			dispatch_table = main_dispatch_table;
-			insn = pc[-1];
+			insn = pc[-1]; // Load potential FHDR_JIT
 		}
 		DISPATCH_MAIN(insn.op);
 	}
@@ -397,7 +397,7 @@ static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
 	return offset;
 }
 
-// Provides a limited form of register coalescing.
+// Provides a limited form of register coalescing
 struct Destination {
 	Register reg;
 	bool discarded : 1, ///< Whether anything but side-effects will be ignored.
@@ -456,7 +456,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 	ctx->len += sizeof(struct Prototype) / sizeof *ctx->insns;
 
 	uint8_t num_args = 0;
-	for (LispObject args = pop(ctx->lisp_ctx, &x); !NILP(lisp_ctx, args);) {
+	for (LispObject args = pop(ctx->lisp_ctx, &x); !NILP(ctx->lisp_ctx, args);) {
 		LispObject sym;
 		if (consp(args)) { sym = pop(ctx->lisp_ctx, &args); ++num_args; }
 		else { sym = args; args = NIL(ctx->lisp_ctx); num_args |= PROTO_VARIADIC; }
@@ -651,7 +651,7 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 
 	struct Chunk *chunk = gc_alloc((struct GcHeap *)lisp_ctx, alignof(struct Chunk),
 		sizeof *chunk + ctx.consts.len * sizeof(LispObject) + ctx.len * sizeof *ctx.insns);
-	*chunk = (struct Chunk) { { chunk->hdr.hdr, LISP_BYTECODE_CHUNK },
+	*chunk = (struct Chunk) { { chunk->hdr.hdr, LISP_BYTECODE },
 		.num_consts = ctx.consts.len, .count = ctx.len };
 	struct LispEntry *constant;
 	for (size_t i = 0; lisp_tbl_iter_next(&ctx.consts, &i, &constant);)

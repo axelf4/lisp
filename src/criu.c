@@ -175,14 +175,13 @@ static bool parse_map(FILE *f, struct Map *result) {
 	int path_ofs, n = sscanf(line, "%lx-%lx %c%c%c%c %lx %x:%x %lu %n",
 		&start, &end, &r, &w, &x, &s, &offset,
 		&dev_major, &dev_minor, &inode, &path_ofs);
-	assert(n >= 10);
+	if (n < 10) return false;
 	// TODO Parse /proc/pid/smaps VmFlags
 
-	int prot = PROT_NONE;
-	if (r == 'r') prot |= PROT_READ;
-	if (w == 'w') prot |= PROT_WRITE;
-	if (x == 'x') prot |= PROT_EXEC;
-	int flags = s == 's' ? MAP_SHARED : MAP_PRIVATE;
+	int prot = (r == 'r' ? PROT_READ : 0)
+		| (w == 'w' ? PROT_WRITE : 0)
+		| (x == 'x' ? PROT_EXEC : 0),
+		flags = s == 's' ? MAP_SHARED : MAP_PRIVATE;
 	assert(flags & MAP_PRIVATE && "cannot restore shared VMAs yet");
 
 	char *pathname = line + path_ofs;
@@ -210,15 +209,17 @@ static bool should_dump_page(enum VmaType type, uint64_t pme) {
 		&& !(pme & PM_FILE && type & VMA_FILE); // COW?
 }
 
-static bool do_splice(int pipefd[static 2], int fd, struct iovec *iov, struct iovec *iov_end) {
+static bool do_splice(int fd, struct iovec *iov, struct iovec *iov_end) {
+	int pipefd[2], ret = false;
+	if (pipe(pipefd)) goto out;
 	while (iov < iov_end) {
 		ssize_t n;
 		if ((n = vmsplice(pipefd[1], iov, iov_end - iov, SPLICE_F_GIFT)) < 0)
-			return false;
+			goto out_close;
 
 		for (ssize_t m = n, k; m; m -= k)
 			if ((k = splice(pipefd[0], NULL, fd, NULL, m, SPLICE_F_MOVE | SPLICE_F_MORE)) < 0)
-				return false;
+				goto out_close;
 
 		for (size_t k; n; n -= k) {
 			k = MIN(iov->iov_len, (size_t) n);
@@ -226,7 +227,11 @@ static bool do_splice(int pipefd[static 2], int fd, struct iovec *iov, struct io
 			else ++iov;
 		}
 	}
-	return true;
+	ret = true;
+out_close:
+	close(pipefd[0]);
+	close(pipefd[1]);
+out: return ret;
 }
 
 static void signal_handler([[maybe_unused]] int sig) {
@@ -266,11 +271,7 @@ static void signal_handler([[maybe_unused]] int sig) {
 	int fd;
 	if ((fd = open("dump", O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR)) < 0)
 		die("open failed");
-	int pipefd[2];
-	if (pipe(pipefd)) die("pipe failed");
-	if (!do_splice(pipefd, fd, iov, iov_end)) die("do_splice failed");
-	close(pipefd[0]);
-	close(pipefd[1]);
+	if (!do_splice(fd, iov, iov_end)) die("do_splice failed");
 	close(fd);
 	fclose(pagemap);
 	fclose(maps);

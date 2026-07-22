@@ -49,7 +49,7 @@ static inline uint64_t fastrange64(uint64_t x, uint64_t p) {
  * @return The bucket index.
  */
 static inline uint64_t pthash_bucket(uint64_t hash, uint64_t m) {
-	uint64_t t = 2. / 3 /* =: a */ * (double) UINT64_MAX;
+	uint64_t t = 2. / 3 /* =: a */ * UINT64_MAX;
 	// p1 keys are mapped to the first p2 buckets, where p1 := an and p2 := m/3
 	bool is_dense = /* Approx. hash mod n < an */ hash < t;
 	// a is chosen such that a/2 + 2(1 - a) = 1

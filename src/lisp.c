@@ -13,11 +13,9 @@
 static uint64_t symbol_hash(struct LispSymbol *x) {
 	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
 }
-
 static bool symbol_equal(struct LispSymbol *a, struct LispSymbol *b) {
 	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
 }
-
 #define NAME symbol
 #define KEY struct LispSymbol *
 #include "tbl.h"
@@ -239,7 +237,7 @@ void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 		gc_mark(sizeof *uv, p);
 		lisp_trace(heap, mark_color, uv->location);
 		break;
-	case LISP_BYTECODE_CHUNK:
+	case LISP_BYTECODE:
 		struct Chunk *chunk = p;
 		gc_mark(chunk_size(p), p);
 		for (LispObject *x = chunk_consts(chunk), *end = x + chunk->num_consts;
@@ -268,7 +266,7 @@ size_t gc_object_size(void *p, size_t *alignment) {
 	case LISP_UPVALUE:
 		*alignment = alignof(struct Upvalue);
 		return sizeof(struct Upvalue);
-	case LISP_BYTECODE_CHUNK:
+	case LISP_BYTECODE:
 		*alignment = alignof(struct Chunk);
 		return chunk_size(p);
 	case LISP_INTEGER: case LISP_NIL:
@@ -304,7 +302,7 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 			gc_pin(heap, mark_color, prototype_chunk(closure->prototype));
 			[[fallthrough]];
 		default: lisp_trace(heap, mark_color, x); break;
-		case LISP_BYTECODE_CHUNK: gc_pin(heap, mark_color, UNTAG_OBJ(*x)); break;
+		case LISP_BYTECODE: gc_pin(heap, mark_color, UNTAG_OBJ(*x)); break;
 	}
 	memset(top, 0, end - top); // Zero unused stack to not resurrect GCd object
 
@@ -365,8 +363,8 @@ DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 
 struct LispCtx *lisp_new() {
 	struct GcHeap *heap;
-	struct LispCtx *ctx;
-	if (!(ctx = (struct LispCtx *)(heap = gc_new()))) goto err;
+	if (!(heap = gc_new())) goto err;
+	struct LispCtx *ctx = (struct LispCtx *)heap;
 	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
 	ctx->upvalues = NULL;
 
@@ -394,6 +392,10 @@ struct LispCtx *lisp_new() {
 #endif
 	FOR_SYMBOL_CONSTS(X)
 #undef X
+
+	Sequal.jit_id = JIT_F_EQ;
+	Slt.jit_id = JIT_F_LT;
+	Sadd.jit_id = JIT_F_ADD;
 
 	struct LispCFunction *cfuns[]
 		= { &Seval, &Sprint, &Sequal, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };

@@ -28,9 +28,6 @@ int main() {
 		if ((error = lisp_read_whole(ctx, line, &form)))
 			fprintf(stderr, "Error: %d\n", error);
 		else {
-			fputs("Read expression: ", stdout);
-			lisp_print(ctx, form, stdout);
-			fputs("\nResult: ", stdout);
 			lisp_print(ctx, lisp_eval(ctx, form), stdout);
 			putchar('\n');
 		}
