@@ -45,7 +45,7 @@
 
 #define IS_SMI(x) (!((x) & 1))
 #define TAG_SMI(i) ((uint32_t) (i) << 1)
-#define UNTAG_SMI(x) SAR((union { uint32_t u; int32_t i; }) { x }.i, 1)
+#define UNTAG_SMI(x) ((union { uint32_t u; int32_t i; }) { x }.i / 2)
 #define TAG_OBJ(p) ((LispObject) (p) + 1)
 #define UNTAG_OBJ(x) ((void *) ((x) - 1))
 
@@ -55,7 +55,7 @@
 
 #define NIL(ctx) TAG_OBJ(&(ctx)->nil)
 #if USE_COMPRESSED_PTRS
-#define NILP(ctx, x) LISP_EQ(x, TAG_OBJ(offsetof(struct LispCtx, nil)))
+#define NILP(ctx, x) ((void)ctx, LISP_EQ(x, TAG_OBJ(offsetof(struct LispCtx, nil))))
 #else
 #define NILP(ctx, x) LISP_EQ(x, NIL(ctx))
 #endif
@@ -127,14 +127,6 @@ static inline enum LispType lisp_type(LispObject p) {
 	return IS_SMI(p) ? LISP_INTEGER : ((struct LispObjectHeader *) UNTAG_OBJ(p))->tag;
 }
 
-/** Interned string with a value slot. */
-struct LispSymbol {
-	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	unsigned len; ///< Byte length of #name.
-	const char *name; ///< Name string (not NULL-terminated).
-	LispObject value;
-};
-
 /** X-macro for the interned symbol constants. */
 #define FOR_SYMBOL_CONSTS(X) \
 	X(ffn, fn) \
@@ -195,22 +187,6 @@ struct LispCtx {
 #define LISP_CONST(ctx, name) (ctx)->name
 #endif
 
-struct LispCFunction {
-	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	LispObject (*f)(struct LispCtx *, size_t n, const LispObject args[static n]);
-	const char *name;
-};
-
-/** Cons cell. */
-struct LispPair {
-	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
-	Lobj car, cdr;
-};
-
-LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr);
-
-LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]);
-
 enum LispReadError {
 	LISP_READ_OK, ///< Success.
 	LISP_READ_EOF, ///< End of file during parsing.
@@ -246,14 +222,39 @@ bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext, struct LispCt
 
 void lisp_free(struct LispCtx *);
 
+struct LispCFunction {
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
+	unsigned char jit_id;
+	LispObject (*f)(struct LispCtx *, size_t n, const LispObject args[static n]);
+	const char *name;
+};
 
 /** Defines the symbol for @a fn at start-up time. */
 void lisp_defsubr(struct LispCtx *ctx, const struct LispCFunction *fn);
+
+/** Interned string with a value slot. */
+struct LispSymbol {
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
+	unsigned len; ///< Byte length of #name.
+	const char *name; ///< Name string (not NULL-terminated).
+	LispObject value;
+};
+
+LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]);
+
+/** Cons cell. */
+struct LispPair {
+	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
+	Lobj car, cdr;
+};
+
+LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr);
+
 static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
 
 static inline bool listp(LispObject x) {
 	enum LispType ty = lisp_type(x);
-	return ty == LISP_NIL || ty == LISP_PAIR;
+	return ty == LISP_PAIR || ty == LISP_NIL;
 }
 
 static inline LispObject car(struct LispCtx *ctx, LispObject x) {
@@ -367,9 +368,12 @@ struct LispEntry {
 	};
 };
 
-void lisp_tbl_free(struct Table *table);
 bool lisp_tbl_iter_next(struct Table *table, size_t *i, struct LispEntry **entry);
 bool lisp_tbl_entry(struct Table *table, struct LispEntry key, struct LispEntry **entry);
+
+enum JitSubrId {
+	JIT_F_EQ = 1, JIT_F_LT, JIT_F_ADD
+};
 
 [[nodiscard, gnu::malloc]] struct JitState *jit_new();
 

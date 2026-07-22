@@ -240,7 +240,7 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 	DEFINE_OP(RECORD) {
 		if (!jit_record(ctx, pc, bp)) {
 			dispatch_table = main_dispatch_table;
-			insn = pc[-1];
+			insn = pc[-1]; // Load potential FHDR_JIT
 		}
 		DISPATCH_MAIN(insn.op);
 	}
@@ -395,7 +395,7 @@ static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
 	return offset;
 }
 
-// Provides a limited form of register coalescing.
+// Provides a limited form of register coalescing
 struct Destination {
 	Register reg;
 	bool discarded : 1, ///< Whether anything but side-effects will be ignored.
@@ -454,7 +454,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 	ctx->len += sizeof(struct Prototype) / sizeof *ctx->insns;
 
 	uint8_t num_args = 0;
-	for (LispObject args = pop(ctx->lisp_ctx, &x); !NILP(lisp_ctx, args);) {
+	for (LispObject args = pop(ctx->lisp_ctx, &x); !NILP(ctx->lisp_ctx, args);) {
 		LispObject sym;
 		if (consp(args)) { sym = pop(ctx->lisp_ctx, &args); ++num_args; }
 		else { sym = args; args = NIL(ctx->lisp_ctx); num_args |= PROTO_VARIADIC; }

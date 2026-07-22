@@ -13,11 +13,9 @@
 static uint64_t symbol_hash(struct LispSymbol *x) {
 	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
 }
-
 static bool symbol_equal(struct LispSymbol *a, struct LispSymbol *b) {
 	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
 }
-
 #define NAME symbol
 #define KEY struct LispSymbol *
 #include "tbl.h"
@@ -365,8 +363,8 @@ DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 
 struct LispCtx *lisp_new() {
 	struct GcHeap *heap;
-	struct LispCtx *ctx;
-	if (!(ctx = (struct LispCtx *)(heap = gc_new()))) goto err;
+	if (!(heap = gc_new())) goto err;
+	struct LispCtx *ctx = (struct LispCtx *)heap;
 	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
 	ctx->upvalues = NULL;
 	ctx->consts = tbl_new();
@@ -395,6 +393,10 @@ struct LispCtx *lisp_new() {
 #endif
 	FOR_SYMBOL_CONSTS(X)
 #undef X
+
+	Sequal.jit_id = JIT_F_EQ;
+	Slt.jit_id = JIT_F_LT;
+	Sadd.jit_id = JIT_F_ADD;
 
 	struct LispCFunction *cfuns[]
 		= { &Seval, &Sprint, &Sequal, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };

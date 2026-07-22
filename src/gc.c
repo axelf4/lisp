@@ -61,7 +61,7 @@ struct GcHeap {
 
 	struct BumpPointer ptr, overflow_ptr; ///< Bump pointer for medium objects.
 	struct GcBlock **free, **recycled;
-	size_t free_len, recycled_len;
+	unsigned free_len, recycled_len;
 
 	bool mark_color, inhibit_gc, is_major_gc, is_defrag;
 	unsigned *object_map; ///< Bitset of object start positions.

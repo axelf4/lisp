@@ -10,7 +10,6 @@
 #include "asm.h"
 #include "util.h"
 
-static_assert(SAR(-1, 1) == -1);
 static_assert(IS_POWER_OF_TWO(16));
 static_assert(!IS_POWER_OF_TWO(10));
 static_assert(ALIGN_UP(20, 8) == 24);

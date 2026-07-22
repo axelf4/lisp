@@ -105,7 +105,7 @@ struct SnapshotEntry {
  * of stack slots to restore.
  */
 struct Snapshot {
-	Ref beg; /// One past the last virtual recorded at time of capture.
+	Ref beg; ///< One past the last virtual recorded at time of capture.
 	uint8_t offset, ///< Offset into @ref JitState::stack_entries.
 		num_entries, ///< Number of stack entries.
 		base_offset,
@@ -224,7 +224,7 @@ static IrRef emit(struct JitState *state, union Node x) {
 	return x.ty << REF_TYPE_SHIFT | ref;
 }
 
-static bool cmp(LispObject a, enum SsaOp op, LispObject b) {
+static bool cmp(int32_t a, enum SsaOp op, int32_t b) {
 	switch (op) {
 	case IR_LT: return a < b;
 	case IR_GE: return a >= b;
@@ -325,7 +325,7 @@ static IrRef uref(struct JitState *state, uintptr_t *bp, uint8_t idx) {
 
 #define SUBST_GET(subst, ref) (*(Ref *) ((subst) + (ref) * sizeof(Ref)))
 static void subst_snapshot(struct JitState *state, uintptr_t subst,
-	struct Snapshot *os, struct Snapshot *loopsnap) {
+	const struct Snapshot *os, struct Snapshot *loopsnap) {
 	struct Snapshot *ns = state->snapshots + state->num_snapshots;
 	unsigned offset = ns[-1].beg < state->end
 		? ++state->num_snapshots, state->num_stack_entries
@@ -405,7 +405,7 @@ static void peel_loop(struct JitState *state) {
 struct RegAlloc {
 	struct Assembler as;
 	struct JitState *state;
-	RegSet available, phi_regs, clobbers;
+	RegSet available, clobbers, phi_regs; ///< Bitset of registers used for φ:s.
 	uint8_t num_spill_slots, snapshot_idx;
 	Ref next_snapshot_beg;
 #ifndef NDEBUG
@@ -575,7 +575,7 @@ static void asm_cmp(struct RegAlloc *ctx, union Node x) {
 	if (IS_VAR(x.b)) {
 		enum Register reg2 = reg_use(ctx, x.b, ~(1 << reg1));
 		asm_rr(&ctx->as, 0, IMM_GRP1_MR(XG_CMP), reg2, reg1);
-	} else asm_grp1_imm(&ctx->as, 0, XG_CMP, reg1, (uint32_t) IR_GET(ctx->state, x.b).v);
+	} else asm_grp1_imm(&ctx->as, 0, XG_CMP, reg1, IR_GET(ctx->state, x.b).v);
 }
 
 static void asm_loop(struct RegAlloc *ctx) {
@@ -667,7 +667,7 @@ static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
 	if (IS_VAR(x.b)) {
 		enum Register src = reg_use(ctx, x.b, ~(1 << dst));
 		asm_rr(&ctx->as, 0, IMM_GRP1_MR(op), src, dst);
-	} else asm_grp1_imm(&ctx->as, 0, op, dst, (uint32_t) b.v);
+	} else asm_grp1_imm(&ctx->as, 0, op, dst, b.v);
 
 	// Fix up 2-operand instruction by moving left operand to destination
 	if (HAS_REG(a)) asm_mov(&ctx->as, dst, a.reg);
@@ -726,10 +726,7 @@ do_retry:
 		x->spill_slot = 0;
 		switch (x->op) {
 		case IR_PLOAD: x->reg = x->a | REG_NONE; x->spill_slot = x->b; break;
-		case IR_CALL:
-			ctx.clobbers |= REG_ALL & ~CALLEE_SAVED_REGS;
-			x->reg = rax | REG_NONE;
-			break;
+		case IR_CALL: x->reg = rax | REG_NONE; break;
 		case IR_PHI:
 			union Node *in = &IR_GET(state, x->a);
 			// Pick φ registers from opposite end to reduce collisions
@@ -894,7 +891,6 @@ found:
 static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_t *bp, struct Instruction x) {
 	IrRef ref = SLOT(state, x.a), a = 0, b = 0;
 	struct LispCFunction *f = UNTAG_OBJ(bp[x.a]);
-	enum SsaOp cmp_op;
 
 	switch (x.c) {
 	case 2: b = state->bp[x.a + 2 + 1]; [[fallthrough]];
@@ -902,19 +898,27 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 	case 0: default: break;
 	}
 
-	if (!strcmp(f->name, "+")) {
-		guard_type(state, &a, LISP_INTEGER);
-		guard_type(state, &b, LISP_INTEGER);
-		return emit_opt(state, (union Node)
-			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
-	} else if (!strcmp(f->name, "=")) {
-		cmp_op = IR_EQ; // TODO Only for types with referential equality
+	switch (f->jit_id) {
+	case JIT_F_EQ:
+		enum SsaOp cmp_op = IR_EQ; // TODO Only for types with referential equality
 	do_record_cmp:
 		LispObject value = f->f(ctx, x.c, bp + x.a + 2);
 		emit_opt(state, (union Node)
 			{ .op = cmp_op ^ NILP(ctx, value), .ty = TY_ANY, .a = a, .b = b });
 		return emit_const(state, lisp_type(value), value);
-	} else if (!strcmp(f->name, "<")) { cmp_op = IR_LT; goto do_record_cmp; }
+	case JIT_F_LT:
+		cmp_op = IR_LT;
+		guard_type(state, &a, LISP_INTEGER);
+		guard_type(state, &b, LISP_INTEGER);
+		goto do_record_cmp;
+	case JIT_F_ADD:
+		guard_type(state, &a, LISP_INTEGER);
+		guard_type(state, &b, LISP_INTEGER);
+		return emit_opt(state, (union Node)
+			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
+
+	default: unreachable(); case 0:
+	}
 
 	guard_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
@@ -926,7 +930,7 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 		emit(state, (union Node) { .op = IR_CALLARG, .ty = ty, .a = arg });
 	}
 	state->max_slot = x.a; // CALL always uses highest register
-	state->need_snapshot = true; // Call may have side-effects
+	state->need_snapshot = true;
 	return result;
 }
 

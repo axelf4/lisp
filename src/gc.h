@@ -1,5 +1,5 @@
 /** @file
- * Generational conservative single-threaded immix garbage collector.
+ * Generational conservative single-mutator immix garbage collector.
  *
  * The heap is composed of blocks divided into lines. The allocator
  * consumes free blocks and contiguous free lines, e.g.:

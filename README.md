@@ -14,14 +14,15 @@ Forms are evaluated according to the following rules:
   the result of evaluating each of `ARG...`.
 
   Tail-call elimination in return-positions is guaranteed.
-* `SYM` evaluates to the value of lexically-scoped variable named `SYM`.
+* `SYM` evaluates to the value of the lexically-scoped variable named
+  `SYM`.
 * `nil` and integers evaluate to themselves.
 
 The language consists of the following special forms:
 
 * `(fn (ARG...) BODY...)`
 
-  Returns a new closure.
+  Instantiates a new closure.
 * `(let ([(SYM VAL)]...) BODY...)`
 
   Evaluates `(progn BODY...)`
