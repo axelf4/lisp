@@ -613,6 +613,13 @@ static void asm_phi(struct RegAlloc *ctx, union Node x) {
 	ctx->phi_refs[dst] = x.a;
 }
 
+static void asm_ret_guard(struct RegAlloc *ctx, Ref pc_ref) {
+	enum Register bp = reg_use(ctx, REF_BP, -1);
+	asm_guard(ctx, CC_NE); // Guard return address
+	asm_write32(&ctx->as, IR_GET(ctx->state, pc_ref).v);
+	asm_rmrd(&ctx->as, 0, 0x81, (uint8_t)XG_CMP, bp, sizeof(LispObject));
+}
+
 static void asm_call(struct RegAlloc *ctx, Ref ref, union Node x) {
 	reg_def(ctx, ref, 1 << rax);
 	// Evict caller-saved registers
@@ -636,17 +643,16 @@ static void asm_call(struct RegAlloc *ctx, Ref ref, union Node x) {
 	}
 	asm_rmrd(&ctx->as, 1, XI_LEA, args_reg, rsp, ctx->num_spill_slots * sizeof x.v);
 	if (ckd_addassign(&ctx->num_spill_slots, x.b)) rec_err(ctx->state);
+
+	// Hoist RET-guard to not redo TAILCALL
+	if ((x = IR_GET(ctx->state, ref + x.b + 1)).op == IR_RET) asm_ret_guard(ctx, x.a);
 }
 
 static void asm_ret(struct RegAlloc *ctx, union Node x) {
 	enum Register bp = reg_use(ctx, REF_BP, -1);
 	asm_rmrd(&ctx->as, 1, XI_MOVmr, bp, REG_LISP_CTX, offsetof(struct LispCtx, bp));
 	asm_grp1_imm(&ctx->as, 1, XG_SUB, bp, x.b * sizeof x.v);
-
-	uintptr_t pc = IR_GET(ctx->state, x.a).v;
-	asm_guard(ctx, CC_NE); // Guard the return address
-	asm_write32(&ctx->as, pc);
-	asm_rmrd(&ctx->as, 0, 0x81, (uint8_t) XG_CMP, bp, sizeof x.v);
+	asm_ret_guard(ctx, x.a);
 }
 
 static void asm_arith(struct RegAlloc *ctx, enum ImmGrp1 op, Ref ref) {
