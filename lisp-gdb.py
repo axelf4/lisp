@@ -205,6 +205,27 @@ class LispTracePrinter(gdb.ValuePrinter):
         return dump_trace(self.val)
 
 
+class DumpBcParam(gdb.Parameter):
+    """Dump executed bytecode."""
+
+    def __init__(self):
+        super().__init__("lisp dump-bc", gdb.COMMAND_DATA, gdb.PARAM_BOOLEAN)
+        self.bp = None
+
+    def get_set_string(self):
+        class Bp(gdb.Breakpoint):
+            def stop(self):
+                chunk = gdb.selected_frame().read_var("chunk")
+                print(LispChunkPrinter(chunk).to_string())
+                return False
+
+        if self.bp:
+            self.bp.enabled = self.value
+        elif self.value:
+            self.bp = Bp("src/vm.c:run", gdb.BP_BREAKPOINT, gdb.WP_WRITE, internal=True)
+        return ""
+
+
 class DumpIrParam(gdb.Parameter):
     """Dump recorded IR with interleaved snapshots."""
 
@@ -252,4 +273,5 @@ def register(objfile):
 
 register(gdb.current_objfile())
 gdb.ParameterPrefix("lisp", gdb.COMMAND_NONE)
+DumpBcParam()
 DumpIrParam()
