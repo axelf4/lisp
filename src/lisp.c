@@ -404,6 +404,7 @@ struct LispCtx *lisp_new() {
 	Sadd.jit_id = JIT_F_ADD;
 	Scar.jit_id = JIT_F_CAR;
 	Scdr.jit_id = JIT_F_CDR;
+	Sconsp.jit_id = JIT_F_CONSP;
 
 	struct LispCFunction *cfuns[]
 		= { &Seval, &Sprint, &Sequal, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };
