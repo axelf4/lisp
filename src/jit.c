@@ -994,8 +994,12 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 			break;
 		}
 
-		take_snapshot(state);
+		if (!bp[-offset + 1]) { rec_err(state); break; }
+		struct Closure *closure = UNTAG_OBJ(bp[-offset]);
+		struct Chunk *chunk = prototype_chunk(closure->prototype);
+		emit_const(state, LISP_BYTECODE_CHUNK, TAG_OBJ(chunk)); // Pin bytecode
 		Ref pc_ref = emit_const(state, TY_RET_ADDR, (uintptr_t) npc);
+		take_snapshot(state);
 		emit(state, (union Node) { .op = IR_RET, TY_ANY, .a = pc_ref, .b = offset });
 		memset(state->bp, 0, offset * sizeof *state->bp); // Clear frame below
 		state->need_snapshot = true;
