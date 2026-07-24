@@ -402,6 +402,7 @@ struct LispCtx *lisp_new() {
 	Sequal.jit_id = JIT_F_EQ;
 	Slt.jit_id = JIT_F_LT;
 	Sadd.jit_id = JIT_F_ADD;
+	Sconsp.jit_id = JIT_F_CONSP;
 	Scar.jit_id = JIT_F_CAR;
 	Scdr.jit_id = JIT_F_CDR;
 

@@ -972,6 +972,10 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 		return emit_opt(state, (union Node)
 			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
 
+	case JIT_F_CONSP:
+		guard_type(state, &a, lisp_type(bp[x.a + 2]));
+		LispObject result = f->f(ctx, x.c, bp + x.a + 2);
+		return emit_const(state, lisp_type(result), result);
 	case JIT_F_CAR: case JIT_F_CDR:
 		enum LispType a_ty = NILP(ctx, bp[x.a + 2]) ? LISP_NIL : LISP_PAIR;
 		guard_type(state, &a, a_ty);
