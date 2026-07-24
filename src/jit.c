@@ -995,8 +995,11 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 			break;
 		}
 
-		take_snapshot(state);
+		if (!bp[-offset + 1]) { rec_err(state); break; }
+		struct Closure *closure = UNTAG_OBJ(bp[-offset]);
+		emit_const(state, LISP_BYTECODE_CHUNK, TAG_OBJ(prototype_chunk(closure->prototype)));
 		Ref pc_ref = emit_const(state, TY_RET_ADDR, (uintptr_t) npc);
+		take_snapshot(state);
 		emit(state, (union Node) { .op = IR_RET, TY_ANY, .a = pc_ref, .b = offset });
 		memset(state->bp, 0, offset * sizeof *state->bp); // Clear frame below
 		state->need_snapshot = true;
@@ -1006,6 +1009,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		break;
 	case FHDR:
 		struct Prototype *prototype = CONTAINER_OF(pc, struct Prototype, body[1]);
+		emit_const(state, LISP_BYTECODE_CHUNK, TAG_OBJ(prototype_chunk(prototype)));
 		// TODO Guard on prototype only
 		guard_value(state, state->bp, *bp); // Specialize to this function
 		if (pc == state->start_pc) {
