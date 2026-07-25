@@ -393,6 +393,7 @@ struct LispCtx *lisp_new() {
 	FOR_SYMBOL_CONSTS(X)
 #undef X
 
+	Seval.jit_id = JIT_F_ABORT;
 	Sequal.jit_id = JIT_F_EQ;
 	Slt.jit_id = JIT_F_LT;
 	Sadd.jit_id = JIT_F_ADD;

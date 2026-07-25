@@ -134,30 +134,24 @@ struct LispGcCallback {
 
 /** X-macro for the interned symbol constants. */
 #define FOR_SYMBOL_CONSTS(X) \
-	X(ffn, fn) \
-	X(fif, if) \
-	X(flet, let) \
-	X(fset, set) \
-	X(fquote, quote) \
-	X(fquasiquote, quasiquote) \
-	X(funquote, unquote) \
-	X(funquoteSplicing, unquote-splicing) \
-	X(t, t)
+	X(ffn, fn) X(fif, if) X(flet, let) X(fset, set) X(fquote, quote) \
+	X(fquasiquote, quasiquote) X(funquote, unquote) X(funquoteSplicing, unquote-splicing) \
+	X(t, t) \
+	X(fequal, =) X(flt, <) X(fadd, +) X(fcar, car) X(fcdr, cdr) X(fconsp, consp)
 /** X-macro for Lisp "keywords". */
 #define FOR_KEYWORDS(X) \
-	X(QUOTE, fquote) \
-	X(FN, ffn) \
-	X(IF, fif) \
-	X(LET, flet) \
-	X(SET, fset)
+	X(QUOTE, fquote) X(FN, ffn) X(IF, fif) X(LET, flet) X(SET, fset) \
+	X(F_EQ, fequal) \
+	X(F_LT, flt) \
+	X(F_ADD, fadd) \
+	X(F_CAR, fcar) X(F_CDR, fcdr) X(F_CONSP, fconsp)
 
 /** Lisp special form or common function. */
 enum LispKeyword {
 #define X(name, _) LISP_KW_ ## name,
 	FOR_KEYWORDS(X)
 #undef X
-	LISP_NUM_KEYWORDS,
-	LISP_NO_KEYWORD = LISP_NUM_KEYWORDS
+	LISP_NUM_KEYWORDS, LISP_NO_KEYWORD = -1
 };
 
 struct LispTrace;
@@ -190,6 +184,12 @@ struct LispCtx {
 #include LISP_GENERATED_FILE
 #else
 #define LISP_CONST(ctx, name) (ctx)->name
+
+static inline enum LispKeyword lisp_symbol_to_keyword(struct LispCtx *ctx, LispObject sym) {
+#define X(kw, var) LISP_EQ(sym, LISP_CONST(ctx, var)) ? LISP_KW_ ## kw :
+	return FOR_KEYWORDS(X) LISP_NO_KEYWORD;
+#undef X
+}
 #endif
 
 enum LispReadError {
@@ -280,7 +280,8 @@ static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 #define FOR_JIT_OPS(X) \
 	X(FHDR) /* Function header. */ \
 	X(FHDR_INTERPR) /* Like FHDR but blacklisted from being JITed. */ \
-	X(FHDR_JIT)
+	X(FHDR_JIT) \
+	X(FLUSHJIT)
 #else
 #define FOR_JIT_OPS(X)
 #endif
@@ -378,7 +379,7 @@ bool lisp_tbl_iter_next(struct Table *table, size_t *i, struct LispEntry **entry
 bool lisp_tbl_entry(struct Table *table, struct LispEntry key, struct LispEntry **entry);
 
 enum JitSubrId {
-	JIT_F_EQ = 1, JIT_F_LT, JIT_F_ADD
+	JIT_F_ABORT = 1, JIT_F_EQ, JIT_F_LT, JIT_F_ADD
 };
 
 [[nodiscard, gnu::malloc]] struct JitState *jit_new();
@@ -392,6 +393,8 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);
 
 /** Aborts the current trace recording, if any. */
 void jit_abort(struct JitState *state);
+
+[[gnu::cold]] void jit_flush(struct LispCtx *ctx);
 
 struct SideExitResult {
 	struct GcRef pc;

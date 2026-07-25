@@ -129,6 +129,7 @@ struct LispTrace {
 	uint8_t num_consts, num_snapshots, num_spill_slots;
 	uint32_t mcode_size,
 		mcode_tail; ///< Offset from #f to end of machine code block.
+	struct Instruction *start_pc; ///< Starting PC if root trace.
 	struct LispTrace *next; ///< Side trace list.
 	alignas(union Node) char data[];
 };
@@ -620,11 +621,11 @@ static void asm_call(struct RegAlloc *ctx, Ref ref, union Node x) {
 		reload(ctx, ctx->reg_costs[reg]);
 	ctx->clobbers |= REG_ALL & ~CALLEE_SAVED_REGS;
 
-#define ARG_REGS (1 << rdi | 1 << rsi | 1 << rdx | 1 << rcx | 1 << r8 | 1 << r9)
-	enum Register f_reg = reg_use(ctx, x.a, ~ARG_REGS);
-	asm_rmrd(&ctx->as, 0, XI_GRP5, /* CALL */ 2,
-		f_reg, offsetof(struct LispCFunction, f) - 1);
+	struct LispCFunction *f = UNTAG_OBJ(IR_GET(ctx->state, x.a).v);
+	asm_write32(&ctx->as, REL32(ctx->as.p, f->f));
+	*--ctx->as.p = XI_CALL;
 
+#define ARG_REGS (1 << rdi | 1 << rsi | 1 << rdx | 1 << rcx | 1 << r8 | 1 << r9)
 	uint32_t arg_regs = rdi | rsi << 4 | rdx << 8 | rcx << 12 | r8 << 16 | r9 << 20;
 	asm_mov(&ctx->as, arg_regs & 0xf, REG_LISP_CTX);
 	asm_loadu64(&ctx->as, (arg_regs >>= 4) & 0xf, x.b);
@@ -850,6 +851,7 @@ do_retry:
 		.num_spill_slots = ctx.num_spill_slots,
 		.mcode_size = ctx.end - ctx.as.p,
 		.mcode_tail = ctx.as.buf - ASM_HIWATER + MCODE_CAPACITY - ctx.as.p,
+		.start_pc = state->start_pc,
 		.next = state->parent ? state->parent->next : NULL,
 	};
 	char *p = result->data;
@@ -886,6 +888,11 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 	IrRef ref = SLOT(state, x.a), a = 0, b = 0;
 	struct LispCFunction *f = UNTAG_OBJ(bp[x.a]);
 
+	union Node fn_node = IR_GET(state, ref);
+	if (IS_VAR(ref) && !(fn_node.op == IR_GLOAD && f->jit_id &&
+			lisp_symbol_to_keyword(ctx, IR_GET(state, fn_node.a).v) >= LISP_KW_F_EQ))
+		guard_value(state, &ref, bp[x.a]);
+
 	switch (x.c) {
 	case 2: b = state->bp[x.a + 2 + 1]; [[fallthrough]];
 	case 1: a = SLOT(state, x.a + 2);
@@ -911,10 +918,9 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 		return emit_opt(state, (union Node)
 			{ .op = IR_ADD, .ty = LISP_INTEGER, .a = a, .b = b });
 
-	default: unreachable(); case 0:
+	default: unreachable(); case JIT_F_ABORT: nyi(state); case 0:
 	}
 
-	guard_type(state, &ref, LISP_CFUNCTION);
 	take_snapshot(state); // Type guard may get added to return value
 	IrRef result = emit(state, (union Node)
 		{ .op = IR_CALL, .ty = TY_ANY, .a = ref, .b = x.c });
@@ -1043,6 +1049,16 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 }
 
 void jit_abort(struct JitState *state) { state->is_aborted = true; }
+
+void jit_flush(struct LispCtx *ctx) {
+	for (unsigned i = 0; i < ctx->jit_state->num_traces; ++i) {
+		struct LispTrace *trace = (*ctx->traces)[i];
+		CONTAINER_OF(trace->start_pc, struct Prototype, body[1])->body->op = FHDR;
+		trace_free(trace);
+	}
+	memset(ctx->traces, 0, sizeof *ctx->traces);
+	ctx->jit_state->num_traces = 0;
+}
 
 static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
 	struct LispTrace *trace = ctx->current_trace;

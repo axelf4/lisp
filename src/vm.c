@@ -112,7 +112,7 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 	bp[0] = TAG_OBJ(chunk);
 	bp[1] = (uintptr_t)NULL; // TODO Reentrancy
 #if ENABLE_JIT
-	assert(!ctx->current_trace && "TODO");
+	assert(!ctx->current_trace);
 #define JIT_THRESHOLD 4
 	memset(ctx->hotcounts, JIT_THRESHOLD, sizeof ctx->hotcounts);
 #endif
@@ -244,6 +244,7 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 		}
 		DISPATCH_MAIN(insn.op);
 	}
+	DEFINE_OP(FLUSHJIT) { jit_flush(ctx); NEXT; }
 #else
 	DEFINE_OP(RECORD) { unreachable(); }
 #endif
@@ -286,14 +287,6 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 
 #define MAX_LOCAL_VARS 128
 #define MAX_UPVALUES 64
-
-#ifndef LISP_GENERATED_FILE
-static enum LispKeyword lisp_symbol_to_keyword(struct LispCtx *ctx, LispObject sym) {
-#define X(kw, var) LISP_EQ(sym, LISP_CONST(ctx, var)) ? LISP_KW_ ## kw :
-	return FOR_KEYWORDS(X) LISP_NO_KEYWORD;
-#undef X
-}
-#endif
 
 typedef uint8_t Register;
 
@@ -561,6 +554,8 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 				break;
 			case VAR_GLOBAL:
 				if (lisp_type(var) != LISP_SYMBOL) throw(COMP_INVALID_VARIABLE);
+				if (lisp_symbol_to_keyword(ctx->lisp_ctx, var) >= LISP_KW_F_EQ)
+					emit(ctx, (struct Instruction) { .op = FLUSHJIT });
 				uint16_t slot = constant_slot(ctx, var);
 				emit(ctx, (struct Instruction) { .op = SETGLOBAL, .a = dst.reg, .b = slot });
 				break;
@@ -584,7 +579,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 			ctx->insns[jmp].b = ctx->len - (jmp + 1);
 			return noreturn ? COMP_NORETURN : COMP_OK;
 		}
-		case LISP_NO_KEYWORD: // Macro or function call
+		default: // Macro or function call
 			if (lisp_type(head) == LISP_SYMBOL
 				&& consp(((struct LispSymbol *) UNTAG_OBJ(head))->value)) {
 				LispObject macro = car(lisp_ctx, ((struct LispSymbol *) UNTAG_OBJ(head))->value);
@@ -614,7 +609,6 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 					emit(ctx, (struct Instruction) { .op = MOV, .a = dst.reg, .c = reg });
 			}
 			break;
-		default: unreachable();
 		}
 		break;
 	default: unreachable();
