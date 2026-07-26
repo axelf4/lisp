@@ -135,6 +135,11 @@ struct LispSymbol {
 	LispObject value;
 };
 
+struct LispGcCallback {
+	void (*visit)(struct GcHeap *heap, bool mark_color, struct LispGcCallback *cb);
+	struct LispGcCallback *next;
+};
+
 /** X-macro for the interned symbol constants. */
 #define FOR_SYMBOL_CONSTS(X) \
 	X(ffn, fn) \
@@ -172,7 +177,7 @@ struct LispCtx {
 	struct LispObjectHeader nil;
 	struct Table symbol_tbl;
 	struct Upvalue *upvalues; ///< Sorted list of open upvalues.
-	struct Table consts; ///< Byte compilation constant table.
+	struct LispGcCallback *gc_callbacks;
 
 #if ENABLE_JIT
 	unsigned char hotcounts[64];

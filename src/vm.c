@@ -316,8 +316,10 @@ struct ByteCompCtx {
 	unsigned len, capacity,
 		prototypes; ///< Linked list of function prototype offsets.
 	struct Instruction *insns;
+	struct Table consts;
 	struct FnState *fn;
 	struct LispCtx *lisp_ctx;
+	struct LispGcCallback gc_callback;
 	struct Local vars[MAX_LOCAL_VARS];
 };
 
@@ -386,9 +388,9 @@ static void emit(struct ByteCompCtx *ctx, struct Instruction insn) {
 
 static uint16_t constant_slot(struct ByteCompCtx *ctx, LispObject x) {
 	struct LispEntry *entry, key = { .obj = x };
-	if (!(lisp_tbl_entry(&ctx->lisp_ctx->consts, key, &entry))) {
+	if (!(lisp_tbl_entry(&ctx->consts, key, &entry))) {
 		if (!entry) die("malloc failed");
-		entry->slot = ctx->lisp_ctx->consts.len;
+		entry->slot = ctx->consts.len;
 	}
 	size_t offset = (sizeof x / sizeof *ctx->insns) * entry->slot + ctx->len + 1;
 	if (offset > UINT16_MAX) throw(COMP_TOO_MANY_CONSTS);
@@ -620,27 +622,39 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 	return COMP_OK;
 }
 
+[[gnu::cold]] static void compile_gc_visit(struct GcHeap *heap, bool mark_color,
+	struct LispGcCallback *cb) {
+	struct ByteCompCtx *ctx = CONTAINER_OF(cb, struct ByteCompCtx, gc_callback);
+
+	struct LispEntry *constant;
+	for (size_t i = 0; lisp_tbl_iter_next(&ctx->consts, &i, &constant);)
+		if (!IS_SMI(constant->obj)) gc_pin(heap, mark_color, UNTAG_OBJ(constant->obj));
+}
+
 static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 	struct FnState fn;
 	struct ByteCompCtx ctx = {
 		.lisp_ctx = lisp_ctx,
 		.num_regs = 2, // Reserve closure and PC registers
 		.fn = &fn, // Dummy top-level function context
+		.consts = tbl_new(),
+		.gc_callback = { .visit = compile_gc_visit, .next = lisp_ctx->gc_callbacks },
 	};
 	fn.children = fn.vars_beg = fn.has_uvs = 0;
-	tbl_clear(&lisp_ctx->consts);
+	lisp_ctx->gc_callbacks = &ctx.gc_callback;
 	if (!compile_form(&ctx, form, (struct Destination) { .reg = 2, .is_return = true })) {
 		if (fn.has_uvs) emit(&ctx, (struct Instruction) { .op = CLO });
 		emit(&ctx, (struct Instruction) { .op = RET, .a = 2 });
 	}
+	lisp_ctx->gc_callbacks = ctx.gc_callback.next;
 	fixup_uvs(&ctx);
 
 	struct Chunk *chunk = gc_alloc((struct GcHeap *)lisp_ctx, alignof(struct Chunk),
-		sizeof *chunk + lisp_ctx->consts.len * sizeof(LispObject) + ctx.len * sizeof *ctx.insns);
+		sizeof *chunk + ctx.consts.len * sizeof(LispObject) + ctx.len * sizeof *ctx.insns);
 	*chunk = (struct Chunk) { { chunk->hdr.hdr, LISP_BYTECODE_CHUNK },
-		.num_consts = lisp_ctx->consts.len, .count = ctx.len };
+		.num_consts = ctx.consts.len, .count = ctx.len };
 	struct LispEntry *constant;
-	for (size_t i = 0; lisp_tbl_iter_next(&lisp_ctx->consts, &i, &constant);)
+	for (size_t i = 0; lisp_tbl_iter_next(&ctx.consts, &i, &constant);)
 		chunk_consts(chunk)[chunk->num_consts - constant->slot] = constant->obj;
 	memcpy(chunk_insns(chunk), ctx.insns, ctx.len * sizeof *ctx.insns);
 	for (size_t p = ctx.prototypes; p;) { // Patch prototype chunk offsets
@@ -649,7 +663,7 @@ static struct Chunk *compile(struct LispCtx *lisp_ctx, LispObject form) {
 		proto->offset = (char *)proto - (char *)chunk;
 	}
 
-	tbl_clear(&lisp_ctx->consts);
+	lisp_tbl_free(&ctx.consts);
 	free(ctx.insns);
 	return chunk;
 }
