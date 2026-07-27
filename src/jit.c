@@ -1004,8 +1004,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 			if (!state->parent && IR_GET(state, ref).a == pc_ref) rec_err(state);
 		break;
 	case FHDR:
-		struct Prototype *prototype = (struct Prototype *)
-			((char *) pc - offsetof(struct Prototype, body[1]));
+		struct Prototype *prototype = CONTAINER_OF(pc, struct Prototype, body[1]);
 		// TODO Guard on prototype only
 		guard_value(state, state->bp, *bp); // Specialize to this function
 		if (pc == state->start_pc) {

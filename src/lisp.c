@@ -216,8 +216,8 @@ void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 	case LISP_SYMBOL:
 		struct LispSymbol *sym = p;
 		gc_mark(sizeof *sym, p);
-		void *str = (char *) sym->name - offsetof(struct LispString, s);
-		if (GC_TRACE(heap, mark_color, str)) sym->name = ((struct LispString *) str)->s;
+		struct LispString *str = CONTAINER_OF(sym->name, struct LispString, s);
+		if (GC_TRACE(heap, mark_color, str)) sym->name = str->s;
 		lisp_trace(heap, mark_color, &sym->value);
 		break;
 	case LISP_STRING: gc_mark(string_size(p), p); break;

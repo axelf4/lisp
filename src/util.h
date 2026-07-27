@@ -13,6 +13,8 @@
 
 /** Number of elements in the array. */
 #define LENGTH(x) (sizeof (x) / sizeof *(x))
+/** Casts a member of a structure out to the containing structure. */
+#define CONTAINER_OF(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
 
 #define _STR(x) #x
 #define STR(x) _STR(x)
