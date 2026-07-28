@@ -385,6 +385,9 @@ void jit_init(struct JitState *state, struct Instruction *pc);
 /** Records instruction preceding @a pc prior to it being executed. */
 bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp);
 
+/** Aborts the current trace recording, if any. */
+void jit_abort(struct JitState *state);
+
 struct SideExitResult {
 	struct GcRef pc;
 	union {

@@ -288,6 +288,7 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 		x->visit(heap, mark_color, x);
 
 #if ENABLE_JIT
+	jit_abort(ctx->jit_state); // Avoid having to pin JitState referents
 	for (unsigned i = 0; i < LENGTH(*ctx->traces); ++i)
 		trace_trace(heap, mark_color, (*ctx->traces)[i]);
 #endif

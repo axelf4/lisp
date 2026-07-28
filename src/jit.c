@@ -700,6 +700,7 @@ static void patch_exit(struct LispTrace *parent, uint8_t exit_num, struct LispTr
 static struct LispTrace *assemble_trace(struct JitState *state, enum TraceLink link_type) {
 	state->need_snapshot = true, take_snapshot(state);
 	if (link_type == TRACE_LINK_LOOP) peel_loop(state);
+	if (UNLIKELY(state->status != REC_OK)) return NULL;
 	state->snapshots[0].beg = REF_FIRST;
 
 #define ALIGN_PAGE(p) ((void *) ((uintptr_t) (p) & ~(page_size() - 1)))
@@ -1039,6 +1040,8 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 	if (state->status != REC_OK) penalize(state);
 	return state->status == REC_OK;
 }
+
+void jit_abort(struct JitState *state) { state->status = REC_NYI; }
 
 static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
 	struct LispTrace *trace = ctx->current_trace;
