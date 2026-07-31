@@ -21,6 +21,7 @@
 #ifndef GC_HEAP_SIZE
 #define GC_HEAP_SIZE /* 64 MiB */ 0x4000000 ///< GC heap allocation size in bytes.
 #endif
+#define LOS_SIZE (offsetof(struct GcHeap, blocks) / GC_ALIGNMENT * GC_BLOCK_SIZE)
 #define NUM_BLOCKS (GC_HEAP_SIZE / GC_BLOCK_SIZE - 1)
 #define MIN_FREE (0.3 * NUM_BLOCKS)
 #define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_ALIGNMENT * CHAR_BIT))
@@ -55,6 +56,13 @@ static struct BumpPointer next_gap(struct GcBlock *block, char *top) {
 		: (struct BumpPointer) {};
 }
 
+struct LargeObject {
+	alignas(GC_BLOCK_SIZE) unsigned char flag; ///< @see GcBlock::flag.
+	bool is_live;
+	struct LargeObject *next;
+	alignas(max_align_t) struct GcObjectHeader hdr;
+};
+
 struct GcHeap {
 	// Store at same offset to use a single pointer for both
 	struct LispCtx lisp_ctx;
@@ -67,6 +75,7 @@ struct GcHeap {
 	unsigned *object_map; ///< Bitset of object start positions.
 	struct MarkStack { void **beg, **p, **end; } mark_stack;
 	struct ModSet { unsigned len, capacity; struct BumpPointer *xs; } modset;
+	struct LargeObject *los; ///< Large Object Space (LOS) implicit free list.
 	struct GcBlock blocks[NUM_BLOCKS];
 };
 
@@ -77,12 +86,12 @@ struct GcHeap *gc_new() {
 	alignment = /* 4 GiB */ 1ull << 32;
 #endif
 	char *p;
-	if ((p = mmap(NULL, sizeof *heap + alignment - 1, PROT_READ | PROT_WRITE,
+	if ((p = mmap(NULL, sizeof *heap + LOS_SIZE + alignment - 1, PROT_READ | PROT_WRITE,
 				MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0))
 		== MAP_FAILED) return NULL;
-	heap = (struct GcHeap *) ALIGN_UP(p, alignment);
-	munmap(p, (char *) heap - p);
-	munmap(heap + 1, p + alignment - 1 - (char *) heap);
+	heap = (struct GcHeap *)ALIGN_UP(p, alignment);
+	munmap(p, (char *)heap - p);
+	munmap((char *)(heap + 1) + LOS_SIZE, p + alignment - 1 - (char *)heap);
 
 #ifndef __linux__
 	heap->mark_color = heap->inhibit_gc = heap->is_major_gc = heap->is_defrag = false;
@@ -99,13 +108,19 @@ struct GcHeap *gc_new() {
 	heap->free_len = NUM_BLOCKS - 1;
 	heap->recycled = heap->free + NUM_BLOCKS;
 
+	struct LargeObject *l0 = heap->los = (struct LargeObject *)(heap + 1),
+		*l1 = (struct LargeObject *)((char *)l0 + LOS_SIZE) - 1;
+	l0->next = l1;
+	l1->next = NULL;
+	ASAN_POISON_MEMORY_REGION(&l0->hdr, (char *)l1 - (char *)&l0->hdr);
+
 	struct GcBlock *blocks = heap->blocks;
 	heap->ptr = heap->overflow_ptr = NULL_BUMP_PTR(blocks);
 	for (struct GcBlock *block = blocks; block < blocks + NUM_BLOCKS; ++block) {
 		ASAN_POISON_MEMORY_REGION(block->data, sizeof block->data);
 #ifndef __linux__
-		memset(block->line_marks, 0, sizeof block->line_marks);
 		blocks->flag = 0;
+		memset(block->line_marks, 0, sizeof block->line_marks);
 #endif
 	}
 	for (unsigned i = 0; i < NUM_BLOCKS; ++i) heap->free[i] = blocks + i;
@@ -117,20 +132,25 @@ void gc_free(struct GcHeap *heap) {
 	free(heap->mark_stack.beg);
 	free(heap->free);
 	free(heap->object_map);
-	munmap(heap, sizeof *heap);
+	munmap(heap, sizeof *heap + LOS_SIZE);
 }
 
 /** Remembers @a p as a live allocated object location. */
 static void object_map_add(struct GcHeap *heap, char *p) {
-	size_t i = (p - (char *)heap) / GC_ALIGNMENT, n = CHAR_BIT * sizeof *heap->object_map;
+	unsigned i = (p - (char *)heap), n = CHAR_BIT * sizeof *heap->object_map;
+	if (p < (char *)(heap + 1)) i /= GC_ALIGNMENT; else i /= alignof(struct LargeObject);
 	heap->object_map[i / n] |= 1u << i % n;
 }
 
 /** Removes @a x from the object map, returning whether it was present. */
 static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
-	if (x % GC_ALIGNMENT || x - (uintptr_t)heap->blocks >= sizeof heap->blocks)
-		return false;
-	size_t i = (x - (uintptr_t)heap) / GC_ALIGNMENT, n = CHAR_BIT * sizeof *heap->object_map;
+	if (x - (uintptr_t)heap->blocks >= sizeof heap->blocks + LOS_SIZE) return false;
+	unsigned i = x - (uintptr_t)heap, n = CHAR_BIT * sizeof *heap->object_map;
+	if (x >= (uintptr_t)(heap + 1)) {
+		if ((i -= offsetof(struct LargeObject, hdr)) % alignof(struct LargeObject))
+			return false;
+		i /= alignof(struct LargeObject);
+	} else { if (i % GC_ALIGNMENT) return false; i /= GC_ALIGNMENT; }
 	unsigned *v = heap->object_map + i / n, mask = 1u << i % n, ret = *v & mask;
 #if __x86_64__ && __GNUC__
 	__asm__ ("btr %0, %k2" : "+m" (*heap->object_map), "=@ccc" (ret) : "Ir" (i) : "cc");
@@ -176,14 +196,37 @@ out_bump:
 	return bump_alloc(ptr, alignment, size);
 }
 
+[[gnu::cold]] static void *alloc_large(struct GcHeap *heap, [[maybe_unused]] size_t alignment, size_t size) {
+	assert(alignment <= alignof(max_align_t));
+	assert(!heap->inhibit_gc && "evacuated large object");
+do_retry: struct LargeObject *obj = heap->los;
+	do if (!obj->is_live && (size_t)((char *)obj->next - (char *)&obj->hdr) >= size)
+		   goto found; // First-fit allocation
+	while ((obj = obj->next)->next);
+	garbage_collect(heap);
+	goto do_retry;
+found:
+	struct LargeObject *new = (struct LargeObject *)
+		ALIGN_UP((char *)&obj->hdr + size, alignof(struct LargeObject));
+	if (new < obj->next) {
+		ASAN_UNPOISON_MEMORY_REGION(new, sizeof *new);
+		*new = (struct LargeObject){ .next = obj->next };
+		obj->next = new;
+	}
+	ASAN_UNPOISON_MEMORY_REGION(&obj->hdr, size);
+	obj->is_live = true;
+	obj->hdr = (struct GcObjectHeader){ heap->mark_color };
+	object_map_add(heap, (char *)&obj->hdr);
+	return &obj->hdr;
+}
+
 void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
-	char *p;
-	if (UNLIKELY(size > sizeof (struct GcBlock) {}.data)
-		|| !(LIKELY(p = bump_alloc(&heap->ptr, alignment, size))
-			|| (p = alloc_slow_path(heap, alignment, size)))) return NULL;
+	if (size > sizeof (struct GcBlock){}.data) return alloc_large(heap, alignment, size);
+	char *p = LIKELY(p = bump_alloc(&heap->ptr, alignment, size)) ? p
+		: alloc_slow_path(heap, alignment, size);
 	ASAN_UNPOISON_MEMORY_REGION(p, size);
 	*(struct GcObjectHeader *) p = (struct GcObjectHeader) { heap->mark_color };
-	object_map_add(heap, p);
+	if (p < (char *)(heap + 1)) object_map_add(heap, p); else unreachable();
 	return p;
 }
 
@@ -264,14 +307,14 @@ static struct BlockStats {
 	block->flag = 0;
 	unsigned unavailable_lines = 0;
 #ifdef __AVX2__
-	__m256i_u *ys = (__m256i_u *) (block->line_marks - 1);
-	__m256i *xs = (__m256i *) block->line_marks, as[] = {
-		_mm256_or_si256(_mm256_load_si256(xs),
-			_mm256_andnot_si256( // Mask block->line_marks[-1]
-				_mm256_set_epi64x(0, 0, 0, 0xff), _mm256_loadu_si256(ys))),
+	__m256i_u *ys = (__m256i_u *)block->line_marks;
+	__m256i *xs = (__m256i *)(block->line_marks - 1), as[] = {
+		_mm256_or_si256(_mm256_load_si256(xs), _mm256_loadu_si256(ys)),
 		_mm256_or_si256(_mm256_load_si256(xs + 1), _mm256_loadu_si256(ys + 1)),
 		_mm256_or_si256(_mm256_load_si256(xs + 2), _mm256_loadu_si256(ys + 2)),
-		_mm256_or_si256(_mm256_load_si256(xs + 3), _mm256_loadu_si256(ys + 3)),
+		_mm256_or_si256(_mm256_load_si256(xs + 3),
+			_mm256_andnot_si256( // Mask block->line_marks[127]
+				_mm256_set_epi64x(-1ull << 56, 0, 0, 0), _mm256_loadu_si256(ys + 3))),
 	}, sums = _mm256_sad_epu8(
 		_mm256_add_epi8(_mm256_add_epi8(as[0], as[1]), _mm256_add_epi8(as[2], as[3])),
 		_mm256_setzero_si256());
@@ -366,6 +409,15 @@ void garbage_collect(struct GcHeap *heap) {
 		case UNAVAILABLE: break;
 		case RECYCLABLE: heap->recycled[heap->recycled_len++] = block; break;
 		case FREE: heap->free[heap->free_len++] = block; break;
+		}
+	for (struct LargeObject *obj = heap->los, *prev = NULL; obj->next; obj = obj->next)
+		if (obj->is_live && (obj->hdr.flags & GC_MARK) == mark_color) prev = NULL;
+		else {
+			bool was_live = obj->is_live;
+			obj->is_live = false;
+			object_map_remove(heap, (uintptr_t)&obj->hdr);
+			if (prev) { prev->next = obj->next; obj = prev; } else prev = obj;
+			if (was_live) ASAN_POISON_MEMORY_REGION(&obj->hdr, (char *)obj->next - (char *)&obj->hdr);
 		}
 
 	heap->is_major_gc = heap->free_len <= NUM_BLOCKS / 4;

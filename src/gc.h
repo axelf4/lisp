@@ -71,9 +71,9 @@ struct GcRef {
 struct GcObjectHeader { unsigned char flags; };
 
 struct GcBlock {
-	alignas(GC_BLOCK_SIZE) char data[GC_LINE_SIZE * GC_LINE_COUNT];
+	alignas(GC_BLOCK_SIZE) unsigned char flag;
 	bool line_marks[GC_LINE_COUNT];
-	unsigned char flag;
+	char data[GC_LINE_SIZE * GC_LINE_COUNT];
 };
 
 struct GcHeap;
@@ -118,6 +118,7 @@ void *gc_evacuate(struct GcHeap *heap, void *p);
 static inline void gc_mark(size_t len, const char p[static len]) {
 	const char *end = p + len;
 	struct GcBlock *block = GC_BLOCK(p);
+	if (UNLIKELY(len > sizeof block->data)) return;
 	unsigned line = (p - block->data) / GC_LINE_SIZE;
 	// The end of the object may extend into another line implicitly
 	// due to conservative marking.
