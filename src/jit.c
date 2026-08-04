@@ -1,5 +1,42 @@
 /** Tracing just-in-time compiler.
  *
+ * > Programs spend most of their runtime in a few hot loops.
+ *
+ * --- The tracing JIT hypothesis
+ *
+ * Consider the following loop bytecode control flow graph:
+ *
+ *      BC ┌───┬┄┄┄⇢┌─┐ Root trace
+ *     ┏━━🭬└─┰─┘    │ │
+ *     ┃   🯐🯑🭭🯒🯓←──┐│ │Guard
+ *     ┃ ┏━🯒🯓 🯐🯑─┐ └┤>├──┐
+ *     ┃┌🭭─┐ 🯠 ┌─↓┐ │ │ ┌↓┐ Side trace
+ *     ┃└─┰┘   └┬─┘ │ │ │ │
+ *     ┃  ┗━━┱──┘   │ │ │ │
+ *     ┃   ┌─🭭─┐  ┌→│ │ │ │
+ *     ┃   └┰──┘  │ └┬┘ └┬┘
+ *     ┗━━━━┛     └──┴───┘
+ *
+ * Tracing starts when the loop header (@ref FHDR of the recursive
+ * function) hotcount exceeds a threshold. Instructions are recorded
+ * into an intermediate representation (IR) prior to being executed.
+ * Conditional jumps only *guard* that the condition stays the same.
+ * Upon reaching the start again, the root trace is assembled;
+ * subsequent iterations run it instead.
+ *
+ * Guard failure, e.g., due to another branch being taken, leads to a
+ * *side-exit*, resuming execution in the interpreter. Computations
+ * performed hitherto are transferred to the VM stack according to the
+ * preceding #Snapshot, to continue where the trace left off. If an
+ * exit itself gets hot then it in turn is traced, possibly patching
+ * it to henceforth jump to a *side trace*, forming a *trace tree*.
+ *
+ * The IR is in Static Single-Assignment (SSA)-form. As a trace is a
+ * linear basic block, nodes are stored in an array and referenced by
+ * index. Registers are allocated via reverse linear-scan while
+ * assembling back-to-front: In the absence of branches, live
+ * intervals of virtuals range simply from last use to definition.
+ *
  * @see GAL, Andreas, et al. Trace-based just-in-time type
  *      specialization for dynamic languages. ACM Sigplan Notices,
  *      2009, 44.6: 465-478.
@@ -97,17 +134,11 @@ struct SnapshotEntry {
 		slot; ///< The stack slot to restore.
 };
 
-/** Patchpoint header for on-stack replacement.
- *
- * When taking an exit, computations performed hitherto need to be
- * transferred to the stack for the interpreter to continue from where
- * the compiled trace left off. The snapshot contains the PC and list
- * of stack slots to restore.
- */
+/** Patchpoint header for on-stack replacement. */
 struct Snapshot {
 	Ref beg; ///< One past the last virtual recorded at time of capture.
 	uint8_t offset, ///< Offset into @ref JitState::stack_entries.
-		num_entries, ///< Number of stack entries.
+		num_entries, ///< Length of list of stack slots to restore.
 		base_offset,
 		hotcount;
 	struct GcRef pc; ///< Instruction pointer after this point.
@@ -349,6 +380,10 @@ static void subst_snapshot(struct JitState *state, uintptr_t subst,
 
 /** Peels off a preamble from the loop.
  *
+ * Performs Loop-Invariant Code Motion (LICM) by designating current
+ * nodes as a preamble and reinterpreting each node with CSE via @ref
+ * emit_opt().
+ *
  * @see ARDÖ, Håkan; BOLZ, Carl Friedrich; FIJABKOWSKI, Maciej.
  *      Loop-aware optimizations in PyPy's tracing JIT. In:
  *      Proceedings of the 8th symposium on Dynamic languages. 2012.
@@ -394,8 +429,6 @@ static void peel_loop(struct JitState *state) {
 	}
 }
 
-/* Reverse linear-scan register allocation */
-
 struct RegAlloc {
 	struct Assembler as;
 	struct JitState *state;
@@ -406,7 +439,16 @@ struct RegAlloc {
 	uint8_t *prev_p;
 #endif
 	uint8_t *end;
-	/** The LuaJIT register cost model. */
+	/** The LuaJIT register cost model (discounting φ).
+	 *
+	 * The IR reference is used directly as spilling heuristic:
+	 *
+     *     --constants--|--invariants-+-variants--> higher cost
+     *               IR_BIAS       IR_LOOP
+     *
+     * corresponding to the live interval length heuristic, with
+     * rematerializing constants costing the least.
+	 */
 	alignas(32) Ref reg_costs[NUM_REGS];
 	Ref phi_refs[NUM_REGS]; ///< For each #phi_regs bit, its corresponding "in".
 };
