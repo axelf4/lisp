@@ -86,3 +86,14 @@
   (cons 'set (if (consp x)
                  `(,(car x) (let (,(car x) (fn ,(cdr x) . ,body)) ,(car x)))
                (cons x body))))
+
+(defmacro (or . conds)
+  (if (cdr conds)
+      (let (tmp (gensym))
+        `(let (,tmp ,(car conds)) (if ,tmp ,tmp (or ,@(cdr conds)))))
+    (car conds)))
+
+(defmacro (and . conds)
+  (if (cdr conds)
+      `(if ,(car conds) (and ,@(cdr conds)))
+    (if conds (car conds) t)))
