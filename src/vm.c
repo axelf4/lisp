@@ -496,7 +496,7 @@ static void compile_fn(struct ByteCompCtx *ctx, LispObject x, struct Destination
 static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, struct Destination dst) {
 	struct LispCtx *lisp_ctx = ctx->lisp_ctx;
 	switch (lisp_type(x)) {
-	case LISP_NIL: case LISP_INTEGER: emit_load_obj(ctx, x, dst); break;
+	case LISP_NIL: case LISP_INTEGER: case LISP_STRING: emit_load_obj(ctx, x, dst); break;
 	case LISP_SYMBOL:
 		if (dst.discarded) break;
 		struct VarRef var = lookup(ctx, x);

@@ -50,6 +50,15 @@ static enum LispReadError read_int(const char **s, LispObject *result) {
 	return LISP_READ_OK;
 }
 
+static enum LispReadError read_str(struct LispCtx *ctx, const char **s, LispObject *out) {
+	const char *x = *s + 1, *beg = x;
+	// TODO Convert character escapes
+	for (; *x != '"'; ++x) if (!LIKELY(*x)) return LISP_READ_EOF;
+	*out = lisp_str(ctx, x - beg, beg);
+	*s = ++x;
+	return LISP_READ_OK;
+}
+
 static bool read_prefix(struct LispCtx *ctx, const char **s, LispObject *result) {
 	switch (**s) {
 	case '\'': ++*s; *result = LISP_CONST(ctx, fquote); return true;
@@ -79,6 +88,8 @@ val_beg:
 	skip_whitespace(s);
 val_beg_no_ws:
 	LispObject value;
+	const char *beg = *s;
+	enum LispReadError err;
 	if (**s == '(') {
 		++*s;
 		skip_whitespace(s);
@@ -91,10 +102,8 @@ val_beg_no_ws:
 		*p++ = len << TYPE_BITS | CTN_PREFIX;
 		len = 0;
 		goto val_beg;
-	}
-	const char *beg = *s;
-	enum LispReadError err;
-	if ((err = read_int(s, &value))) {
+	} else if (**s == '"') { if ((err = read_str(ctx, s, &value))) return err; }
+	else if ((err = read_int(s, &value))) {
 		if (UNLIKELY(err != LISP_READ_TRAILING)) return err;
 		while (is_ident(**s)) ++*s;
 		if (UNLIKELY(*s == beg)) return p > p0 ? LISP_READ_EOF : LISP_READ_EMPTY;

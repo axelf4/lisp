@@ -182,6 +182,7 @@ static void test_reader(void **state) {
 	assert_int_equal(lisp_read_whole(ctx, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
 	assert_read_whole_equal(ctx, "42", TAG_SMI(42));
 	assert_read_whole_equal(ctx, "1x", intern(ctx, sizeof "1x" - 1, "1x"));
+	assert_read_whole_equal(ctx, "\"foo\"", lisp_str(ctx, sizeof "foo" - 1, "foo"));
 }
 
 static void test_reader_ignores_whitespace(void **state) {

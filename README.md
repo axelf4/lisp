@@ -16,7 +16,7 @@ Forms are evaluated according to the following rules:
   Tail-call elimination in return-positions is guaranteed.
 * `SYM` evaluates to the value of the lexically-scoped variable named
   `SYM`.
-* `nil` and integers evaluate to themselves.
+* `nil`, integers and strings evaluate to themselves.
 
 The language consists of the following special forms:
 
