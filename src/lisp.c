@@ -391,9 +391,9 @@ struct LispCtx *lisp_new() {
 
 	ctx->symbol_tbl = tbl_new();
 #ifdef LISP_GENERATED_FILE
-#define X(var, sym) intern(ctx, sizeof #sym - 1, #sym);
+#define X(var, sym) LISP_INTERN(ctx, #sym);
 #else
-#define X(var, sym) ctx->var = intern(ctx, sizeof #sym - 1, #sym);
+#define X(var, sym) ctx->var = LISP_INTERN(ctx, #sym);
 #endif
 	FOR_SYMBOL_CONSTS(X)
 #undef X

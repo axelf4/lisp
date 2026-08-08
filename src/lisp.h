@@ -61,6 +61,7 @@
 #endif
 
 #define LISP_BOOL(ctx, x) ((x) ? LISP_CONST(ctx, t) : NIL(ctx))
+#define LISP_INTERN(ctx, s) intern(ctx, sizeof(s) - 1, s)
 
 #define _LISP_ARGS_1
 #define _LISP_ARGS_2 *argv

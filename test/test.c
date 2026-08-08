@@ -167,12 +167,12 @@ static void test_cyclic_eq(void **state) {
 
 static void test_intern_reuses_sym(void **state) {
 	struct LispCtx *ctx = *state;
-	assert_lisp_equal(ctx, intern(ctx, 1, "x"), intern(ctx, 1, "x"));
+	assert_lisp_equal(ctx, LISP_INTERN(ctx, "x"), LISP_INTERN(ctx, "x"));
 }
 
 static void test_intern_recognizes_nil(void **state) {
 	struct LispCtx *ctx = *state;
-	assert_true(NILP(ctx, intern(ctx, sizeof "nil" - 1, "nil")));
+	assert_true(NILP(ctx, LISP_INTERN(ctx, "nil")));
 }
 
 static void test_reader(void **state) {
@@ -181,15 +181,15 @@ static void test_reader(void **state) {
 	assert_int_equal(lisp_read_whole(ctx, "(0 .", &obj), LISP_READ_EOF);
 	assert_int_equal(lisp_read_whole(ctx, "(0 . 0 .", &obj), LISP_READ_EXPECTED_RPAREN);
 	assert_read_whole_equal(ctx, "42", TAG_SMI(42));
-	assert_read_whole_equal(ctx, "1x", intern(ctx, sizeof "1x" - 1, "1x"));
+	assert_read_whole_equal(ctx, "1x", LISP_INTERN(ctx, "1x"));
 	assert_read_whole_equal(ctx, "\"foo\"", lisp_str(ctx, sizeof "foo" - 1, "foo"));
 }
 
 static void test_reader_ignores_whitespace(void **state) {
 	struct LispCtx *ctx = *state;
 	assert_read_whole_equal(ctx, " ( x 0\n . ' y ) ",
-		cons(ctx, intern(ctx, 1, "x"), cons(ctx, 0,
-				cons(ctx, LISP_CONST(ctx, fquote), cons(ctx, intern(ctx, 1, "y"), NIL(ctx))))));
+		cons(ctx, LISP_INTERN(ctx, "x"), cons(ctx, 0, cons(ctx, LISP_CONST(ctx, fquote),
+					cons(ctx, LISP_INTERN(ctx, "y"), NIL(ctx))))));
 }
 
 static LispObject eval(struct LispCtx *ctx, const char *s) {
