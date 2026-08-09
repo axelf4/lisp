@@ -123,4 +123,5 @@ endif()
 
 install(TARGETS lisp)
 install(FILES lisp-gdb.py TYPE BIN RENAME $<TARGET_FILE_NAME:lisp>-gdb.py)
+install(FILES lisp.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 install(DIRECTORY lisp DESTINATION ${CMAKE_INSTALL_DATADIR})

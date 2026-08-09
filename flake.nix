@@ -13,6 +13,7 @@
       strictDeps = true;
       nativeBuildInputs = [ pkgs.cmake ];
       checkInputs = [ pkgs.cmocka ];
+      outputs = [ "out" "man" ];
 
       doCheck = true;
 
