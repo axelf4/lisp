@@ -1,0 +1,22 @@
+.TH LISP 1 2026-09-06
+.SH NAME
+lisp \- Lisp interpreter
+.SH SYNOPSIS
+.B lisp
+[\fB\-\-script\fR \fIfile\fR]
+.SH DESCRIPTION
+.B lisp
+is an interpreter for a small dialect of the Lisp programming
+language.
+.P
+A script search path is initialized at startup. Its first entry is the
+current directory, and second, the directory containing the input
+script, if any. Next, the directory containing standard scripts is
+added. It is found by using the
+.B lisp
+executable as a starting point and looking for the
+\fBlisp/core.lisp\fR "landmark" file in parent directories.
+.SH OPTIONS
+.TP
+.BR \-s ", " \-\-script =\fIfile\fR
+Run \fIfile\fR as a Lisp script.
