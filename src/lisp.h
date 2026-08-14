@@ -71,8 +71,8 @@
 /** Defines a built-in variadic function. @see #DEFUN() */
 #define DEFUN_VA(lname, cname)											\
 	static LispObject F ## cname(struct LispCtx *ctx, size_t argc, const LispObject *argv); \
-	static struct LispCFunction S ## cname = {							\
-		.hdr.tag = LISP_CFUNCTION, .f = F ## cname, .name = lname };	\
+	static struct LispSubr S ## cname = {								\
+		.hdr.tag = LISP_SUBROUTINE, .f = F ## cname, .name = lname };	\
 	static LispObject F ## cname([[maybe_unused]] struct LispCtx *ctx,	\
 		[[maybe_unused]] size_t argc, [[maybe_unused]] const LispObject *argv)
 /** Defines a built-in function for calling from Lisp.
@@ -111,7 +111,7 @@ enum LispType : unsigned char {
 	LISP_PAIR,
 	LISP_SYMBOL,
 	LISP_STRING,
-	LISP_CFUNCTION,
+	LISP_SUBROUTINE,
 	LISP_CLOSURE,
 	LISP_UPVALUE,
 	LISP_BYTECODE,
@@ -229,7 +229,7 @@ bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext, struct LispCt
 
 void lisp_free(struct LispCtx *);
 
-struct LispCFunction {
+struct LispSubr {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;
 	unsigned char jit_id;
 	LispObject (*f)(struct LispCtx *, size_t n, const LispObject args[static n]);
@@ -237,7 +237,7 @@ struct LispCFunction {
 };
 
 /** Defines the symbol for @a fn at start-up time. */
-void lisp_defsubr(struct LispCtx *ctx, const struct LispCFunction *fn);
+void lisp_defsubr(struct LispCtx *ctx, const struct LispSubr *subr);
 
 struct LispString {
 	alignas(GC_ALIGNMENT) struct LispObjectHeader hdr;

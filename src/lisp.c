@@ -73,8 +73,8 @@ void lisp_print(struct LispCtx *ctx, LispObject x, FILE *stream) {
 		struct LispSymbol *sym = UNTAG_OBJ(x);
 		fwrite(sym->name, sizeof *sym->name, sym->len, stream);
 		break;
-	case LISP_CFUNCTION:
-		fprintf(stream, "#<subr %s>", ((struct LispCFunction *) UNTAG_OBJ(x))->name);
+	case LISP_SUBROUTINE:
+		fprintf(stream, "#<subr %s>", ((struct LispSubr *)UNTAG_OBJ(x))->name);
 		break;
 	case LISP_CLOSURE: fputs("#<closure>", stream); break;
 	default: unreachable();
@@ -121,7 +121,7 @@ enum EqMode { EQ_PRECHECK, EQ_FAST, EQ_SLOW };
 	if (lisp_type(b) != ty) return NIL(ctx);
 	auto f = mode == EQ_PRECHECK ? eq_precheck : eq;
 	switch (ty) {
-	case LISP_INTEGER: case LISP_SYMBOL: case LISP_CFUNCTION: case LISP_CLOSURE:
+	case LISP_INTEGER: case LISP_SYMBOL: case LISP_SUBROUTINE: case LISP_CLOSURE:
 		return NIL(ctx);
 	case LISP_PAIR:
 		struct LispPair *x = UNTAG_OBJ(a), *y = UNTAG_OBJ(b);
@@ -220,7 +220,7 @@ void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
 		lisp_trace(heap, mark_color, &sym->value);
 		break;
 	case LISP_STRING: gc_mark(string_size(p), p); break;
-	case LISP_CFUNCTION: gc_mark(sizeof(struct LispCFunction), p); break;
+	case LISP_SUBROUTINE: gc_mark(sizeof(struct LispSubr), p); break;
 	case LISP_CLOSURE: {
 		struct Closure *f = p;
 		gc_mark(closure_size(f), p);
@@ -258,9 +258,9 @@ size_t gc_object_size(void *p, size_t *alignment) {
 	case LISP_STRING:
 		*alignment = alignof(struct LispString);
 		return string_size(p);
-	case LISP_CFUNCTION:
-		*alignment = alignof(struct LispCFunction);
-		return sizeof(struct LispCFunction);
+	case LISP_SUBROUTINE:
+		*alignment = alignof(struct LispSubr);
+		return sizeof(struct LispSubr);
 	case LISP_CLOSURE:
 		*alignment = alignof(struct Closure);
 		return closure_size(p);
@@ -315,11 +315,11 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 		GC_TRACE(heap, mark_color, *uv);
 }
 
-void lisp_defsubr(struct LispCtx *ctx, const struct LispCFunction *fn) {
-	struct LispCFunction *x
-		= gc_alloc((struct GcHeap *)ctx, alignof(struct LispCFunction), sizeof *x);
+void lisp_defsubr(struct LispCtx *ctx, const struct LispSubr *subr) {
+	struct LispSubr *x
+		= gc_alloc((struct GcHeap *)ctx, alignof(struct LispSubr), sizeof *x);
 	struct GcObjectHeader hdr = x->hdr.hdr;
-	*x = *fn;
+	*x = *subr;
 	x->hdr.hdr = hdr;
 	struct LispSymbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
 	sym->value = TAG_OBJ(x);
@@ -415,10 +415,11 @@ struct LispCtx *lisp_new() {
 	Sconsp.jit_id = JIT_F_CONSP;
 	Scar.jit_id = JIT_F_CAR;
 	Scdr.jit_id = JIT_F_CDR;
-
-	struct LispCFunction *cfuns[]
-		= { &Seval, &Sprint, &Sequal, &Sgensym, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };
-	for (size_t i = 0; i < LENGTH(cfuns); ++i) lisp_defsubr(ctx, cfuns[i]);
+	struct LispSubr *subrs[] = {
+		&Seval, &Sprint, &Sequal, &Sgensym,
+		&Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt,
+	};
+	for (size_t i = 0; i < LENGTH(subrs); ++i) lisp_defsubr(ctx, subrs[i]);
 
 	return ctx;
 err_free_stack:

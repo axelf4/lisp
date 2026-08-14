@@ -666,7 +666,7 @@ static void asm_call(struct RegAlloc *ctx, Ref ref, union Node x) {
 		reload(ctx, ctx->reg_costs[reg]);
 	ctx->clobbers |= REG_ALL & ~CALLEE_SAVED_REGS;
 
-	struct LispCFunction *f = UNTAG_OBJ(IR_GET(ctx->state, x.a).v);
+	struct LispSubr *f = UNTAG_OBJ(IR_GET(ctx->state, x.a).v);
 	asm_write32(&ctx->as, REL32(ctx->as.p, f->f));
 	*--ctx->as.p = XI_CALL;
 
@@ -938,12 +938,12 @@ found:
 		state->start_pc[-1].op = FHDR_INTERPR; // Blacklist
 }
 
-static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_t *bp, struct Instruction x) {
+static IrRef record_subr(struct LispCtx *ctx, struct JitState *state, uintptr_t *bp, struct Instruction x) {
 	IrRef ref = SLOT(state, x.a), a = 0, b = 0;
-	struct LispCFunction *f = UNTAG_OBJ(bp[x.a]);
+	struct LispSubr *subr = UNTAG_OBJ(bp[x.a]);
 
 	union Node fn_node = IR_GET(state, ref);
-	if (IS_VAR(ref) && !(fn_node.op == IR_GLOAD && f->jit_id &&
+	if (IS_VAR(ref) && !(fn_node.op == IR_GLOAD && subr->jit_id &&
 			lisp_symbol_to_keyword(ctx, IR_GET(state, fn_node.a).v) >= LISP_KW_F_EQ))
 		guard_value(state, &ref, bp[x.a]);
 
@@ -953,11 +953,11 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 	case 0: default: break;
 	}
 
-	switch (f->jit_id) {
+	switch (subr->jit_id) {
 	case JIT_F_EQ:
 		enum SsaOp cmp_op = IR_EQ; // TODO Only for types with referential equality
 	do_record_cmp:
-		LispObject value = f->f(ctx, x.c, bp + x.a + 2);
+		LispObject value = subr->f(ctx, x.c, bp + x.a + 2);
 		emit_opt(state, (union Node)
 			{ .op = cmp_op ^ NILP(ctx, value), .ty = TY_ANY, .a = a, .b = b });
 		return emit_const(state, lisp_type(value), value);
@@ -974,13 +974,13 @@ static IrRef record_c_call(struct LispCtx *ctx, struct JitState *state, uintptr_
 
 	case JIT_F_CONSP:
 		guard_type(state, &a, lisp_type(bp[x.a + 2]));
-		LispObject result = f->f(ctx, x.c, bp + x.a + 2);
+		LispObject result = subr->f(ctx, x.c, bp + x.a + 2);
 		return emit_const(state, lisp_type(result), result);
 	case JIT_F_CAR: case JIT_F_CDR:
 		enum LispType a_ty = NILP(ctx, bp[x.a + 2]) ? LISP_NIL : LISP_PAIR;
 		guard_type(state, &a, a_ty);
 		if (a_ty == LISP_NIL) return emit_const(state, LISP_NIL, NIL(ctx));
-		enum SsaOp proj_op = f->jit_id == JIT_F_CAR ? IR_CAR : IR_CDR;
+		enum SsaOp proj_op = subr->jit_id == JIT_F_CAR ? IR_CAR : IR_CDR;
 		take_snapshot(state);
 		return emit_opt(state, (union Node) { .op = proj_op, TY_ANY, .a = a });
 
@@ -1032,7 +1032,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		break;
 	case CALL:
 		switch (lisp_type(bp[x.a])) {
-		case LISP_CFUNCTION: result = record_c_call(ctx, state, bp, x); break;
+		case LISP_SUBROUTINE: result = record_subr(ctx, state, bp, x); break;
 		case LISP_CLOSURE:
 			(state->bp += x.a)[1] = emit_const(state, TY_RET_ADDR, (uintptr_t) pc);
 			state->base_offset += x.a;
@@ -1042,7 +1042,7 @@ bool jit_record(struct LispCtx *ctx, struct Instruction *pc, LispObject *bp) {
 		break;
 	case TAILCALL:
 		switch (lisp_type(bp[x.a])) {
-		case LISP_CFUNCTION: state->bp[x.a] = record_c_call(ctx, state, bp, x); goto do_ret;
+		case LISP_SUBROUTINE: state->bp[x.a] = record_subr(ctx, state, bp, x); goto do_ret;
 		case LISP_CLOSURE:
 			if (/* need reload? */ bp[x.a] != *bp) *state->bp = state->bp[x.a];
 			for (unsigned i = 0; i < x.c; ++i) SLOT(state, x.a + 2 + i);

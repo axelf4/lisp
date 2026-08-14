@@ -151,10 +151,10 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 		LispObject *frame = bp + insn.a;
 		frame[1] = (uintptr_t) pc; // Link call-frames
 		switch (lisp_type(*frame)) {
-		case LISP_CFUNCTION:
-			struct LispCFunction *fn = UNTAG_OBJ(*frame);
+		case LISP_SUBROUTINE:
+			struct LispSubr *subr = UNTAG_OBJ(*frame);
 			ctx->bp = frame; // Synchronize bp
-			*frame = fn->f(ctx, insn.c, frame + 2);
+			*frame = subr->f(ctx, insn.c, frame + 2);
 			break;
 		case LISP_CLOSURE:
 			struct Closure *closure = UNTAG_OBJ(*frame);
@@ -168,10 +168,10 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 	DEFINE_OP(TAILCALL) {
 		LispObject *frame = bp + insn.a;
 		switch (lisp_type(*frame)) {
-		case LISP_CFUNCTION:
-			struct LispCFunction *fn = UNTAG_OBJ(*frame);
+		case LISP_SUBROUTINE:
+			struct LispSubr *subr = UNTAG_OBJ(*frame);
 			1[ctx->bp = frame] = (uintptr_t) pc; // Synchronize bp and link call-frames
-			*frame = fn->f(ctx, insn.c, frame + 2);
+			*frame = subr->f(ctx, insn.c, frame + 2);
 			JMP_TO_LABEL(RET);
 		case LISP_CLOSURE:
 			struct Closure *closure = UNTAG_OBJ(*bp = *frame);
@@ -263,10 +263,10 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
 	LispObject xs = args[n];
 	switch (lisp_type(function)) {
-	case LISP_CFUNCTION:
-		struct LispCFunction *fn = UNTAG_OBJ(function);
+	case LISP_SUBROUTINE:
+		struct LispSubr *subr = UNTAG_OBJ(function);
 		if (!NILP(ctx, xs)) die("TODO");
-		return fn->f(ctx, n, args);
+		return subr->f(ctx, n, args);
 	case LISP_CLOSURE: break;
 	default: throw(1);
 	}
@@ -515,7 +515,7 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		default: unreachable();
 		}
 		break;
-	case LISP_CFUNCTION: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
+	case LISP_SUBROUTINE: case LISP_CLOSURE: throw(COMP_INVALID_FORM);
 	case LISP_PAIR:
 		LispObject head = pop(lisp_ctx, &x);
 		if (!listp(x)) throw(COMP_INVALID_FORM);

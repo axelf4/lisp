@@ -87,7 +87,7 @@ def disassemble(n, xs, indent=0):
 def dump_trace(trace):
     LispObjectHeaderPtr = gdb.lookup_type("struct LispObjectHeader").pointer()
     LispSymbolPtr = gdb.lookup_type("struct LispSymbol").pointer()
-    LispCFunctionPtr = gdb.lookup_type("struct LispCFunction").pointer()
+    LispSubrPtr = gdb.lookup_type("struct LispSubr").pointer()
     NodePtr = gdb.lookup_type("union Node").pointer()
     SnapshotPtr = gdb.lookup_type("struct Snapshot").pointer()
     SnapshotEntryPtr = gdb.lookup_type("struct SnapshotEntry").pointer()
@@ -116,8 +116,8 @@ def dump_trace(trace):
                 return "nil "
             case LispType.LISP_SYMBOL:
                 return f"[{symbol_name(LispSymbolPtr, v)}]"
-            case LispType.LISP_CFUNCTION:
-                name = (v - 1).cast(LispCFunctionPtr)["name"].string("utf-8", "replace")
+            case LispType.LISP_SUBROUTINE:
+                name = (v - 1).cast(LispSubrPtr)["name"].string("utf-8", "replace")
                 return f"<{name}>"
             case _:
                 return f"{int(v):#x}"
