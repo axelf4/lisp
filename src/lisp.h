@@ -63,8 +63,8 @@
 #define LISP_BOOL(ctx, x) ((x) ? LISP_CONST(ctx, t) : NIL(ctx))
 #define LISP_INTERN(ctx, s) intern(ctx, sizeof(s) - 1, s)
 
-#define _LISP_ARGS_1
-#define _LISP_ARGS_2 *argv
+#define _LISP_ARGS_1 ctx
+#define _LISP_ARGS_2 _LISP_ARGS_1, *argv
 #define _LISP_ARGS_3 _LISP_ARGS_2, argv[1]
 #define _LISP_ARGS_4 _LISP_ARGS_3, argv[2]
 #define _LISP_ARGS_5 _LISP_ARGS_4, argv[3]
@@ -91,12 +91,12 @@
  * @param args Parameter list consisting of a LispCtx pointer and zero
  *     or more LispObject arguments.
  */
-#define DEFUN(lname, cname, args)									\
-	static LispObject _ ## cname args;								\
-	DEFUN_VA(lname, cname) {										\
-		if (argc != VA_COUNT args - 1) throw(1);					\
-		return _ ## cname(ctx, CAT(_LISP_ARGS_, VA_COUNT args));	\
-	}																\
+#define DEFUN(lname, cname, args)							\
+	static LispObject _ ## cname args;						\
+	DEFUN_VA(lname, cname) {								\
+		if (argc != VA_COUNT args - 1) throw(1);			\
+		return _ ## cname(CAT(_LISP_ARGS_, VA_COUNT args));	\
+	}														\
 	static LispObject _ ## cname args
 
 #if __DOXYGEN__
@@ -165,6 +165,7 @@ struct LispCtx {
 	struct Table symbol_tbl;
 	struct Upvalue *upvalues; ///< Sorted list of open upvalues.
 	struct LispGcCallback *gc_callbacks;
+	uint32_t next_gensym;
 
 #if ENABLE_JIT
 	unsigned char hotcounts[64];

@@ -2,6 +2,7 @@
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <assert.h>
 #include <string.h>
 #include <sys/mman.h>
 #include "fxhash.h"
@@ -336,6 +337,19 @@ DEFUN("=", equal, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	return LISP_BOOL(ctx, lisp_eq(ctx, a, b));
 }
 
+[[gnu::cold]] DEFUN("gensym", gensym, (struct LispCtx *ctx)) {
+	char s[16];
+	int n = sprintf(s, "g%u", ctx->next_gensym++);
+	assert(n > 0);
+
+	struct LispString *name = UNTAG_OBJ(lisp_str(ctx, n, s));
+	struct LispSymbol *sym
+		= gc_alloc((struct GcHeap *)ctx, alignof(struct LispSymbol), sizeof *sym);
+	*sym = (struct LispSymbol)
+		{ { sym->hdr.hdr, LISP_SYMBOL }, .name = name->s, .len = n };
+	return TAG_OBJ(sym);
+}
+
 DEFUN("cons", cons, (struct LispCtx *ctx, LispObject car, LispObject cdr)) {
 	return cons(ctx, car, cdr);
 }
@@ -367,6 +381,7 @@ struct LispCtx *lisp_new() {
 	struct LispCtx *ctx = (struct LispCtx *)heap;
 	ctx->nil = (struct LispObjectHeader) { .tag = LISP_NIL };
 	ctx->upvalues = NULL;
+	ctx->next_gensym = 0;
 
 	// TODO Divide guard pages into yellow and red zones (in HotSpot
 	// terminology) where the yellow zone is temporarily disabled for
@@ -402,7 +417,7 @@ struct LispCtx *lisp_new() {
 	Scdr.jit_id = JIT_F_CDR;
 
 	struct LispCFunction *cfuns[]
-		= { &Seval, &Sprint, &Sequal, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };
+		= { &Seval, &Sprint, &Sequal, &Sgensym, &Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt, };
 	for (size_t i = 0; i < LENGTH(cfuns); ++i) lisp_defsubr(ctx, cfuns[i]);
 
 	return ctx;
