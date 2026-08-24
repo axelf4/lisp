@@ -113,12 +113,13 @@ int main([[maybe_unused]] int argc, char *argv[]) {
 	init_lisp_path(ctx, *argv);
 	lisp_load(ctx, "core.lisp");
 
+	puts("Type forms to execute:");
 	char line[256];
-	while (fgets(line, sizeof line, stdin)) {
+	while (fputs("> ", stdout), fgets(line, sizeof line, stdin)) {
 		LispObject form;
 		enum LispReadError error;
 		if ((error = lisp_read_whole(ctx, line, &form)))
-			fprintf(stderr, "Error: %d\n", error);
+			fprintf(stderr, "lisp_read failed: %d\n", error);
 		else {
 			lisp_print(ctx, lisp_eval(ctx, form), stdout);
 			putchar('\n');

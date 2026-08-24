@@ -284,12 +284,17 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
  * @return The function return value.
  */
 [[gnu::optimize ("-fnon-call-exceptions")]]
-static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, LispObject args[static n + 1]) {
+static LispObject apply(struct LispCtx *ctx, LispObject function, size_t n, LispObject args[static n + 1]) {
 	LispObject xs = args[n];
 	switch (lisp_type(function)) {
 	case LISP_SUBROUTINE:
 		struct LispSubr *subr = UNTAG_OBJ(function);
-		if (!NILP(ctx, xs)) die("TODO");
+		if (!NILP(ctx, xs)) {
+			memcpy(ctx->bp, args, n * sizeof *args);
+			args = ctx->bp;
+			do args[n++] = pop(ctx, &xs); while (!NILP(ctx, xs));
+			if (n > 0x100) throw(1);
+		}
 		return subr->f(ctx, n, args);
 	case LISP_CLOSURE: break;
 	default: throw(1);

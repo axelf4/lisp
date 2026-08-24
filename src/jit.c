@@ -85,10 +85,7 @@ typedef uint32_t IrRef;
 typedef uint32_t RegSet;
 static_assert(NUM_REGS <= CHAR_BIT * sizeof(RegSet));
 
-enum {
-	TY_ANY = LISP_INTEGER + 1,
-	TY_RET_ADDR,
-};
+enum { TY_ANY = LISP_INTEGER + 1, TY_RET_ADDR };
 
 enum SsaOp : uint8_t {
 	// Comparisons are ordered such that flipping the LSB inverts them
