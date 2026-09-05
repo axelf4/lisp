@@ -370,6 +370,20 @@ DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
 	return result;
 }
 
+DEFUN_VA("-", sub) {
+	int32_t result;
+	switch (argc) {
+	case 2:
+		if (!(IS_SMI(argv[0]) && IS_SMI(argv[1]))) throw(1);
+		if (ckd_sub(&result, (int32_t)argv[0], (int32_t)argv[1])) throw(1);
+		return result;
+	case 1:
+		if (!IS_SMI(argv[0]) || ckd_sub(&result, 0, (int32_t)argv[0])) throw(1);
+		return result;
+	default: throw(1);
+	}
+}
+
 DEFUN("<", lt, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
 	return LISP_BOOL(ctx, (int32_t)a < (int32_t)b);
@@ -417,7 +431,7 @@ struct LispCtx *lisp_new() {
 	Scdr.jit_id = JIT_F_CDR;
 	struct LispSubr *subrs[] = {
 		&Seval, &Sprint, &Sequal, &Sgensym,
-		&Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Slt,
+		&Scons, &Sconsp, &Scar, &Scdr, &Sadd, &Ssub, &Slt,
 	};
 	for (size_t i = 0; i < LENGTH(subrs); ++i) lisp_defsubr(ctx, subrs[i]);
 
