@@ -8,7 +8,7 @@
 #include "fxhash.h"
 #include "util.h"
 
-#define STACK_LEN 0x1000
+#define STACK_LEN 0x10000
 #define MAX_FRAME 0x100
 
 LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
