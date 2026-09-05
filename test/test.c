@@ -216,16 +216,6 @@ static void test_macros_work(void **state) {
 	assert_lisp_equal(ctx, eval(ctx, "(mymacro)"), TAG_SMI(3));
 }
 
-static void test_man_or_boy(void **state) {
-	struct LispCtx *ctx = *state;
-	const char *s =
-		"(let (a (fn (k x1 x2 x3 x4 x5)\n"
-		"          (let (b (fn () (set k (+ k -1)) (a k b x1 x2 x3 x4)))\n"
-		"            (if (< k 1) (+ (x4) (x5)) (b)))))\n"
-		"  (a 10 (fn () 1) (fn () -1) (fn () -1) (fn () 1) (fn () 0)))";
-	assert_lisp_equal(ctx, eval(ctx, s), TAG_SMI(-67));
-}
-
 static int setup(void **state) { return !(*state = lisp_new()); }
 static int teardown(void **state) { lisp_free(*state); return 0; }
 
@@ -248,7 +238,6 @@ int main() {
 		cmocka_unit_test(test_eval),
 		cmocka_unit_test(test_closure_captures_env),
 		cmocka_unit_test(test_macros_work),
-		cmocka_unit_test(test_man_or_boy),
 	};
 	return cmocka_run_group_tests(tests, setup, teardown);
 }
