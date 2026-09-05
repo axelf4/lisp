@@ -92,6 +92,8 @@ if(BUILD_TESTING)
   target_link_libraries(unittest cmocka::cmocka lisplib)
   add_test(unittest unittest)
 
+  add_test(NAME lisp_test COMMAND lisp --script ${CMAKE_CURRENT_SOURCE_DIR}/test/tests.lisp)
+
   add_executable(heap_fuzz test/heap_fuzz.c)
   target_include_directories(heap_fuzz PRIVATE src)
   add_test(heap_fuzz heap_fuzz)
