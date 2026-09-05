@@ -101,18 +101,7 @@ out_free_buf: free(buf);
 	if (ok) return result; else throw(1);
 }
 
-int main([[maybe_unused]] int argc, char *argv[]) {
-	if (!(ctx = lisp_new())) return EXIT_FAILURE;
-
-	struct sigaction action;
-	action.sa_sigaction = signal_handler;
-	sigemptyset(&action.sa_mask);
-	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
-	if (sigaction(SIGSEGV, &action, NULL)) return EXIT_FAILURE;
-
-	init_lisp_path(ctx, *argv);
-	lisp_load(ctx, "core.lisp");
-
+void do_repl() {
 	puts("Type forms to execute:");
 	char line[256];
 	while (fputs("> ", stdout), fgets(line, sizeof line, stdin)) {
@@ -125,6 +114,21 @@ int main([[maybe_unused]] int argc, char *argv[]) {
 			putchar('\n');
 		}
 	}
+}
+
+int main([[maybe_unused]] int argc, char *argv[]) {
+	if (!(ctx = lisp_new())) return EXIT_FAILURE;
+
+	struct sigaction action;
+	action.sa_sigaction = signal_handler;
+	sigemptyset(&action.sa_mask);
+	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
+	if (sigaction(SIGSEGV, &action, NULL)) return EXIT_FAILURE;
+
+	init_lisp_path(ctx, *argv);
+	lisp_load(ctx, "core.lisp");
+
+	do_repl();
 
 #ifndef NDEBUG
 	lisp_free(ctx);
