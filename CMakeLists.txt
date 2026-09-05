@@ -91,6 +91,8 @@ target_compile_definitions(lisp PRIVATE DATADIR="${CMAKE_INSTALL_DATADIR}")
 target_link_libraries(lisp lisplib)
 
 if(BUILD_TESTING)
+  add_test(NAME lisp_test COMMAND lisp --script ${CMAKE_CURRENT_SOURCE_DIR}/test/tests.lisp)
+
   add_executable(unittest test/test.c src/phf.c)
   target_include_directories(unittest PRIVATE src)
   target_link_libraries(unittest cmocka::cmocka lisplib)
