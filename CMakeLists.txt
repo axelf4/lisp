@@ -35,7 +35,7 @@ endif()
 add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-masm=intel -Wall -Wextra -Wpedantic
-	-Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
+    -Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
 endif()
 
 if(LG_PAGE STREQUAL "Detect")
@@ -44,9 +44,9 @@ if(LG_PAGE STREQUAL "Detect")
 #include <unistd.h>
 int main() { printf(\"%u\", stdc_trailing_zeros((size_t) sysconf(_SC_PAGESIZE))); }")
   try_run(GETPAGESIZE_EXITCODE GETPAGESIZE_COMPILED
-	SOURCE_FROM_VAR "src.c" _source RUN_OUTPUT_VARIABLE LG_PAGE)
+    SOURCE_FROM_VAR "src.c" _source RUN_OUTPUT_VARIABLE LG_PAGE)
   if(NOT (GETPAGESIZE_COMPILED AND GETPAGESIZE_EXITCODE EQUAL 0))
-	message(FATAL_ERROR "Failed to detect page size.")
+    message(FATAL_ERROR "Failed to detect page size.")
   endif()
 endif()
 
@@ -54,7 +54,7 @@ if(WITH_CHECKPOINT_RESTORE)
   add_library(restore MODULE src/criu.c)
   target_compile_definitions(restore PRIVATE IS_RESTORER_DSO)
   target_compile_options(restore PRIVATE
-	-ffreestanding -fno-stack-protector -nostdlib -fno-sanitize=all)
+    -ffreestanding -fno-stack-protector -nostdlib -fno-sanitize=all)
 
   install(TARGETS restore LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} NAMELINK_SKIP)
 endif()
@@ -100,4 +100,4 @@ endif()
 install(TARGETS lisp)
 install(FILES lisp-gdb.py TYPE BIN RENAME $<TARGET_FILE_NAME:lisp>-gdb.py)
 install(FILES lisp.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
-install(DIRECTORY lisp DESTINATION ${CMAKE_INSTALL_DATADIR})
+install(DIRECTORY lisp TYPE DATA)
