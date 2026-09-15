@@ -18,8 +18,9 @@ struct Config {
 static struct LispCtx *ctx;
 
 static bool parse_args(int argc, char *argv[], struct Config *config) {
-	const char *shortopts = "s:";
+	const char *shortopts = "hs:";
 	struct option longopts[] = {
+		{"help", no_argument, NULL, 'h' },
 		{"script",     required_argument, NULL,  's' },
 		{}
 	};
@@ -28,7 +29,7 @@ static bool parse_args(int argc, char *argv[], struct Config *config) {
 	while ((c = getopt_long(argc, argv, shortopts, longopts, NULL)) >= 0)
 		switch (c) {
 		case 's': config->script = optarg; break;
-		case '?': goto err;
+		case 'h': case '?': goto err;
 		default: unreachable();
 		}
 
