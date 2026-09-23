@@ -83,9 +83,9 @@
  */
 unsigned pcall(void *x, void (*f)(void *));
 
-void checkpoint();
+void checkpoint(int fd);
 
-[[noreturn]] void restore();
+[[noreturn]] void restore(int fd);
 
 /** Gets the page size in bytes. */
 static inline unsigned long page_size() {

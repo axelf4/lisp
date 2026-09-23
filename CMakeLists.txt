@@ -24,8 +24,8 @@ set(LG_PAGE "Detect" CACHE STRING "Explicit log2 page size; \"Detect\" or \"Dyna
 option(WITH_JIT "Enable just-in-time compilation." ON)
 option(PRESERVE_FRAME_POINTER "Disable RBP usage as a general-purpose register."
   ${preserve_frame_pointer})
-option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore.")
 option(WITH_TRACING "Enable tracing instrumentation." ${LTTngUST_FOUND})
+option(WITH_CHECKPOINT_RESTORE "Enable checkpoint/restore." ${LINUX})
 
 check_ipo_supported(RESULT ipo_supported)
 if(ipo_supported)
@@ -53,8 +53,8 @@ endif()
 if(WITH_CHECKPOINT_RESTORE)
   add_library(restore MODULE src/criu.c)
   target_compile_definitions(restore PRIVATE IS_RESTORER_DSO)
-  target_compile_options(restore PRIVATE
-	-ffreestanding -fno-stack-protector -nostdlib -fno-sanitize=all)
+  target_compile_options(restore PRIVATE -ffreestanding)
+  target_link_options(restore PRIVATE -nostdlib)
 
   install(TARGETS restore LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} NAMELINK_SKIP)
 endif()
@@ -73,7 +73,8 @@ add_library(lisplib OBJECT src/gc.c src/lisp.c src/lread.c src/vm.c src/rope.c s
 target_compile_definitions(lisplib PUBLIC
   $<IF:$<STREQUAL:${LG_PAGE},Dynamic>,,LG_PAGE=${LG_PAGE}>
   $<$<CONFIG:Release>:LISP_GENERATED_FILE="${PROJECT_BINARY_DIR}/lisp_generated.h">
-  ENABLE_JIT=$<BOOL:${WITH_JIT}>)
+  ENABLE_JIT=$<BOOL:${WITH_JIT}>
+  ENABLE_CHECKPOINT_RESTORE=$<BOOL:${WITH_CHECKPOINT_RESTORE}>)
 target_compile_definitions(lisplib PRIVATE
   HAVE_COMPUTED_GOTO=$<BOOL:${HAVE_COMPUTED_GOTO}>
   PRESERVE_FRAME_POINTER=$<BOOL:${PRESERVE_FRAME_POINTER}>

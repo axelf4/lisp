@@ -1,7 +1,9 @@
-/** Checkpoint/Restore in Userspace.
+/** Checkpoint/Restore In Userspace.
  *
- * Simplification of the CRIU project, as the program is known to be
- * cooperative.
+ * Serializes application state to disk, similarly to the CRIU
+ * project, but assumes a cooperative program instead of parasite code
+ * infection. Dumps memory maps, registers and signal handlers.
+ * Currently supports only Linux x86-64 with a single thread.
  *
  * @see https://criu.org/Main_Page
  */
@@ -9,10 +11,12 @@
 #define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
+#include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/syscall.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include "util.h"
 
 #define PAGE_SIZE (1u << 12)
@@ -22,14 +26,10 @@ enum VmaType {
 	VMA_REGULAR = 1 << 0, ///< Regular memory area to be dumped and restored.
 	VMA_FILE = 1 << 1, ///< Memory-mapped file.
 	VMA_VSYSCALL = 1 << 2, ///< Injected by kernel for virtual syscall implementation.
-	/** Need to take care of guard page. */
-	VMA_STACK = 1 << 8,
-	/* vDSO area. */
+	VMA_STACK = 1 << 8, ///< Need to take care of guard page.
 	VMA_VDSO = 1 << 9,
-	// TODO Should just remap not dump!
 	VMA_VVAR = 1 << 10,
 };
-
 #define VMA_SHOULD_DUMP (VMA_REGULAR | VMA_FILE)
 
 /** Virtual memory area (VMA). */
@@ -38,21 +38,22 @@ struct Map {
 	unsigned long start, end,
 		offset; ///< The offset into the file.
 	int prot, flags;
-	char pathname[128]; // TODO
+	char pathname[128]; // FIXME
 };
 
 struct CheckpointHdr {
-	unsigned num_maps, num_iovs, maps_offset;
-	unsigned long mmap_min_addr;
+	unsigned num_maps, num_iovs;
+	unsigned long mmap_min_addr, vdso_addr;
 	struct rt_sigframe *frame;
+	struct sigaction sigacts[__SIGRTMIN];
 	struct Map maps[];
 };
 
-typedef void restore_fn(uintptr_t hint, struct CheckpointHdr *hdr);
-
-#pragma GCC diagnostic ignored "-Wcast-align"
+typedef void restore_fn(uintptr_t hint, struct CheckpointHdr *hdr, int fd);
 
 #if IS_RESTORER_DSO
+#include <asm/prctl.h>
+
 #define SYS_VAR0()
 #define SYS_VAR1(_1) SYS_VAR0()
 #define SYS_VAR2(_1, _2) SYS_VAR1(_1)
@@ -78,79 +79,92 @@ typedef void restore_fn(uintptr_t hint, struct CheckpointHdr *hdr);
 	type _##name(t1 a1, t2 a2) SYS_BODY(2, type, name, a1, a2)
 #define SYSCALL3(type, name, t1, a1, t2, a2, t3, a3) \
 	type _##name(t1 a1, t2 a2, t3 a3) SYS_BODY(3, type, name, a1, a2, a3)
+#define SYSCALL4(type, name, t1, a1, t2, a2, t3, a3, t4, a4) \
+	type _##name(t1 a1, t2 a2, t3 a3, t4 a4) SYS_BODY(4, type, name, a1, a2, a3, a4)
 #define SYSCALL6(type, name, t1, a1, t2, a2, t3, a3, t4, a4, t5, a5, t6, a6) \
 	type _##name(t1 a1, t2 a2, t3 a3, t4 a4, t5 a5, t6 a6) \
 	SYS_BODY(6, type, name, a1, a2, a3, a4, a5, a6)
 
 static SYSCALL2(int, munmap, void *, addr, size_t, len)
 static SYSCALL6(void *, mmap, void *, addr, size_t, length, int, prot, int, flags, int, fd, off_t, offset)
+static SYSCALL3(int, mprotect, void *, addr, size_t, size, int, prot)
 static SYSCALL1(int, close, int, fd)
 static SYSCALL2(int, open, const char *, pathname, int, flags)
-static SYSCALL3(ssize_t, readv, int, fd, const struct iovec *, iov, int, iovcnt)
+static SYSCALL4(ssize_t, preadv, int, fd, const struct iovec *, iov, int, iovcnt, off_t, offset)
+static SYSCALL2(int, arch_prctl, int, op, unsigned long, addr)
 
 static bool restore_map(struct Map *map) {
-	int prot = map->prot | PROT_WRITE, fd = -1;
+	int fd = -1, prot = map->prot
+		| (map->type & VMA_FILE && map->flags & MAP_SHARED ? 0 : PROT_WRITE);
 	if (map->type & VMA_FILE) {
 		int flags = map->prot & PROT_WRITE && map->flags & MAP_SHARED ? O_RDWR
 			: O_RDONLY;
 		if ((fd = _open(map->pathname, flags)) < 0) return false;
 	}
 
-	void *p = _mmap((void *) map->start, map->end - map->start,
-		prot, map->flags | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, map->offset);
-	if (fd != -1) _close(fd);
-	return p == (void *) map->start;
+	void *p = _mmap((void *)map->start, map->end - map->start, prot,
+		map->flags | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, map->offset);
+	if (fd >= 0) _close(fd);
+	return p == (void *)map->start;
 }
 
 restore_fn do_restore;
-[[noreturn]] void do_restore(uintptr_t hint, struct CheckpointHdr *hdr) {
-	uintptr_t end = ALIGN_UP(hdr + 1, PAGE_SIZE);
-	if (_munmap(0, hint)
-		|| _munmap((void *) end, TASK_SIZE - end))
-		__builtin_trap();
+[[noreturn]] void do_restore(uintptr_t hint, struct CheckpointHdr *hdr, int fd) {
+	struct iovec *iov = (struct iovec *)(hdr->maps + hdr->num_maps),
+		*iov_end = iov + hdr->num_iovs;
+	uintptr_t end = ALIGN_UP(iov_end, PAGE_SIZE);
+	if (_munmap(0, hint) || _munmap((void *)end, TASK_SIZE - end)) goto err;
 
-	for (struct Map *x = (struct Map *) ((char *) hdr - hdr->maps_offset),
-				*end = x + hdr->num_maps; x < end; ++x)
-		if (x->type & VMA_SHOULD_DUMP && !restore_map(x)) __builtin_trap();
+	for (struct Map *x = hdr->maps, *end = x + hdr->num_maps; x < end; ++x)
+		if (x->type & VMA_SHOULD_DUMP && !restore_map(x)) goto err;
 
-	int fd;
-	if ((fd = _open("dump", O_RDONLY)) < 0) __builtin_trap();
-	struct iovec *iov_end = (struct iovec *) hdr, *iov = iov_end - hdr->num_iovs;
+	off_t offset = (char *)iov_end - (char *)hdr;
 	do {
 		ssize_t n;
-		if ((n = _readv(fd, iov, iov_end - iov)) < 0) __builtin_trap();
+		if ((n = _preadv(fd, iov, MIN(iov_end - iov, IOV_MAX), offset)) <= 0) goto err;
+		offset += n;
 		for (size_t k; n; n -= k) {
-			k = MIN(iov->iov_len, (size_t) n);
-			if (iov->iov_len -= k) iov->iov_base = (char *) iov->iov_base + k;
+			k = MIN(iov->iov_len, (size_t)n);
+			if (iov->iov_len -= k) iov->iov_base = (char *)iov->iov_base + k;
 			else ++iov;
 		}
 	} while (iov < iov_end);
 	_close(fd);
+	// Drop PROT_WRITE from mappings without it
+	for (struct Map *x = hdr->maps, *end = x + hdr->num_maps; x < end; ++x)
+		if (x->type & VMA_SHOULD_DUMP && !(x->prot & PROT_WRITE))
+			_mprotect((void *)x->start, x->end - x->start, x->prot);
+
+	// Map vDSO(+VVAR)
+	if (_arch_prctl(ARCH_MAP_VDSO_64, hdr->vdso_addr) < 0) goto err;
 
 	__asm__ volatile ("lea rsp, [%[frame]+8]\n\t"
 		"syscall"
 		: : "a" (__NR_rt_sigreturn), [frame] "r" (hdr->frame) : "cc", "memory");
 	unreachable();
+err: __builtin_trap();
 }
 #else
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
-#include <limits.h>
-#include <signal.h>
 #include <string.h>
 #include <elf.h>
 #include <link.h>
 #include <sys/rseq.h>
 #include <sys/stat.h>
 
+#define FOR_PHDRS(ehdr, phdr) \
+	for (ElfW(Phdr) *phdr = (ElfW(Phdr) *)((char *)(ehdr) + (ehdr)->e_phoff), \
+				*_end = phdr + (ehdr)->e_phnum; phdr < _end; ++phdr)
+
+#define PM_GUARD_REGION (1ull << 58)
 #define PM_FILE (1ull << 61) ///< Page is file-page or shared-anon.
 #define PM_SWAP (1ull << 62)
 #define PM_PRESENT (1ull << 63)
 
-#define FOR_PHDRS(ehdr, phdr) \
-	for (ElfW(Phdr) *phdr = (ElfW(Phdr) *) ((char *) (ehdr) + (ehdr)->e_phoff), \
-				*_end = phdr + (ehdr)->e_phnum; phdr < _end; ++phdr)
+#define MAX_MAPS 128
+#define MAX_IOVS 3072
 
 static unsigned long mmap_min_addr() {
 	unsigned long x = 0x10000;
@@ -172,41 +186,43 @@ static bool parse_map(FILE *f, struct Map *result) {
 	unsigned long offset;
 	unsigned dev_major, dev_minor;
 	unsigned long inode;
-	int path_ofs, n = sscanf(line, "%lx-%lx %c%c%c%c %lx %x:%x %lu %n",
+	int path_ofs, n [[maybe_unused]] = sscanf(
+		line, "%lx-%lx %c%c%c%c %lx %x:%x %lu %n",
 		&start, &end, &r, &w, &x, &s, &offset,
 		&dev_major, &dev_minor, &inode, &path_ofs);
-	if (n < 10) return false;
+	assert(n == 10);
 	// TODO Parse /proc/pid/smaps VmFlags
 
 	int prot = (r == 'r' ? PROT_READ : 0)
 		| (w == 'w' ? PROT_WRITE : 0)
 		| (x == 'x' ? PROT_EXEC : 0),
 		flags = s == 's' ? MAP_SHARED : MAP_PRIVATE;
-	assert(flags & MAP_PRIVATE && "cannot restore shared VMAs yet");
 
 	char *pathname = line + path_ofs;
 	size_t path_len = strlen(pathname);
 	if (pathname[path_len - 1] == '\n') pathname[--path_len] = '\0';
 
-	enum VmaType type = pathname[0] == '\0' ? type = VMA_REGULAR
+	enum VmaType type = pathname[0] == '\0' ? VMA_REGULAR
 		: !strcmp(pathname, "[vsyscall]") ? VMA_VSYSCALL
-		: !strcmp(pathname, "[vdso]") ? VMA_REGULAR | (prot == PROT_READ ? VMA_VDSO : 0)
+		: !strcmp(pathname, "[vdso]") ? VMA_VDSO
 		: !strcmp(pathname, "[vvar]") || !strcmp(pathname, "[vvar_vclock]")
-		? VMA_REGULAR | (prot == PROT_READ ? VMA_VVAR : 0)
+		? (prot & PROT_READ ? VMA_VVAR : 0)
+		: !strcmp(pathname, "[heap]") ? VMA_REGULAR
 		: !strcmp(pathname, "[stack]") ? VMA_REGULAR | VMA_STACK
 		: VMA_FILE;
 	if (!(type & VMA_FILE)) flags |= MAP_ANONYMOUS;
-	*result = (struct Map) {
-		.type = type, .start = start, .end = end, .offset = offset,
-		.prot = prot, .flags = flags,
-	};
+	*result = (struct Map)
+		{ .type = type, .start = start, .end = end, .offset = offset,
+		  .prot = prot, .flags = flags };
 	strcpy(result->pathname, pathname);
 	return true;
 }
 
-static bool should_dump_page(enum VmaType type, uint64_t pme) {
+static bool should_dump(enum VmaType type, uint64_t pme) {
 	return pme & (PM_SWAP | PM_PRESENT)
-		&& !(pme & PM_FILE && type & VMA_FILE); // COW?
+		&& !(pme & PM_GUARD_REGION)
+		&& !(pme & PM_FILE && type & VMA_FILE) // COW?
+		&& !(type & VMA_VVAR);
 }
 
 static bool do_splice(int fd, struct iovec *iov, struct iovec *iov_end) {
@@ -214,16 +230,16 @@ static bool do_splice(int fd, struct iovec *iov, struct iovec *iov_end) {
 	if (pipe(pipefd)) goto out;
 	while (iov < iov_end) {
 		ssize_t n;
-		if ((n = vmsplice(pipefd[1], iov, iov_end - iov, SPLICE_F_GIFT)) < 0)
+		if ((n = vmsplice(pipefd[1], iov, MIN(iov_end - iov, IOV_MAX), SPLICE_F_GIFT)) <= 0)
 			goto out_close;
 
 		for (ssize_t m = n, k; m; m -= k)
-			if ((k = splice(pipefd[0], NULL, fd, NULL, m, SPLICE_F_MOVE | SPLICE_F_MORE)) < 0)
+			if ((k = splice(pipefd[0], NULL, fd, NULL, m, SPLICE_F_MOVE | SPLICE_F_MORE)) <= 0)
 				goto out_close;
 
 		for (size_t k; n; n -= k) {
-			k = MIN(iov->iov_len, (size_t) n);
-			if (iov->iov_len -= k) iov->iov_base = (char *) iov->iov_base + k;
+			k = MIN(iov->iov_len, (size_t)n);
+			if (iov->iov_len -= k) iov->iov_base = (char *)iov->iov_base + k;
 			else ++iov;
 		}
 	}
@@ -234,79 +250,74 @@ out_close:
 out: return ret;
 }
 
+static int fd;
+
 static void signal_handler([[maybe_unused]] int sig) {
 	struct rt_sigframe *frame = (struct rt_sigframe *)
-		((char *) __builtin_frame_address(0) + sizeof(long));
-
-	FILE *f, *maps, *pagemap;
-	if (!((f = fopen("checkpoint", "wb"))
-			&& (maps = fopen("/proc/self/maps", "r"))
+		((char *)__builtin_frame_address(0) + sizeof(long));
+	struct Map maps[MAX_MAPS], *map = maps;
+	struct iovec iovs[MAX_IOVS], *iov = iovs;
+	unsigned long vdso_addr = 0;
+	FILE *fmaps, *pagemap;
+	if (!((fmaps = fopen("/proc/self/maps", "r"))
 			&& (pagemap = fopen("/proc/self/pagemap", "rb")))) die("fopen failed");
-	// Dump maps to disk
-	unsigned num_maps = 0;
-	struct iovec iov[IOV_MAX], *iov_end = iov;
-	struct Map map;
-	while (parse_map(maps, &map)) {
-		++num_maps;
-		fwrite(&map, sizeof map, 1, f);
-		if (!(map.type & VMA_SHOULD_DUMP && map.prot & PROT_READ)) continue;
+	for (;; ++map) {
+		if (map >= maps + LENGTH(maps)) die("map overflow");
+		if (!parse_map(fmaps, map)) break;
+		if (map->type & VMA_VDSO) vdso_addr = map->start;
+		if (!(map->type & VMA_SHOULD_DUMP && map->prot & (PROT_READ | PROT_EXEC))) continue;
 
 		uint64_t pme;
-		fseek(pagemap, map.start / PAGE_SIZE * sizeof pme, SEEK_SET);
-		for (uintptr_t p = map.start; p < map.end; p += PAGE_SIZE) {
+		fseek(pagemap, map->start / PAGE_SIZE * sizeof pme, SEEK_SET);
+		for (uintptr_t p = map->start; p < map->end; p += PAGE_SIZE) {
 			if (fread(&pme, sizeof pme, 1, pagemap) < 1) die("fread failed");
-			if (!should_dump_page(map.type, pme)) continue;
+			if (!should_dump(map->type, pme)) continue;
 
-			if ((uintptr_t) iov_end[-1].iov_base + iov_end[-1].iov_len == p)
-				iov_end[-1].iov_len += PAGE_SIZE;
+			if (iov > iovs
+				&& (uintptr_t)iov[-1].iov_base + iov[-1].iov_len == p)
+				iov[-1].iov_len += PAGE_SIZE;
 			else
-				*iov_end++ = (struct iovec) { (void *) p, PAGE_SIZE };
-			assert((size_t) (iov_end - iov) < LENGTH(iov));
+				*iov++ = (struct iovec){ (void *)p, PAGE_SIZE };
+			if (iov >= iovs + LENGTH(iovs)) die("iov overflow");
 		}
 	}
-
-	size_t num_iovs = iov_end - iov;
-	fwrite(iov, sizeof *iov, num_iovs, f); // Serialize iovecs to restore with readv
-
-	int fd;
-	if ((fd = open("dump", O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR)) < 0)
-		die("open failed");
-	if (!do_splice(fd, iov, iov_end)) die("do_splice failed");
-	close(fd);
 	fclose(pagemap);
-	fclose(maps);
+	fclose(fmaps);
 
-	struct CheckpointHdr hdr = {
-		.num_maps = num_maps, .num_iovs = num_iovs,
-		.mmap_min_addr = mmap_min_addr(),
-		.maps_offset = num_maps * sizeof map + num_iovs * sizeof(struct iovec),
-		.frame = frame,
-	};
-	fwrite(&hdr, sizeof hdr, 1, f);
-	fclose(f);
-	exit(0);
+	struct CheckpointHdr hdr =
+		{ .num_maps = map - maps, .num_iovs = iov - iovs,
+		  .mmap_min_addr = mmap_min_addr(), .vdso_addr = vdso_addr,
+		  .frame = frame };
+	// Dump signals
+	for (int sig = 1; sig < __SIGRTMIN; ++sig) {
+		if (sig == SIGKILL || sig == SIGSTOP) continue;
+		if (sigaction(sig, NULL, hdr.sigacts + sig)) die("sigaction failed");
+	}
+
+	write(fd, &hdr, sizeof hdr);
+	write(fd, maps, hdr.num_maps * sizeof *maps);
+	write(fd, iovs, hdr.num_iovs * sizeof *iovs); // Dump iovecs to restore with preadv()
+	if (!do_splice(fd, iovs, iov)) die("do_splice failed");
+	exit(EXIT_SUCCESS);
 }
 
-void checkpoint() {
+void checkpoint(int _fd) {
+	fd = _fd;
+
 	struct sigaction action;
 	action.sa_handler = signal_handler;
 	sigemptyset(&action.sa_mask);
 	action.sa_flags = 0;
 	if (sigaction(SIGCONT, &action, NULL)) die("sigaction failed");
-
+	// Dump within signal handler to rt_sigreturn akin to longjmp()
 	raise(SIGCONT);
-}
-
-static int rseq(struct rseq *rseq, uint32_t rseq_len, int flags, uint32_t sig) {
-	return syscall(__NR_rseq, rseq, rseq_len, flags, sig);
 }
 
 /** Finds start of region not intersecting union of current maps and @a xs. */
 static uintptr_t restorer_mmap_hint(struct CheckpointHdr *hdr, size_t len) {
 	FILE *f;
-	if (!(f = fopen("/proc/self/maps", "r"))) return -1;
-	struct Map *x = (struct Map *) ((char *) hdr - hdr->maps_offset),
-		*xend = x + hdr->num_maps, y;
+	if (!(f = fopen("/proc/self/maps", "r"))) return 0;
+	struct Map *x = hdr->maps, *xend = x + hdr->num_maps, y;
 	uintptr_t i = hdr->mmap_min_addr, xstart = x->start, ystart = 0;
 	goto do_init_y;
 	for (;;)
@@ -321,7 +332,7 @@ static uintptr_t restorer_mmap_hint(struct CheckpointHdr *hdr, size_t len) {
 }
 
 static bool map_segment(int fd, ElfW(Phdr) *phdr, char *hint) {
-	assert(phdr->p_align <= (size_t) PAGE_SIZE);
+	assert(phdr->p_align <= PAGE_SIZE);
 	ElfW(Addr) mapstart = phdr->p_vaddr & ~(PAGE_SIZE - 1),
 		dataend = phdr->p_vaddr + phdr->p_filesz,
 		allocend = phdr->p_vaddr + phdr->p_memsz,
@@ -331,11 +342,9 @@ static bool map_segment(int fd, ElfW(Phdr) *phdr, char *hint) {
 
 	int prot = (phdr->p_flags & PF_R ? PROT_READ : 0)
 		| (phdr->p_flags & PF_W ? PROT_WRITE : 0)
-		| (phdr->p_flags & PF_X ? PROT_EXEC : 0)
-		| PROT_WRITE;
+		| (phdr->p_flags & PF_X ? PROT_EXEC : 0);
 	if (mmap(hint + mapstart, mapend - mapstart, prot,
-			MAP_FIXED | MAP_PRIVATE, fd, mapoff) == MAP_FAILED)
-		return false;
+			MAP_PRIVATE | MAP_FIXED, fd, mapoff) == MAP_FAILED) return false;
 
 	if (!(prot & PROT_WRITE))
 		mprotect(hint + zeropage, allocend - zeropage, prot | PROT_WRITE);
@@ -343,94 +352,104 @@ static bool map_segment(int fd, ElfW(Phdr) *phdr, char *hint) {
 	return true;
 }
 
-static ElfW(Addr) find_sym(ElfW(Ehdr) *hdr, const char *name, ElfW(Shdr) *shdrs, ElfW(Shdr) *dynsym) {
-    const char *strings = (char *) hdr + shdrs[dynsym->sh_link].sh_offset;
-    for (ElfW(Sym) *sym = (ElfW(Sym) *) ((char *) hdr + dynsym->sh_offset),
-				*end = (ElfW(Sym) *) ((char *) sym + dynsym->sh_size);
-			sym < end; ++sym)
-        if (!strcmp(name, strings + sym->st_name)) return sym->st_value;
-    return 0;
-}
+#pragma GCC diagnostic ignored "-Wcast-align"
 
-static restore_fn *image_load(int fd, struct CheckpointHdr *chdr, size_t *size, uintptr_t *hint) {
+static restore_fn *load_img(int fd, struct CheckpointHdr *chdr, size_t *size, uintptr_t *hint) {
 	struct stat statbuf;
 	if (fstat(fd, &statbuf)) die("fstat failed");
 	ElfW(Ehdr) *hdr;
+	assert((size_t)statbuf.st_size >= sizeof *hdr);
 	if ((hdr = mmap(NULL, statbuf.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED)
 		die("mmap failed");
-	assert((size_t) statbuf.st_size >= sizeof *hdr);
 	assert(!memcmp(hdr->e_ident, ELFMAG, SELFMAG) && "invalid ELF magic");
 	assert(hdr->e_type == ET_DYN);
 
 	ElfW(Phdr) *last_load = NULL;
 	FOR_PHDRS(hdr, phdr) if (phdr->p_type == PT_LOAD) last_load = phdr;
+	if (!last_load) die("no LOAD segment");
 	size_t maplength = last_load->p_vaddr + last_load->p_memsz;
 	*size += ALIGN_UP(maplength, PAGE_SIZE);
 	if (!(*hint = restorer_mmap_hint(chdr, *size))) die("restorer_mmap_hint failed");
 
-    // Map PT_LOAD entries in the program header table
-	FOR_PHDRS(hdr, phdr)
-        if (phdr->p_type == PT_LOAD && !map_segment(fd, phdr, (char *) *hint))
-			die("map_segment failed");
+	char *strtab = NULL, *symtab = NULL, *hash = NULL;
+	FOR_PHDRS(hdr, phdr) switch (phdr->p_type) { // Loop through program header table
+	case PT_LOAD:
+		if (!map_segment(fd, phdr, (char *)*hint)) die("map_segment failed");
+		break;
+	case PT_DYNAMIC:
+		for (ElfW(Dyn) *dyn = (ElfW(Dyn) *)((char *)hdr + phdr->p_offset),
+					*end = dyn + phdr->p_filesz / sizeof *dyn; dyn < end; ++dyn)
+			switch (dyn->d_tag) {
+			case DT_STRTAB: strtab = (char *)hdr + dyn->d_un.d_ptr; break;
+			case DT_SYMTAB: symtab = (char *)hdr + dyn->d_un.d_ptr; break;
+			case DT_HASH: hash = (char *)hdr + dyn->d_un.d_ptr; break;
+			}
+		break;
+	}
+	if (!strtab || !symtab || !hash) die("missing DT_STRTAB/DT_SYMTAB/DT_HASH");
 
-    // Section table
-    ElfW(Shdr) *shdrs = (ElfW(Shdr) *) ((char *) hdr + hdr->e_shoff),
-		*dynsym = NULL;
-    for (ElfW(Shdr) *shdr = shdrs, *end = shdrs + hdr->e_shnum; shdr < end; ++shdr)
-		switch (shdr->sh_type) {
-		case SHT_DYNSYM: dynsym = shdr; break;
-		}
-	if (!dynsym) die("missing dynamic symbol table");
-	return (restore_fn *) (*hint + find_sym(hdr, "do_restore", shdrs, dynsym));
+	ElfW(Word) nchain = ((ElfW(Word) *)hash)[1];
+	for (ElfW(Sym) *sym = (ElfW(Sym) *)symtab, *end = sym + nchain; sym < end; ++sym)
+		if (!strcmp(strtab + sym->st_name, "do_restore"))
+			return (restore_fn *)(*hint + sym->st_value);
+	unreachable();
+}
+
+static int rseq(struct rseq *rseq, uint32_t rseq_len, int flags, uint32_t sig) {
+	return syscall(__NR_rseq, rseq, rseq_len, flags, sig);
 }
 
 static void unregister_rseq() {
 #if defined(__GLIBC__) && defined(RSEQ_SIG)
 	if (!__rseq_size) return;
 	struct rseq *rseq_abi = (struct rseq *)
-		((char *) __builtin_thread_pointer() + __rseq_offset);
-	// glibc reports registered size, e.g. 20, but older kernels expect full 32
-	uint32_t rseq_len = MAX(__rseq_size, sizeof *rseq_abi);
-	int ret = rseq(rseq_abi, rseq_len, RSEQ_FLAG_UNREGISTER, RSEQ_SIG);
+		((char *)__builtin_thread_pointer() + __rseq_offset);
+	int ret [[maybe_unused]] = rseq(rseq_abi, __rseq_size, RSEQ_FLAG_UNREGISTER, RSEQ_SIG);
 	assert(!ret && "unregistering rseq failed");
 #endif
 }
 
-void restore() {
-	int checkpoint_fd;
-	if ((checkpoint_fd = open("checkpoint", O_RDONLY)) < 0) die("open failed");
-	struct stat statbuf;
-	if (fstat(checkpoint_fd, &statbuf)) die("fstat failed");
-	char *info;
-	if ((info = mmap(NULL, statbuf.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE,
-				checkpoint_fd, 0)) == MAP_FAILED) die("mmap failed");
-	close(checkpoint_fd);
-	struct CheckpointHdr *hdr = (struct CheckpointHdr *) (info + statbuf.st_size) - 1;
+void restore(int fd) {
+	struct CheckpointHdr hdr0, *hdr;
+	if (pread(fd, &hdr0, sizeof hdr0, 0) < (ssize_t)sizeof hdr0) die("pread failed");
+	size_t info_len = sizeof *hdr
+		+ hdr0.num_maps * sizeof(struct Map) + hdr0.num_iovs * sizeof(struct iovec);
+	if ((hdr = mmap(NULL, info_len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0))
+		== MAP_FAILED) die("mmap failed");
 
-	int fd;
-	if ((fd = open(LIBRESTORE_SO, O_RDONLY)) < 0) die("open failed");
-	size_t size = /* stack */ PAGE_SIZE + /* info */ statbuf.st_size;
 	uintptr_t hint;
-	restore_fn *f;
-	if (!(f = image_load(fd, hdr, &size, &hint))) die("image_load failed");
-	close(fd);
+	int so_fd;
+	if ((so_fd = open(LIBRESTORE_SO, O_RDONLY)) < 0) die("open failed");
+	size_t size = /* stack */ PAGE_SIZE + info_len;
+	restore_fn *f = load_img(so_fd, hdr, &size, &hint);
+	close(so_fd);
 
-	char *new_info = (char *) (hint + size - statbuf.st_size);
+	// Set up restorer memory in gap between current&target mappings:
+	//
+	// | restorer code | stack | info (header, maps and iovecs) |
+	char *new_info = (char *)(hint + size - info_len);
 	// Map restorer stack
 	if (mmap(new_info - PAGE_SIZE, PAGE_SIZE, PROT_READ | PROT_WRITE,
-			MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN, -1, 0) == MAP_FAILED)
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN | MAP_FIXED, -1, 0) == MAP_FAILED)
 		die("mmap failed");
+	if (mremap(hdr, info_len, info_len, MREMAP_MAYMOVE | MREMAP_FIXED, new_info)
+		== MAP_FAILED) die("mremap failed");
+	hdr = (struct CheckpointHdr *)new_info;
 
-	if (mremap(info, statbuf.st_size, statbuf.st_size, MREMAP_MAYMOVE | MREMAP_FIXED,
-			new_info) == MAP_FAILED) die("mremap failed");
-	struct CheckpointHdr *new_hdr = (struct CheckpointHdr *) (hint + size) - 1;
+	// Restore signals
+	for (int sig = 1; sig < __SIGRTMIN; ++sig) {
+		if (sig == SIGKILL || sig == SIGSTOP) continue;
+		if (sigaction(sig, hdr0.sigacts + sig, NULL)) die("sigaction failed");
+	}
 
+	// After unmapping, the kernel updating rseq.cpu_id, etc. would SIGSEGV
 	unregister_rseq();
 
+	register int fd2 __asm__ ("rdx") = fd;
 	__asm__ volatile ("mov rsp, %[sp]\n\t"
 		"call %[f]"
 		:
-		: [f] "rm" (f), [sp] "irm" (new_info), "D" (hint), "S" (new_hdr)
+		: [f] "rm" (f), [sp] "irm" (new_info), "D" (hint), "S" (hdr), "r" (fd2)
 		: "cc", "memory");
 	unreachable();
 }
