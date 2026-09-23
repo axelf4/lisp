@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/syscall.h>
@@ -53,6 +54,8 @@ typedef void restore_fn(uintptr_t hint, struct CheckpointHdr *hdr);
 #pragma GCC diagnostic ignored "-Wcast-align"
 
 #if IS_RESTORER_DSO
+#include <asm/prctl.h>
+
 #define SYS_VAR0()
 #define SYS_VAR1(_1) SYS_VAR0()
 #define SYS_VAR2(_1, _2) SYS_VAR1(_1)
@@ -87,6 +90,7 @@ static SYSCALL6(void *, mmap, void *, addr, size_t, length, int, prot, int, flag
 static SYSCALL1(int, close, int, fd)
 static SYSCALL2(int, open, const char *, pathname, int, flags)
 static SYSCALL3(ssize_t, readv, int, fd, const struct iovec *, iov, int, iovcnt)
+static SYSCALL2(int, arch_prctl, int, op, unsigned long, addr)
 
 static bool restore_map(struct Map *map) {
 	int prot = map->prot | PROT_WRITE, fd = -1;
@@ -96,47 +100,51 @@ static bool restore_map(struct Map *map) {
 		if ((fd = _open(map->pathname, flags)) < 0) return false;
 	}
 
-	void *p = _mmap((void *) map->start, map->end - map->start,
+	void *p = _mmap((void *)map->start, map->end - map->start,
 		prot, map->flags | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, map->offset);
-	if (fd != -1) _close(fd);
-	return p == (void *) map->start;
+	if (fd >= 0) _close(fd);
+	return p == (void *)map->start;
 }
 
 restore_fn do_restore;
 [[noreturn]] void do_restore(uintptr_t hint, struct CheckpointHdr *hdr) {
 	uintptr_t end = ALIGN_UP(hdr + 1, PAGE_SIZE);
 	if (_munmap(0, hint)
-		|| _munmap((void *) end, TASK_SIZE - end))
+		|| _munmap((void *)end, TASK_SIZE - end))
 		__builtin_trap();
 
-	for (struct Map *x = (struct Map *) ((char *) hdr - hdr->maps_offset),
+	for (struct Map *x = (struct Map *)((char *)hdr - hdr->maps_offset),
 				*end = x + hdr->num_maps; x < end; ++x)
 		if (x->type & VMA_SHOULD_DUMP && !restore_map(x)) __builtin_trap();
 
 	int fd;
 	if ((fd = _open("dump", O_RDONLY)) < 0) __builtin_trap();
-	struct iovec *iov_end = (struct iovec *) hdr, *iov = iov_end - hdr->num_iovs;
+	struct iovec *iov_end = (struct iovec *)hdr, *iov = iov_end - hdr->num_iovs;
 	do {
 		ssize_t n;
-		if ((n = _readv(fd, iov, iov_end - iov)) < 0) __builtin_trap();
+		if ((n = _readv(fd, iov, MIN(iov_end - iov, IOV_MAX))) <= 0) goto err;
 		for (size_t k; n; n -= k) {
-			k = MIN(iov->iov_len, (size_t) n);
-			if (iov->iov_len -= k) iov->iov_base = (char *) iov->iov_base + k;
+			k = MIN(iov->iov_len, (size_t)n);
+			if (iov->iov_len -= k) iov->iov_base = (char *)iov->iov_base + k;
 			else ++iov;
 		}
 	} while (iov < iov_end);
 	_close(fd);
 
+	// Map vDSO(+VVAR)
+	if (_arch_prctl(ARCH_MAP_VDSO_64, 0x7ffff7fc2000) < 0) goto err;
+
+	DEBUG("doing sigreturn...");
 	__asm__ volatile ("lea rsp, [%[frame]+8]\n\t"
 		"syscall"
 		: : "a" (__NR_rt_sigreturn), [frame] "r" (hdr->frame) : "cc", "memory");
 	unreachable();
+err: __builtin_trap();
 }
 #else
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
-#include <limits.h>
 #include <signal.h>
 #include <string.h>
 #include <elf.h>
@@ -144,12 +152,13 @@ restore_fn do_restore;
 #include <sys/rseq.h>
 #include <sys/stat.h>
 
+#define PM_GUARD_REGION (1ull << 58)
 #define PM_FILE (1ull << 61) ///< Page is file-page or shared-anon.
 #define PM_SWAP (1ull << 62)
 #define PM_PRESENT (1ull << 63)
 
 #define FOR_PHDRS(ehdr, phdr) \
-	for (ElfW(Phdr) *phdr = (ElfW(Phdr) *) ((char *) (ehdr) + (ehdr)->e_phoff), \
+	for (ElfW(Phdr) *phdr = (ElfW(Phdr) *)((char *)(ehdr) + (ehdr)->e_phoff), \
 				*_end = phdr + (ehdr)->e_phnum; phdr < _end; ++phdr)
 
 static unsigned long mmap_min_addr() {
@@ -188,15 +197,16 @@ static bool parse_map(FILE *f, struct Map *result) {
 	size_t path_len = strlen(pathname);
 	if (pathname[path_len - 1] == '\n') pathname[--path_len] = '\0';
 
-	enum VmaType type = pathname[0] == '\0' ? type = VMA_REGULAR
+	enum VmaType type = pathname[0] == '\0' ? VMA_REGULAR
 		: !strcmp(pathname, "[vsyscall]") ? VMA_VSYSCALL
-		: !strcmp(pathname, "[vdso]") ? VMA_REGULAR | (prot == PROT_READ ? VMA_VDSO : 0)
+		: !strcmp(pathname, "[vdso]") ? (prot == PROT_READ ? VMA_VDSO : 0)
 		: !strcmp(pathname, "[vvar]") || !strcmp(pathname, "[vvar_vclock]")
-		? VMA_REGULAR | (prot == PROT_READ ? VMA_VVAR : 0)
+		? (prot == PROT_READ ? VMA_VVAR : 0)
+		: !strcmp(pathname, "[heap]") ? VMA_REGULAR
 		: !strcmp(pathname, "[stack]") ? VMA_REGULAR | VMA_STACK
 		: VMA_FILE;
 	if (!(type & VMA_FILE)) flags |= MAP_ANONYMOUS;
-	*result = (struct Map) {
+	*result = (struct Map){
 		.type = type, .start = start, .end = end, .offset = offset,
 		.prot = prot, .flags = flags,
 	};
@@ -204,9 +214,11 @@ static bool parse_map(FILE *f, struct Map *result) {
 	return true;
 }
 
-static bool should_dump_page(enum VmaType type, uint64_t pme) {
+static bool should_dump(enum VmaType type, uint64_t pme) {
 	return pme & (PM_SWAP | PM_PRESENT)
-		&& !(pme & PM_FILE && type & VMA_FILE); // COW?
+		&& !(pme & PM_GUARD_REGION)
+		&& !(pme & PM_FILE && type & VMA_FILE) // COW?
+		&& !(type & VMA_VVAR);
 }
 
 static bool do_splice(int fd, struct iovec *iov, struct iovec *iov_end) {
@@ -214,7 +226,7 @@ static bool do_splice(int fd, struct iovec *iov, struct iovec *iov_end) {
 	if (pipe(pipefd)) goto out;
 	while (iov < iov_end) {
 		ssize_t n;
-		if ((n = vmsplice(pipefd[1], iov, iov_end - iov, SPLICE_F_GIFT)) < 0)
+		if ((n = vmsplice(pipefd[1], iov, MIN(iov_end - iov, IOV_MAX), SPLICE_F_GIFT)) < 0)
 			goto out_close;
 
 		for (ssize_t m = n, k; m; m -= k)
@@ -222,8 +234,8 @@ static bool do_splice(int fd, struct iovec *iov, struct iovec *iov_end) {
 				goto out_close;
 
 		for (size_t k; n; n -= k) {
-			k = MIN(iov->iov_len, (size_t) n);
-			if (iov->iov_len -= k) iov->iov_base = (char *) iov->iov_base + k;
+			k = MIN(iov->iov_len, (size_t)n);
+			if (iov->iov_len -= k) iov->iov_base = (char *)iov->iov_base + k;
 			else ++iov;
 		}
 	}
@@ -236,7 +248,7 @@ out: return ret;
 
 static void signal_handler([[maybe_unused]] int sig) {
 	struct rt_sigframe *frame = (struct rt_sigframe *)
-		((char *) __builtin_frame_address(0) + sizeof(long));
+		((char *)__builtin_frame_address(0) + sizeof(long));
 
 	FILE *f, *maps, *pagemap;
 	if (!((f = fopen("checkpoint", "wb"))
@@ -255,13 +267,13 @@ static void signal_handler([[maybe_unused]] int sig) {
 		fseek(pagemap, map.start / PAGE_SIZE * sizeof pme, SEEK_SET);
 		for (uintptr_t p = map.start; p < map.end; p += PAGE_SIZE) {
 			if (fread(&pme, sizeof pme, 1, pagemap) < 1) die("fread failed");
-			if (!should_dump_page(map.type, pme)) continue;
+			if (!should_dump(map.type, pme)) continue;
 
-			if ((uintptr_t) iov_end[-1].iov_base + iov_end[-1].iov_len == p)
+			if ((uintptr_t)iov_end[-1].iov_base + iov_end[-1].iov_len == p)
 				iov_end[-1].iov_len += PAGE_SIZE;
 			else
-				*iov_end++ = (struct iovec) { (void *) p, PAGE_SIZE };
-			assert((size_t) (iov_end - iov) < LENGTH(iov));
+				*iov_end++ = (struct iovec){ (void *)p, PAGE_SIZE };
+			assert((size_t)(iov_end - iov) < LENGTH(iov));
 		}
 	}
 
@@ -304,8 +316,8 @@ static int rseq(struct rseq *rseq, uint32_t rseq_len, int flags, uint32_t sig) {
 /** Finds start of region not intersecting union of current maps and @a xs. */
 static uintptr_t restorer_mmap_hint(struct CheckpointHdr *hdr, size_t len) {
 	FILE *f;
-	if (!(f = fopen("/proc/self/maps", "r"))) return -1;
-	struct Map *x = (struct Map *) ((char *) hdr - hdr->maps_offset),
+	if (!(f = fopen("/proc/self/maps", "r"))) return 0;
+	struct Map *x = (struct Map *)((char *)hdr - hdr->maps_offset),
 		*xend = x + hdr->num_maps, y;
 	uintptr_t i = hdr->mmap_min_addr, xstart = x->start, ystart = 0;
 	goto do_init_y;
@@ -321,7 +333,7 @@ static uintptr_t restorer_mmap_hint(struct CheckpointHdr *hdr, size_t len) {
 }
 
 static bool map_segment(int fd, ElfW(Phdr) *phdr, char *hint) {
-	assert(phdr->p_align <= (size_t) PAGE_SIZE);
+	assert(phdr->p_align <= PAGE_SIZE);
 	ElfW(Addr) mapstart = phdr->p_vaddr & ~(PAGE_SIZE - 1),
 		dataend = phdr->p_vaddr + phdr->p_filesz,
 		allocend = phdr->p_vaddr + phdr->p_memsz,
@@ -331,8 +343,7 @@ static bool map_segment(int fd, ElfW(Phdr) *phdr, char *hint) {
 
 	int prot = (phdr->p_flags & PF_R ? PROT_READ : 0)
 		| (phdr->p_flags & PF_W ? PROT_WRITE : 0)
-		| (phdr->p_flags & PF_X ? PROT_EXEC : 0)
-		| PROT_WRITE;
+		| (phdr->p_flags & PF_X ? PROT_EXEC : 0);
 	if (mmap(hint + mapstart, mapend - mapstart, prot,
 			MAP_FIXED | MAP_PRIVATE, fd, mapoff) == MAP_FAILED)
 		return false;
@@ -344,21 +355,21 @@ static bool map_segment(int fd, ElfW(Phdr) *phdr, char *hint) {
 }
 
 static ElfW(Addr) find_sym(ElfW(Ehdr) *hdr, const char *name, ElfW(Shdr) *shdrs, ElfW(Shdr) *dynsym) {
-    const char *strings = (char *) hdr + shdrs[dynsym->sh_link].sh_offset;
-    for (ElfW(Sym) *sym = (ElfW(Sym) *) ((char *) hdr + dynsym->sh_offset),
-				*end = (ElfW(Sym) *) ((char *) sym + dynsym->sh_size);
+    const char *strings = (char *)hdr + shdrs[dynsym->sh_link].sh_offset;
+    for (ElfW(Sym) *sym = (ElfW(Sym) *)((char *)hdr + dynsym->sh_offset),
+				*end = (ElfW(Sym) *)((char *)sym + dynsym->sh_size);
 			sym < end; ++sym)
         if (!strcmp(name, strings + sym->st_name)) return sym->st_value;
     return 0;
 }
 
-static restore_fn *image_load(int fd, struct CheckpointHdr *chdr, size_t *size, uintptr_t *hint) {
+static restore_fn *load_img(int fd, struct CheckpointHdr *chdr, size_t *size, uintptr_t *hint) {
 	struct stat statbuf;
 	if (fstat(fd, &statbuf)) die("fstat failed");
 	ElfW(Ehdr) *hdr;
 	if ((hdr = mmap(NULL, statbuf.st_size, PROT_READ, MAP_SHARED, fd, 0)) == MAP_FAILED)
 		die("mmap failed");
-	assert((size_t) statbuf.st_size >= sizeof *hdr);
+	assert((size_t)statbuf.st_size >= sizeof *hdr);
 	assert(!memcmp(hdr->e_ident, ELFMAG, SELFMAG) && "invalid ELF magic");
 	assert(hdr->e_type == ET_DYN);
 
@@ -370,28 +381,28 @@ static restore_fn *image_load(int fd, struct CheckpointHdr *chdr, size_t *size, 
 
     // Map PT_LOAD entries in the program header table
 	FOR_PHDRS(hdr, phdr)
-        if (phdr->p_type == PT_LOAD && !map_segment(fd, phdr, (char *) *hint))
+        if (phdr->p_type == PT_LOAD && !map_segment(fd, phdr, (char *)*hint))
 			die("map_segment failed");
 
     // Section table
-    ElfW(Shdr) *shdrs = (ElfW(Shdr) *) ((char *) hdr + hdr->e_shoff),
+    ElfW(Shdr) *shdrs = (ElfW(Shdr) *)((char *)hdr + hdr->e_shoff),
 		*dynsym = NULL;
     for (ElfW(Shdr) *shdr = shdrs, *end = shdrs + hdr->e_shnum; shdr < end; ++shdr)
 		switch (shdr->sh_type) {
 		case SHT_DYNSYM: dynsym = shdr; break;
 		}
 	if (!dynsym) die("missing dynamic symbol table");
-	return (restore_fn *) (*hint + find_sym(hdr, "do_restore", shdrs, dynsym));
+	return (restore_fn *)(*hint + find_sym(hdr, "do_restore", shdrs, dynsym));
 }
 
 static void unregister_rseq() {
 #if defined(__GLIBC__) && defined(RSEQ_SIG)
 	if (!__rseq_size) return;
 	struct rseq *rseq_abi = (struct rseq *)
-		((char *) __builtin_thread_pointer() + __rseq_offset);
-	// glibc reports registered size, e.g. 20, but older kernels expect full 32
+		((char *)__builtin_thread_pointer() + __rseq_offset);
+	// glibc reports registered size, e.g., 20, but older kernels expect full 32
 	uint32_t rseq_len = MAX(__rseq_size, sizeof *rseq_abi);
-	int ret = rseq(rseq_abi, rseq_len, RSEQ_FLAG_UNREGISTER, RSEQ_SIG);
+	int ret [[maybe_unused]] = rseq(rseq_abi, rseq_len, RSEQ_FLAG_UNREGISTER, RSEQ_SIG);
 	assert(!ret && "unregistering rseq failed");
 #endif
 }
@@ -405,17 +416,17 @@ void restore() {
 	if ((info = mmap(NULL, statbuf.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE,
 				checkpoint_fd, 0)) == MAP_FAILED) die("mmap failed");
 	close(checkpoint_fd);
-	struct CheckpointHdr *hdr = (struct CheckpointHdr *) (info + statbuf.st_size) - 1;
+	struct CheckpointHdr *hdr = (struct CheckpointHdr *)(info + statbuf.st_size) - 1;
 
 	int fd;
 	if ((fd = open(LIBRESTORE_SO, O_RDONLY)) < 0) die("open failed");
 	size_t size = /* stack */ PAGE_SIZE + /* info */ statbuf.st_size;
 	uintptr_t hint;
 	restore_fn *f;
-	if (!(f = image_load(fd, hdr, &size, &hint))) die("image_load failed");
+	if (!(f = load_img(fd, hdr, &size, &hint))) die("load_img failed");
 	close(fd);
 
-	char *new_info = (char *) (hint + size - statbuf.st_size);
+	char *new_info = (char *)(hint + size - statbuf.st_size);
 	// Map restorer stack
 	if (mmap(new_info - PAGE_SIZE, PAGE_SIZE, PROT_READ | PROT_WRITE,
 			MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN, -1, 0) == MAP_FAILED)
@@ -423,7 +434,7 @@ void restore() {
 
 	if (mremap(info, statbuf.st_size, statbuf.st_size, MREMAP_MAYMOVE | MREMAP_FIXED,
 			new_info) == MAP_FAILED) die("mremap failed");
-	struct CheckpointHdr *new_hdr = (struct CheckpointHdr *) (hint + size) - 1;
+	struct CheckpointHdr *new_hdr = (struct CheckpointHdr *)(hint + size) - 1;
 
 	unregister_rseq();
 
