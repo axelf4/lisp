@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stddef.h>
 #include <stdarg.h>
 #include <setjmp.h>
@@ -9,6 +10,12 @@
 #include "phf.h"
 #include "asm.h"
 #include "util.h"
+
+#if ENABLE_CHECKPOINT_RESTORE
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#endif
 
 static_assert(IS_POWER_OF_TWO(16));
 static_assert(!IS_POWER_OF_TWO(10));
@@ -87,6 +94,20 @@ static void test_phf_is_bijective(void **) {
 		seen[pos] = true;
 	}
 	phf_free(&f);
+}
+
+static void test_checkpoint_restore(void **) {
+#if !ENABLE_CHECKPOINT_RESTORE || defined(__SANITIZE_ADDRESS__)
+	skip();
+#else
+	int fd;
+	if ((fd = memfd_create("checkpoint", 0)) < 0) die("memfd_create failed");
+
+	pid_t pid;
+	if ((pid = fork()) < 0) fail();
+	if (pid) { (void)waitpid(pid, NULL, 0); restore(fd); }
+	else checkpoint(fd);
+#endif
 }
 
 static_assert(MODRM(MOD_REG, 5, rsp) == 0xec);
@@ -238,6 +259,7 @@ int main() {
 		cmocka_unit_test(test_gc_traces_live_object),
 		cmocka_unit_test(test_rope),
 		cmocka_unit_test(test_phf_is_bijective),
+		cmocka_unit_test(test_checkpoint_restore),
 		cmocka_unit_test(test_asm),
 		cmocka_unit_test(test_insn_len_disasm),
 		cmocka_unit_test(test_cyclic_eq),
