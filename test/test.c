@@ -1,6 +1,10 @@
+#define _GNU_SOURCE
 #include <stddef.h>
 #include <stdarg.h>
 #include <setjmp.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 #include <cmocka.h>
 #include "gc.h"
 #include "lisp.h"
@@ -87,6 +91,20 @@ static void test_phf_is_bijective(void **) {
 		seen[pos] = true;
 	}
 	phf_free(&f);
+}
+
+static void test_checkpoint_restore(void **) {
+#ifdef __SANITIZE_ADDRESS__
+	skip();
+#endif
+	int fd;
+	if ((fd = memfd_create("checkpoint", 0)) < 0) die("memfd_create failed");
+
+	pid_t pid;
+	if ((pid = fork()) < 0) fail();
+	if (pid) checkpoint(fd);
+	(void)waitpid(pid, NULL, 0);
+	restore(fd);
 }
 
 static_assert(MODRM(MOD_REG, 5, rsp) == 0xec);
@@ -228,6 +246,7 @@ int main() {
 		cmocka_unit_test(test_gc_traces_live_object),
 		cmocka_unit_test(test_rope),
 		cmocka_unit_test(test_phf_is_bijective),
+		cmocka_unit_test(test_checkpoint_restore),
 		cmocka_unit_test(test_asm),
 		cmocka_unit_test(test_insn_len_disasm),
 		cmocka_unit_test(test_cyclic_eq),
