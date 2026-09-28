@@ -64,7 +64,7 @@
 #define ALIGN_UP(x, a) (((uintptr_t) (x) + (a) - 1) & ~((a) - 1))
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
-/** Iterates over the indices of set bits in @a x. */
+/** Iterates over the indices of set bits in @a x in ascending order. */
 #define FOR_ONES(var, x) for (typeof(x) _i = (x), var; \
 		_i && (var = stdc_trailing_zeros(_i), true); _i &= _i - 1)
 

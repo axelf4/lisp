@@ -19,18 +19,18 @@ static enum CharType : unsigned char {
 	[';'] = 0x4, ['`'] = 0x2,
 };
 
-static bool is_space(char c) { return char_table[(unsigned char) c] & CHAR_SPACE; }
-static bool is_digit(char c) { return char_table[(unsigned char) c] & CHAR_DIGIT; }
-static bool is_ident(char c) { return !(char_table[(unsigned char) c]
-		& (CHAR_SPACE | CHAR_COMMENT | CHAR_SPECIAL)); }
+static bool is_space(unsigned char c) { return char_table[c] & CHAR_SPACE; }
+static bool is_digit(unsigned char c) { return char_table[c] & CHAR_DIGIT; }
+static bool is_ident(unsigned char c) {
+	return !(char_table[c] & (CHAR_SPACE | CHAR_COMMENT | CHAR_SPECIAL));
+}
 
 /** Skips whitespace and comments. */
 static void skip_whitespace(const char **s) {
-	for (const char *x = *s; ;) {
-		if (*x == ';') { do ++x; while (*x != '\n' && *x); continue; }
-		if (!is_space(*x)) { *s = x; break; }
-		do ++x; while (is_space(*x));
-	}
+	const char *x = *s;
+repeat: while (is_space(*x)) ++x;
+	if (*x == ';') { do ++x; while (*x != '\n' && *x); goto repeat; }
+	*s = x;
 }
 
 static enum LispReadError read_int(const char **s, LispObject *result) {
