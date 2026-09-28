@@ -84,10 +84,7 @@ typedef uint32_t IrRef;
 typedef uint32_t RegSet;
 static_assert(NUM_REGS <= CHAR_BIT * sizeof(RegSet));
 
-enum {
-	TY_ANY = LISP_INTEGER + 1,
-	TY_RET_ADDR,
-};
+enum { TY_ANY = LISP_INTEGER + 1, TY_RET_ADDR };
 
 enum SsaOp : uint8_t {
 	// Comparisons are ordered such that flipping the LSB inverts them
@@ -1126,7 +1123,7 @@ void jit_flush(struct LispCtx *ctx) {
 	ctx->jit_state->num_traces = 0;
 }
 
-static struct SideExitResult side_exit_handler_inner(struct LispCtx *ctx, uintptr_t *regs) {
+static struct SideExitResult restore_snapshot(struct LispCtx *ctx, uintptr_t *regs) {
 	struct LispTrace *trace = ctx->current_trace;
 	uint8_t exit_num = *regs;
 	union Node *insns = (union Node *) trace->data;
@@ -1186,7 +1183,7 @@ struct SideExitResult trace_exec(struct LispCtx *ctx, struct LispTrace *trace) {
 		".globl side_exit_interpr\n\t"
 		"side_exit_interpr:"
 		: "=a" (result.pc), "=d" (result.rdx)
-		: "r" (ctx2), [f] "rm" (trace->f), [inner] "i" (side_exit_handler_inner)
+		: "r" (ctx2), [f] "rm" (trace->f), [inner] "i" (restore_snapshot)
 		: "rcx", "rbx", "rsi", "rdi",
 #if !PRESERVE_FRAME_POINTER
 		"rbp",
