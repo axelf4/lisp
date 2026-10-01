@@ -83,9 +83,20 @@
  */
 unsigned pcall(void *x, void (*f)(void *));
 
-void checkpoint(int fd);
+/** Dumps application state to the file associated with @p fd.
+ *
+ * @param fd File descriptor.
+ * @return The argument passed to #restore();
+ */
+const void *checkpoint(int fd);
 
-[[noreturn]] void restore(int fd);
+/** Restores application state from the file associated with @p fd.
+ *
+ * @param fd File descriptor referring to file capable of seeking.
+ * @param arg_len Byte size of @p arg.
+ * @param arg Memory to preserve and return from #checkpoint() call.
+ */
+[[noreturn]] void restore(int fd, size_t arg_len, const void *arg);
 
 /** Gets the page size in bytes. */
 static inline unsigned long page_size() {
