@@ -105,7 +105,7 @@ static void test_checkpoint_restore(void **) {
 
 	pid_t pid;
 	if ((pid = fork()) < 0) fail();
-	if (pid) { (void)waitpid(pid, NULL, 0); restore(fd); }
+	if (pid) { (void)waitpid(pid, NULL, 0); restore(fd, 0, NULL); }
 	else checkpoint(fd);
 #endif
 }

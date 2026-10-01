@@ -45,6 +45,7 @@ struct CheckpointHdr {
 	unsigned num_maps, num_iovs;
 	unsigned long mmap_min_addr, vdso_addr;
 	struct rt_sigframe *frame;
+	const void **arg;
 	struct sigaction sigacts[__SIGRTMIN];
 	struct Map maps[];
 };
@@ -134,6 +135,7 @@ restore_fn do_restore;
 	for (struct Map *x = hdr->maps, *end = x + hdr->num_maps; x < end; ++x)
 		if (x->type & VMA_SHOULD_DUMP && !(x->prot & PROT_WRITE))
 			_mprotect((void *)x->start, x->end - x->start, x->prot);
+	*hdr->arg = iov_end;
 
 	// Map vDSO(+VVAR)
 	if (_arch_prctl(ARCH_MAP_VDSO_64, hdr->vdso_addr) < 0) goto err;
@@ -251,6 +253,7 @@ out: return ret;
 }
 
 static int fd;
+static const void *arg;
 
 static void signal_handler([[maybe_unused]] int sig) {
 	struct rt_sigframe *frame = (struct rt_sigframe *)
@@ -287,7 +290,7 @@ static void signal_handler([[maybe_unused]] int sig) {
 	struct CheckpointHdr hdr =
 		{ .num_maps = map - maps, .num_iovs = iov - iovs,
 		  .mmap_min_addr = mmap_min_addr(), .vdso_addr = vdso_addr,
-		  .frame = frame };
+		  .frame = frame, .arg = &arg };
 	// Dump signals
 	for (int sig = 1; sig < __SIGRTMIN; ++sig) {
 		if (sig == SIGKILL || sig == SIGSTOP) continue;
@@ -301,7 +304,7 @@ static void signal_handler([[maybe_unused]] int sig) {
 	exit(EXIT_SUCCESS);
 }
 
-void checkpoint(int _fd) {
+const void *checkpoint(int _fd) {
 	fd = _fd;
 
 	struct sigaction action;
@@ -311,9 +314,11 @@ void checkpoint(int _fd) {
 	if (sigaction(SIGCONT, &action, NULL)) die("sigaction failed");
 	// Dump within signal handler to rt_sigreturn akin to longjmp()
 	raise(SIGCONT);
+
+	return arg;
 }
 
-/** Finds start of region not intersecting union of current maps and @a xs. */
+/** Finds start of region not intersecting union of current maps and @p xs. */
 static uintptr_t restorer_mmap_hint(struct CheckpointHdr *hdr, size_t len) {
 	FILE *f;
 	if (!(f = fopen("/proc/self/maps", "r"))) return 0;
@@ -409,7 +414,7 @@ static void unregister_rseq() {
 #endif
 }
 
-void restore(int fd) {
+void restore(int fd, size_t arg_len, const void *arg) {
 	struct CheckpointHdr hdr0, *hdr;
 	if (pread(fd, &hdr0, sizeof hdr0, 0) < (ssize_t)sizeof hdr0) die("pread failed");
 	size_t info_len = sizeof *hdr
@@ -420,21 +425,22 @@ void restore(int fd) {
 	uintptr_t hint;
 	int so_fd;
 	if ((so_fd = open(LIBRESTORE_SO, O_RDONLY)) < 0) die("open failed");
-	size_t size = /* stack */ PAGE_SIZE + info_len;
+	size_t size = /* stack */ PAGE_SIZE + info_len + arg_len;
 	restore_fn *f = load_img(so_fd, hdr, &size, &hint);
 	close(so_fd);
 
 	// Set up restorer memory in gap between current&target mappings:
 	//
 	// | restorer code | stack | info (header, maps and iovecs) |
-	char *new_info = (char *)(hint + size - info_len);
+	char *new_info = (char *)(hint + size - info_len - arg_len);
 	// Map restorer stack
 	if (mmap(new_info - PAGE_SIZE, PAGE_SIZE, PROT_READ | PROT_WRITE,
 			MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN | MAP_FIXED, -1, 0) == MAP_FAILED)
 		die("mmap failed");
-	if (mremap(hdr, info_len, info_len, MREMAP_MAYMOVE | MREMAP_FIXED, new_info)
+	if (mremap(hdr, info_len, info_len + arg_len, MREMAP_MAYMOVE | MREMAP_FIXED, new_info)
 		== MAP_FAILED) die("mremap failed");
 	hdr = (struct CheckpointHdr *)new_info;
+	if (arg_len) memcpy(new_info + info_len, arg, arg_len);
 
 	// Restore signals
 	for (int sig = 1; sig < __SIGRTMIN; ++sig) {
