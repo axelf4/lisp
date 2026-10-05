@@ -12,31 +12,35 @@
 struct Str { size_t len; const char *p; };
 
 struct Config {
-	const char *script; ///< File name of script to run, or NULL.
+	const char *script, ///< File name of script to run, or NULL.
+		*checkpoint_file, *restore_file;
 };
 
 static struct LispCtx *ctx;
 
 static bool parse_args(int argc, char *argv[], struct Config *config) {
+	config->script = config->checkpoint_file = config->restore_file = NULL;
+
 	const char *shortopts = "hs:";
 	struct option longopts[] = {
 		{"help", no_argument, NULL, 'h' },
 		{"script", required_argument, NULL, 's' },
+		{"checkpoint", required_argument, NULL, 'c' },
+		{"restore", required_argument, NULL, 'r' },
 		{}
 	};
 	int c;
-
-	// Defaults
-	config->script = NULL;
-
 	while ((c = getopt_long(argc, argv, shortopts, longopts, NULL)) >= 0)
 		switch (c) {
 		case 's': config->script = optarg; break;
+		case 'c': config->checkpoint_file = optarg; break;
+		case 'r': config->restore_file = optarg; break;
 		case 'h': case '?': goto err;
 		default: unreachable();
 		}
 
-	if (optind >= argc) return true;
+	if (optind >= argc
+		&& !(config->checkpoint_file && config->restore_file)) return true;
 err: fprintf(stderr, "usage: %s [--script=<file>]\n", *argv);
 	return false;
 }
@@ -150,9 +154,32 @@ void do_repl() {
 	}
 }
 
+#if ENABLE_CHECKPOINT_RESTORE
+#include <fcntl.h>
+
+void do_checkpoint(struct Config *config) {
+	int fd;
+	if ((fd = open(config->checkpoint_file, O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR)) < 0)
+		die("open failed");
+	config->script = checkpoint(fd);
+	if (!*config->script) config->script = NULL;
+}
+void do_restore(struct Config *config) {
+	int fd;
+	if ((fd = open(config->restore_file, O_RDONLY , 0)) < 0) die("open failed");
+	if (!config->script) config->script = "";
+	restore(fd, strlen(config->script) + 1, config->script);
+}
+#else
+void do_checkpoint(struct Config *) { die("missing checkpoint/restore"); }
+void do_restore(struct Config *) { die("missing checkpoint/restore"); }
+#endif
+
 int main(int argc, char *argv[]) {
 	struct Config config;
 	if (!parse_args(argc, argv, &config)) return EXIT_FAILURE;
+
+	if (config.restore_file) do_restore(&config);
 
 	if (!(ctx = lisp_new())) return EXIT_FAILURE;
 
@@ -165,6 +192,7 @@ int main(int argc, char *argv[]) {
 	init_lisp_path(&config, *argv);
 	lisp_load(ctx, "core.lisp");
 
+	if (config.checkpoint_file) do_checkpoint(&config);
 	if (config.script) lisp_load(ctx, config.script); else do_repl();
 
 #ifndef NDEBUG
