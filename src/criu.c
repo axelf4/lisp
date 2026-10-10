@@ -422,9 +422,11 @@ void restore(int fd, size_t arg_len, const void *arg) {
 	if ((hdr = mmap(NULL, info_len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0))
 		== MAP_FAILED) die("mmap failed");
 
+	const char *so_path = getenv("LIBRESTORE_SO");
+	if (!so_path) so_path = LIBRESTORE_SO;
 	uintptr_t hint;
 	int so_fd;
-	if ((so_fd = open(LIBRESTORE_SO, O_RDONLY)) < 0) die("open failed");
+	if ((so_fd = open(so_path, O_RDONLY)) < 0) die("open failed");
 	size_t size = /* stack */ PAGE_SIZE + info_len + arg_len;
 	restore_fn *f = load_img(so_fd, hdr, &size, &hint);
 	close(so_fd);
