@@ -4,7 +4,7 @@
 #include <setjmp.h>
 #include <cmocka.h>
 #include "gc.h"
-#include "lisp.h"
+#include "vm.h"
 #include "rope.h"
 #include "fxhash.h"
 #include "phf.h"

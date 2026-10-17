@@ -45,7 +45,7 @@
 #include <stdckdint.h>
 #include <stdio.h>
 #include <assert.h>
-#include "lisp.h"
+#include "vm.h"
 #include "asm.h"
 #include "lisp_tracepoint.h"
 
@@ -173,7 +173,7 @@ struct JitState {
 		max_slot, base_offset, side_exit_num;
 	bool need_snapshot, is_aborted;
 	IrRef *bp, ///< Pointer into @ref #slots at the current frame offset.
-		slots[0x100]; ///< Array of IR references for each VM register.
+		slots[MAX_FRAME]; ///< Array of IR references for each VM register.
 	Ref chain[IR_NUM_OPS];
 
 	struct LispTrace *parent, *link;

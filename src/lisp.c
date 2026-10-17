@@ -1,4 +1,4 @@
-#include "lisp.h"
+#include "vm.h"
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -9,7 +9,6 @@
 #include "util.h"
 
 #define STACK_LEN 0x10000
-#define MAX_FRAME 0x100
 
 LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 	struct LispPair *cell
@@ -37,7 +36,7 @@ static bool symbol_equal(struct LispSymbol *a, struct LispSymbol *b) {
 #define KEY struct LispSymbol *
 #include "tbl.h"
 
-LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
+LispObject lisp_intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	if (len == 3 && memcmp(s, "nil", 3) == 0) return NIL(ctx);
 
 	struct GcHeap *heap = (struct GcHeap *) ctx;
@@ -321,7 +320,7 @@ void lisp_defsubr(struct LispCtx *ctx, const struct LispSubr *subr) {
 	struct GcObjectHeader hdr = x->hdr.hdr;
 	*x = *subr;
 	x->hdr.hdr = hdr;
-	struct LispSymbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
+	struct LispSymbol *sym = UNTAG_OBJ(lisp_intern(ctx, strlen(x->name), x->name));
 	sym->value = TAG_OBJ(x);
 }
 

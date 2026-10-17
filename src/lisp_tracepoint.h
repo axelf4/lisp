@@ -8,7 +8,7 @@
 #define LTTNG_UST_TRACEPOINT_INCLUDE "lisp_tracepoint.h"
 
 #include <lttng/tracepoint.h>
-#include "lisp.h"
+#include "vm.h"
 
 LTTNG_UST_TRACEPOINT_ENUM(lisp, gc_kind, LTTNG_UST_TP_ENUM_VALUES(
 		lttng_ust_field_enum_auto("MINOR") lttng_ust_field_enum_auto("MAJOR")

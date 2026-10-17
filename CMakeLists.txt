@@ -62,6 +62,7 @@ if(WITH_CHECKPOINT_RESTORE)
 endif()
 
 add_executable(lisp_codegen EXCLUDE_FROM_ALL src/lisp_codegen.c)
+target_include_directories(lisp_codegen PRIVATE include)
 add_custom_command(
   OUTPUT ${PROJECT_BINARY_DIR}/lisp_generated.h
   COMMAND lisp_codegen ${PROJECT_BINARY_DIR}/lisp_generated.h
@@ -83,6 +84,7 @@ target_compile_definitions(lisplib PRIVATE
   ENABLE_TRACING=$<BOOL:${WITH_TRACING}>
   LIBRESTORE_SO="${CMAKE_INSTALL_FULL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}restore${CMAKE_SHARED_LIBRARY_SUFFIX}"
   USE_SJLJ=$<BOOL:${USE_SJLJ}>)
+target_include_directories(lisplib PUBLIC include)
 target_include_directories(lisplib PRIVATE src)
 target_link_libraries(lisplib PRIVATE $<$<BOOL:${WITH_TRACING}>:LTTng::UST>)
 
@@ -103,7 +105,7 @@ if(BUILD_TESTING)
   add_test(NAME lisp_test COMMAND lisp --script ${CMAKE_CURRENT_SOURCE_DIR}/test/tests.lisp)
 
   add_executable(heap_fuzz test/heap_fuzz.c)
-  target_include_directories(heap_fuzz PRIVATE src)
+  target_include_directories(heap_fuzz PRIVATE include src)
   add_test(NAME heap_fuzz COMMAND heap_fuzz)
 
   function(add_fuzzer target corpus_dir unit_test_name)

@@ -1,11 +1,9 @@
-/** Register-based bytecode virtual machine. */
-
+#include "vm.h"
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
-#include "lisp.h"
 
 #define UV_INSTACK 0x80 ///< The upvalue captures a local instead of an upvalue.
 #define UV_MUTABLE 0x40
@@ -293,7 +291,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, size_t n, Lisp
 			memcpy(ctx->bp, args, n * sizeof *args);
 			args = ctx->bp;
 			do args[n++] = pop(ctx, &xs); while (!NILP(ctx, xs));
-			if (n > 0x100) throw(1);
+			if (n > MAX_FRAME) throw(1);
 		}
 		return subr->f(ctx, n, args);
 	case LISP_CLOSURE: break;

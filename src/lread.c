@@ -1,7 +1,7 @@
 /** Lisp reader. */
 
 #include <stddef.h>
-#include "lisp.h"
+#include "vm.h"
 
 /** Maximum number of digits for reading int31_t safely (no overflow). */
 #define INT31_SAFE_DIG 9 // int31_t max is 1073741823, 10 digits
@@ -107,7 +107,7 @@ val_beg_no_ws:
 		if (UNLIKELY(err != LISP_READ_TRAILING)) return err;
 		while (is_ident(**s)) ++*s;
 		if (UNLIKELY(*s == beg)) return p > p0 ? LISP_READ_EOF : LISP_READ_EMPTY;
-		value = intern(ctx, *s - beg, beg);
+		value = lisp_intern(ctx, *s - beg, beg);
 	}
 val_end:
 	if (p == p0) { *result = value; return LISP_READ_OK; } // No remaining nesting

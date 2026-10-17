@@ -3,8 +3,9 @@
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
+#include <string.h>
 #include <unistd.h>
-#include "lisp.h"
+#include "vm.h"
 
 #define STRING(s) (struct Str){ sizeof(s) - 1, s }
 #define STDLIB_LANDMARK "lisp/core.lisp"
