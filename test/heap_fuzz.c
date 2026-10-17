@@ -45,11 +45,9 @@ static double rnorm(uint64_t u) {
 }
 
 struct Obj {
-	alignas(GC_ALIGNMENT) struct {
-		struct GcObjectHeader hdr;
-		uint8_t used_slot_count;
-		uint16_t num_slots;
-	};
+	alignas(LISP_ALIGNMENT) struct GcObjectHeader hdr;
+	uint8_t used_slot_count;
+	uint16_t num_slots;
 	struct Obj *slots[];
 };
 
@@ -59,7 +57,7 @@ static size_t object_size(struct Obj *obj) {
 
 struct Ctx {
 	unsigned num_objects, num_roots;
-	struct GcRef (*objects)[MAX_LIVE_OBJECTS];
+	struct LispRef (*objects)[MAX_LIVE_OBJECTS];
 };
 
 void gc_object_visit(struct GcHeap *heap, bool mark_color, void *p) {
@@ -199,7 +197,7 @@ int main() {
 	__sanitizer_set_death_callback(death_callback);
 #endif
 
-	struct GcRef (*objects)[MAX_LIVE_OBJECTS];
+	struct LispRef (*objects)[MAX_LIVE_OBJECTS];
 	if (!(objects = malloc(sizeof *objects))) goto err; // malloc to avoid rooting
 
 	struct GcHeap *heap;

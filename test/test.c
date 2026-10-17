@@ -4,7 +4,7 @@
 #include <setjmp.h>
 #include <cmocka.h>
 #include "gc.h"
-#include "lisp.h"
+#include "vm.h"
 #include "rope.h"
 #include "fxhash.h"
 #include "phf.h"
@@ -64,7 +64,7 @@ static void test_hash_table(void **) {
 
 static void test_gc_traces_live_object(void **state) {
 	struct LispCtx *ctx = *state;
-	LispObject obj = cons(ctx, TAG_SMI(1), NIL(ctx));
+	LispObject obj = lisp_cons(ctx, TAG_SMI(1), NIL(ctx));
 	garbage_collect(*state);
 	assert_int_equal(UNTAG_SMI(car(ctx, obj)), 1);
 }
@@ -171,8 +171,8 @@ static void assert_read_whole_equal(struct LispCtx *ctx, const char *s, LispObje
 
 static void test_cyclic_eq(void **state) {
 	struct LispCtx *ctx = *state;
-	LispObject a = cons(ctx, NIL(ctx), NIL(ctx)),
-		b = cons(ctx, NIL(ctx), NIL(ctx));
+	LispObject a = lisp_cons(ctx, NIL(ctx), NIL(ctx)),
+		b = lisp_cons(ctx, NIL(ctx), NIL(ctx));
 	struct LispPair *cell;
 
 	cell = UNTAG_OBJ(a);
@@ -208,9 +208,10 @@ static void test_reader(void **state) {
 
 static void test_reader_ignores_whitespace(void **state) {
 	struct LispCtx *ctx = *state;
+	LispObject x = LISP_INTERN(ctx, "x"), y = LISP_INTERN(ctx, "y");
 	assert_read_whole_equal(ctx, " ( x 0\n . ' y ) ",
-		cons(ctx, LISP_INTERN(ctx, "x"), cons(ctx, 0, cons(ctx, LISP_CONST(ctx, fquote),
-					cons(ctx, LISP_INTERN(ctx, "y"), NIL(ctx))))));
+		lisp_cons(ctx, x, lisp_cons(ctx, 0, lisp_cons(ctx,
+					LISP_CONST(ctx, fquote), lisp_cons(ctx, y, NIL(ctx))))));
 }
 
 static LispObject eval(struct LispCtx *ctx, const char *s) {

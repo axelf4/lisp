@@ -1,10 +1,15 @@
+#include <stddef.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 #include <errno.h>
 #include <getopt.h>
+#include <limits.h>
 #include <signal.h>
+#include <string.h>
 #include <unistd.h>
-#include "lisp.h"
+#include <lisp.h>
+#include "util.h"
 
 #define STRING(s) (struct Str){ sizeof(s) - 1, s }
 #define STDLIB_LANDMARK "lisp/core.lisp"
@@ -66,7 +71,7 @@ static size_t search_up(size_t len, char s[static len], struct Str *landmarks) {
 }
 
 static void init_lisp_path(const struct Config *config, const char *argv0) {
-	LispObject list = NIL(ctx);
+	LispObject list = lisp_nil(ctx);
 
 	if (!argv0) argv0 = "";
 	char s[PATH_MAX];
@@ -78,19 +83,19 @@ static void init_lisp_path(const struct Config *config, const char *argv0) {
 		= { STRING(DATADIR "/" STDLIB_LANDMARK), STRING(STDLIB_LANDMARK), {} };
 	if ((n = search_up(sizeof s, s, landmarks))) {
 		LispObject stdlib_dir = lisp_str(ctx, n - (sizeof "/core.lisp" - 1), s);
-		list = cons(ctx, stdlib_dir, list);
+		list = lisp_cons(ctx, stdlib_dir, list);
 	}
 
 	// TODO Consult LISPPATH environment variable
 
-	list = cons(ctx, lisp_str(ctx, 0, ""), list); // Push the current directory
+	list = lisp_cons(ctx, lisp_str(ctx, 0, ""), list); // Push the current directory
 
 	// Push directory of input script
 	const char *script = config->script, *script_base;
 	if (script && (script_base = strrchr(script, '/')))
-		list = cons(ctx, lisp_str(ctx, script_base - script, script), list);
+		list = lisp_cons(ctx, lisp_str(ctx, script_base - script, script), list);
 
-	struct LispSymbol *sload_path = UNTAG_OBJ(LISP_INTERN(ctx, "load-path"));
+	struct LispSymbol *sload_path = LISP_UNTAG_OBJ(LISP_INTERN(ctx, "load-path"));
 	sload_path->value = list;
 }
 
@@ -101,10 +106,11 @@ static LispObject lisp_load(struct LispCtx *ctx, const char *filename) {
 	char *buf = NULL;
 	FILE *f;
 	bool ok = false;
-	struct LispSymbol *sload_path = UNTAG_OBJ(LISP_INTERN(ctx, "load-path"));
-	for (LispObject xs = sload_path->value, x; !NILP(ctx, x = pop(ctx, &xs));) {
+	struct LispSymbol *sload_path = LISP_UNTAG_OBJ(LISP_INTERN(ctx, "load-path"));
+	for (LispObject xs = sload_path->value; !lisp_nilp(ctx, xs); xs = lisp_cdr(ctx, xs)) {
+		LispObject x = lisp_car(ctx, xs);
 		if (lisp_type(x) != LISP_STRING) goto out_free_buf;
-		struct LispString *dir = UNTAG_OBJ(x);
+		struct LispString *dir = LISP_UNTAG_OBJ(x);
 		if (!(buf = realloc(buf, dir->len + sizeof "/" + filename_len)))
 			die("malloc failed");
 		memcpy(buf, dir->s, dir->len);
@@ -125,7 +131,7 @@ found:
 	if (fread(buf, 1, len, f) != (size_t)len) { perror("fread failed"); goto out_close; }
 	buf[len] = '\0';
 
-	LispObject form, result = NIL(ctx);
+	LispObject form, result = lisp_nil(ctx);
 	const char *s = buf;
 	enum LispReadError err;
 	while (!(err = lisp_read(ctx, &s, &form))) result = lisp_eval(ctx, form);

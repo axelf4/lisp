@@ -4,14 +4,14 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <ucontext.h>
-#include "lisp.h"
+#include "vm.h"
 #include "lisp_tracepoint.h"
 
 #ifdef __SANITIZE_ADDRESS__
 #include <sanitizer/asan_interface.h>
 #else
-#define ASAN_POISON_MEMORY_REGION(addr, size) ((void) (addr), (void) (size))
-#define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void) (addr), (void) (size))
+#define ASAN_POISON_MEMORY_REGION(addr, size) ((void)(addr), (void)(size))
+#define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void)(addr), (void)(size))
 #endif
 
 #ifdef __AVX2__
@@ -21,11 +21,11 @@
 #ifndef GC_HEAP_SIZE
 #define GC_HEAP_SIZE /* 64 MiB */ 0x4000000 ///< GC heap allocation size in bytes.
 #endif
-#define LOS_SIZE (offsetof(struct GcHeap, blocks) / GC_ALIGNMENT * GC_BLOCK_SIZE)
+#define LOS_SIZE (offsetof(struct GcHeap, blocks) / LISP_ALIGNMENT * GC_BLOCK_SIZE)
 #define NUM_BLOCKS (GC_HEAP_SIZE / GC_BLOCK_SIZE - 1)
 #define MIN_FREE (0.3 * NUM_BLOCKS)
-#define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (GC_ALIGNMENT * CHAR_BIT))
-#define NULL_BUMP_PTR(block) (struct BumpPointer) { (block)->data, (block)->data }
+#define OBJECT_MAP_SIZE (sizeof(struct GcHeap) / (LISP_ALIGNMENT * CHAR_BIT))
+#define NULL_BUMP_PTR(block) (struct BumpPointer){ (block)->data, (block)->data }
 
 struct BumpPointer { char *cursor, *limit; };
 
@@ -33,7 +33,7 @@ struct BumpPointer { char *cursor, *limit; };
 static void *bump_alloc(struct BumpPointer *ptr, size_t align, size_t size) {
 	if (ptr->cursor - size < ptr->limit) return NULL;
 	// Bump allocate downward to align with a single AND instruction
-	char *p = (char *) (((uintptr_t) ASSUME_ALIGNED(ptr->cursor, GC_ALIGNMENT)
+	char *p = (char *)(((uintptr_t)ASSUME_ALIGNED(ptr->cursor, LISP_ALIGNMENT)
 			- size) & ~(align - 1));
 	if (p) return ptr->cursor = p; else unreachable();
 }
@@ -52,8 +52,8 @@ static struct BumpPointer next_gap(struct GcBlock *block, char *top) {
 			end = i;
 		} else ++count;
 	return count
-		? (struct BumpPointer) { block->data + GC_LINE_SIZE * end, limit }
-		: (struct BumpPointer) {};
+		? (struct BumpPointer){ block->data + GC_LINE_SIZE * end, limit }
+		: (struct BumpPointer){};
 }
 
 struct LargeObject {
@@ -95,8 +95,8 @@ struct GcHeap *gc_new() {
 
 #ifndef __linux__
 	heap->mark_color = heap->inhibit_gc = heap->is_major_gc = heap->is_defrag = false;
-	heap->mark_stack = (struct MarkStack) {};
-	heap->modset = (struct ModSet) {};
+	heap->mark_stack = (struct MarkStack){};
+	heap->modset = (struct ModSet){};
 	heap->free = NULL;
 	heap->recycled_len = 0;
 #endif
@@ -138,7 +138,7 @@ void gc_free(struct GcHeap *heap) {
 /** Remembers @a p as a live allocated object location. */
 static void object_map_add(struct GcHeap *heap, char *p) {
 	unsigned i = (p - (char *)heap), n = CHAR_BIT * sizeof *heap->object_map;
-	if (p < (char *)(heap + 1)) i /= GC_ALIGNMENT; else i /= alignof(struct LargeObject);
+	if (p < (char *)(heap + 1)) i /= LISP_ALIGNMENT; else i /= alignof(struct LargeObject);
 	heap->object_map[i / n] |= 1u << i % n;
 }
 
@@ -150,7 +150,7 @@ static bool object_map_remove(struct GcHeap *heap, uintptr_t x) {
 		if ((i -= offsetof(struct LargeObject, hdr)) % alignof(struct LargeObject))
 			return false;
 		i /= alignof(struct LargeObject);
-	} else { if (i % GC_ALIGNMENT) return false; i /= GC_ALIGNMENT; }
+	} else { if (i % LISP_ALIGNMENT) return false; i /= LISP_ALIGNMENT; }
 	unsigned *v = heap->object_map + i / n, mask = 1u << i % n, ret = *v & mask;
 #if __x86_64__ && __GNUC__
 	__asm__ ("btr %0, %k2" : "+m" (*heap->object_map), "=@ccc" (ret) : "Ir" (i) : "cc");
@@ -188,7 +188,7 @@ static void *alloc_slow_path(struct GcHeap *heap, size_t alignment, size_t size)
 	if (heap->free_len <= MIN_FREE && !heap->inhibit_gc) garbage_collect(heap);
 	if (!heap->free_len) die("gc_alloc failed");
 	struct GcBlock *block = heap->free[--heap->free_len];
-	*ptr = (struct BumpPointer) { (&block->data)[1], block->data };
+	*ptr = (struct BumpPointer){ (&block->data)[1], block->data };
 out_bump:
 	ASAN_POISON_MEMORY_REGION(ptr->limit, ptr->cursor - ptr->limit);
 	if (heap->modset.len >= heap->modset.capacity) modset_grow(&heap->modset);
@@ -225,7 +225,7 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 	char *p = LIKELY(p = bump_alloc(&heap->ptr, alignment, size)) ? p
 		: alloc_slow_path(heap, alignment, size);
 	ASAN_UNPOISON_MEMORY_REGION(p, size);
-	*(struct GcObjectHeader *) p = (struct GcObjectHeader) { heap->mark_color };
+	*(struct GcObjectHeader *)p = (struct GcObjectHeader){ heap->mark_color };
 	if (p < (char *)(heap + 1)) object_map_add(heap, p); else unreachable();
 	return p;
 }
@@ -236,7 +236,7 @@ void *gc_alloc(struct GcHeap *heap, size_t alignment, size_t size) {
 	void **xs;
 	if (!(xs = realloc(stack->beg, new_capacity * sizeof *xs)))
 		die("malloc failed");
-	*stack = (struct MarkStack) { xs, xs + len, xs + new_capacity };
+	*stack = (struct MarkStack){ xs, xs + len, xs + new_capacity };
 }
 
 static void mark_stack_push(struct GcHeap *heap, void *x) {
@@ -260,9 +260,9 @@ void gc_pin(struct GcHeap *heap, bool mark_color, void *p) {
 
 void *gc_evacuate(struct GcHeap *heap, void *p) {
 	struct GcObjectHeader *hdr = p;
-	struct GcRef *fwd = (struct GcRef *) ALIGN_UP(hdr + 1, alignof(struct GcRef));
+	struct LispRef *fwd = (struct LispRef *)ALIGN_UP(hdr + 1, alignof(struct LispRef));
 	if ((hdr->flags & GC_MARK) == heap->mark_color) // Already traced
-		return hdr->flags & GC_FORWARDED ? (void *) GC_DECOMPRESS(heap, *fwd) : p;
+		return hdr->flags & GC_FORWARDED ? (void *)GC_DECOMPRESS(heap, *fwd) : p;
 	hdr->flags = heap->mark_color | GC_UNLOGGED;
 
 	size_t alignment, size = gc_object_size(p, &alignment);
@@ -280,11 +280,11 @@ void *gc_evacuate(struct GcHeap *heap, void *p) {
 extern void *__libc_stack_end; ///< Highest used stack address.
 static void scan_stack(struct GcHeap *heap) {
 	void *base = __libc_stack_end, *sp = __builtin_frame_address(0);
-	sp = (void *) ((uintptr_t) sp & ~(alignof(struct GcRef) - 1));
-	for (struct GcRef *p = sp; (void *) p <= base; ++p) {
+	sp = (void *)((uintptr_t)sp & ~(alignof(struct LispRef) - 1));
+	for (struct LispRef *p = sp; (void *)p <= base; ++p) {
 		uintptr_t x = GC_DECOMPRESS(heap, *p) & ~1ull;
 		// Pin to not "forward" a false positive root
-		if (object_map_remove(heap, x)) gc_pin(heap, heap->mark_color, (void *) x);
+		if (object_map_remove(heap, x)) gc_pin(heap, heap->mark_color, (void *)x);
 	}
 }
 
@@ -365,7 +365,7 @@ void garbage_collect(struct GcHeap *heap) {
 	// Unlog remembered set
 	if (heap->is_major_gc) heap->mark_stack.p = heap->mark_stack.beg; // Ignore it
 	for (void **p = heap->mark_stack.beg; p < heap->mark_stack.p; ++p)
-		((struct GcObjectHeader *) *p)->flags |= GC_UNLOGGED;
+		((struct GcObjectHeader *)*p)->flags |= GC_UNLOGGED;
 	// Alternate liveness color to skip zeroing object marks
 	register bool mark_color = heap->mark_color ^= 1;
 
@@ -391,8 +391,8 @@ void garbage_collect(struct GcHeap *heap) {
 	} else for (size_t i = 0; i < heap->modset.len; ++i) {
 			struct BumpPointer p = heap->modset.xs[i];
 			// Clear portions of object map that were allocated into
-			char *x = (char *)heap->object_map + (p.limit - (char *)heap) / (GC_ALIGNMENT * CHAR_BIT);
-			memset(x, 0, (p.cursor - p.limit) / (GC_ALIGNMENT * CHAR_BIT));
+			char *x = (char *)heap->object_map + (p.limit - (char *)heap) / (LISP_ALIGNMENT * CHAR_BIT);
+			memset(x, 0, (p.cursor - p.limit) / (LISP_ALIGNMENT * CHAR_BIT));
 	}
 	heap->modset.len = 0;
 	gc_trace_roots(heap, mark_color);

@@ -21,14 +21,6 @@
  * the retracing of mature objects. Hence, @ref gc_write_barrier()
  * must be called upon potential old-to-young edges.
  *
- * For disambiguating tagged pointers from SMIs the LSB is reserved,
- * and on 64-bit platforms pointer compression (inspired by V8, see
- * https://v8.dev/blog/pointer-compression) is used:
- *
- *                             32-bits      32-bits
- *                 Pointer: |____base____|___offset__1|
- *     SMall Integer (SMI): |************|___int31___0|
- *
  * @see BLACKBURN, Stephen M.; MCKINLEY, Kathryn S. Immix: a
  *      mark-region garbage collector with space efficiency, fast
  *      collection, and mutator performance. ACM SIGPLAN Notices,
@@ -38,37 +30,13 @@
 #ifndef GC_H
 #define GC_H
 
-#include <stdint.h>
+#include <lisp.h>
 #include "util.h"
 
 #define GC_LINE_SIZE 0x100
 #define GC_BLOCK_SIZE 0x8000
 #define GC_LINE_COUNT (GC_BLOCK_SIZE / GC_LINE_SIZE - 1)
-
-#ifndef USE_COMPRESSED_PTRS
-#define USE_COMPRESSED_PTRS __LP64__
-#endif
-
-struct GcRef {
-#if USE_COMPRESSED_PTRS
-	uint32_t
-#else
-	uintptr_t
-#endif
-	p;
-};
-
-#define GC_COMPRESS(p) (struct GcRef) { (uintptr_t) (p) }
-#if USE_COMPRESSED_PTRS
-#define GC_DECOMPRESS(base, ref) ((uintptr_t) ASSUME_ALIGNED(base, 1ull << 32) + (ref).p)
-#else
-#define GC_DECOMPRESS(base, ref) ((void) (base), (ref).p)
-#endif
-
-#define GC_ALIGNMENT sizeof(struct GcRef)
-#define GC_BLOCK(p) ((struct GcBlock *) ((uintptr_t) (p) & ~(GC_BLOCK_SIZE - 1)))
-
-struct GcObjectHeader { unsigned char flags; };
+#define GC_BLOCK(p) ((struct GcBlock *)((uintptr_t)(p) & ~(GC_BLOCK_SIZE - 1)))
 
 struct GcBlock {
 	alignas(GC_BLOCK_SIZE) unsigned char flag;
@@ -111,7 +79,7 @@ void *gc_evacuate(struct GcHeap *heap, void *p);
 #define GC_TRACE(heap, mark_color, p) \
 	/* Opportunistic evacuation if block is a defragmentation candidate */ \
 	(UNLIKELY(GC_BLOCK(p)->flag) ? (p) = gc_evacuate(heap, p), true \
-		: (((struct GcObjectHeader *) (p))->flags & GC_MARK) != (mark_color) \
+		: (((struct GcObjectHeader *)(p))->flags & GC_MARK) != (mark_color) \
 		? gc_pin(heap, mark_color, p), false : false)
 
 /** Marks the lines containing the given pointee. */

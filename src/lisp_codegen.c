@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
 	fprintf(f,
 		"#include <stddef.h>\n\n"
 
-#define X(var, _) "Lobj " #var ";"
+#define X(var, _) "struct LispRef " #var ";"
 		"struct LispConstants {" FOR_SYMBOL_CONSTS(X) "};\n"
 
 #define Y(...) "{%" PRIu32 "},"
