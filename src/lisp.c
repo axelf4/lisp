@@ -1,4 +1,4 @@
-#include "lisp.h"
+#include "vm.h"
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -8,20 +8,12 @@
 #include "fxhash.h"
 #include "util.h"
 
-#define STACK_LEN 0x1000
-#define MAX_FRAME 0x100
+#define STACK_LEN 0x10000
 
-static uint64_t symbol_hash(struct LispSymbol *x) {
-	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
-}
-static bool symbol_equal(struct LispSymbol *a, struct LispSymbol *b) {
-	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
-}
-#define NAME symbol
-#define KEY struct LispSymbol *
-#include "tbl.h"
+LispObject lisp_nil(struct LispCtx *ctx) { return NIL(ctx); }
+bool lisp_nilp(struct LispCtx *ctx, LispObject v) { return NILP(ctx, v); }
 
-LispObject cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
+LispObject lisp_cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 	struct LispPair *cell
 		= gc_alloc((struct GcHeap *) ctx, alignof(struct LispPair), sizeof *cell);
 	*cell = (struct LispPair)
@@ -37,7 +29,17 @@ LispObject lisp_str(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	return TAG_OBJ(x);
 }
 
-LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
+static uint64_t symbol_hash(struct LispSymbol *x) {
+	return fxhash_finish(fxhash(0, fxhash_str(x->len, x->name)));
+}
+static bool symbol_equal(struct LispSymbol *a, struct LispSymbol *b) {
+	return a->len == b->len && memcmp(a->name, b->name, a->len) == 0;
+}
+#define NAME symbol
+#define KEY struct LispSymbol *
+#include "tbl.h"
+
+LispObject lisp_intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	if (len == 3 && memcmp(s, "nil", 3) == 0) return NIL(ctx);
 
 	struct GcHeap *heap = (struct GcHeap *) ctx;
@@ -53,6 +55,9 @@ LispObject intern(struct LispCtx *ctx, size_t len, const char s[static len]) {
 	}
 	return TAG_OBJ(*entry);
 }
+
+LispObject lisp_car(struct LispCtx *ctx, LispObject v) { return car(ctx, v); }
+LispObject lisp_cdr(struct LispCtx *ctx, LispObject v) { return cdr(ctx, v); }
 
 void lisp_print(struct LispCtx *ctx, LispObject x, FILE *stream) {
 	switch (lisp_type(x)) {
@@ -321,7 +326,7 @@ void lisp_defsubr(struct LispCtx *ctx, const struct LispSubr *subr) {
 	struct GcObjectHeader hdr = x->hdr.hdr;
 	*x = *subr;
 	x->hdr.hdr = hdr;
-	struct LispSymbol *sym = UNTAG_OBJ(intern(ctx, strlen(x->name), x->name));
+	struct LispSymbol *sym = UNTAG_OBJ(lisp_intern(ctx, strlen(x->name), x->name));
 	sym->value = TAG_OBJ(x);
 }
 
@@ -351,7 +356,7 @@ DEFUN("=", equal, (struct LispCtx *ctx, LispObject a, LispObject b)) {
 }
 
 DEFUN("cons", cons, (struct LispCtx *ctx, LispObject car, LispObject cdr)) {
-	return cons(ctx, car, cdr);
+	return lisp_cons(ctx, car, cdr);
 }
 
 DEFUN("consp", consp, (struct LispCtx *ctx, LispObject x)) {

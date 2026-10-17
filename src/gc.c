@@ -4,7 +4,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <ucontext.h>
-#include "lisp.h"
+#include "vm.h"
 #include "lisp_tracepoint.h"
 
 #ifdef __SANITIZE_ADDRESS__

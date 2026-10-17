@@ -44,6 +44,7 @@
 #define GC_LINE_SIZE 0x100
 #define GC_BLOCK_SIZE 0x8000
 #define GC_LINE_COUNT (GC_BLOCK_SIZE / GC_LINE_SIZE - 1)
+#define GC_BLOCK(p) ((struct GcBlock *)((uintptr_t)(p) & ~(GC_BLOCK_SIZE - 1)))
 
 #ifndef USE_COMPRESSED_PTRS
 #define USE_COMPRESSED_PTRS __LP64__
@@ -58,15 +59,12 @@ struct GcRef {
 	p;
 };
 
-#define GC_COMPRESS(p) (struct GcRef) { (uintptr_t) (p) }
+#define GC_COMPRESS(p) (struct GcRef){ (uintptr_t)(p) }
 #if USE_COMPRESSED_PTRS
-#define GC_DECOMPRESS(base, ref) ((uintptr_t) ASSUME_ALIGNED(base, 1ull << 32) + (ref).p)
+#define GC_DECOMPRESS(base, ref) ((uintptr_t)ASSUME_ALIGNED(base, 1ull << 32) + (ref).p)
 #else
-#define GC_DECOMPRESS(base, ref) ((void) (base), (ref).p)
+#define GC_DECOMPRESS(base, ref) ((void)(base), (ref).p)
 #endif
-
-#define GC_ALIGNMENT sizeof(struct GcRef)
-#define GC_BLOCK(p) ((struct GcBlock *) ((uintptr_t) (p) & ~(GC_BLOCK_SIZE - 1)))
 
 struct GcObjectHeader { unsigned char flags; };
 

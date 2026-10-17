@@ -1,11 +1,9 @@
-/** Register-based bytecode virtual machine. */
-
+#include "vm.h"
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
-#include "lisp.h"
 
 #define UV_INSTACK 0x80 ///< The upvalue captures a local instead of an upvalue.
 #define UV_MUTABLE 0x40
@@ -32,7 +30,7 @@ static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *prototype,
 	if (LIKELY(n == arity)) return n;
 	if (!(arity & PROTO_VARIADIC) || n < nargs) die("Wrong number of arguments");
 	LispObject rest = NIL(ctx);
-	while (n > nargs) rest = cons(ctx, bp[2 + --n], rest);
+	while (n > nargs) rest = lisp_cons(ctx, bp[2 + --n], rest);
 	bp[2 + n++] = rest;
 	return n;
 }
@@ -274,7 +272,7 @@ static LispObject apply(struct LispCtx *ctx, LispObject function, uint8_t n, Lis
 	bool is_variadic = proto->arity & PROTO_VARIADIC;
 	uint8_t m = proto->arity & ~PROTO_VARIADIC;
 
-	while (n > m) xs = cons(ctx, args[--n], xs);
+	while (n > m) xs = lisp_cons(ctx, args[--n], xs);
 
 	*ctx->bp = function;
 	memcpy(ctx->bp + 2, args, n * sizeof *args);

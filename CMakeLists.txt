@@ -35,7 +35,7 @@ endif()
 add_compile_definitions(_POSIX_C_SOURCE=200809L)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-masm=intel -Wall -Wextra -Wpedantic
-	-Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
+    -Wnull-dereference -Wcast-align=strict -Wwrite-strings -Wformat=2)
 endif()
 
 if(LG_PAGE STREQUAL "Detect")
@@ -44,9 +44,9 @@ if(LG_PAGE STREQUAL "Detect")
 #include <unistd.h>
 int main() { printf(\"%u\", stdc_trailing_zeros((size_t) sysconf(_SC_PAGESIZE))); }")
   try_run(GETPAGESIZE_EXITCODE GETPAGESIZE_COMPILED
-	SOURCE_FROM_VAR "src.c" _source RUN_OUTPUT_VARIABLE LG_PAGE)
+    SOURCE_FROM_VAR "src.c" _source RUN_OUTPUT_VARIABLE LG_PAGE)
   if(NOT (GETPAGESIZE_COMPILED AND GETPAGESIZE_EXITCODE EQUAL 0))
-	message(FATAL_ERROR "Failed to detect page size.")
+    message(FATAL_ERROR "Failed to detect page size.")
   endif()
 endif()
 
@@ -60,6 +60,7 @@ if(WITH_CHECKPOINT_RESTORE)
 endif()
 
 add_executable(lisp_codegen EXCLUDE_FROM_ALL src/lisp_codegen.c)
+target_include_directories(lisp_codegen PRIVATE include)
 add_custom_command(
   OUTPUT ${PROJECT_BINARY_DIR}/lisp_generated.h
   COMMAND lisp_codegen ${PROJECT_BINARY_DIR}/lisp_generated.h
@@ -80,8 +81,10 @@ target_compile_definitions(lisplib PRIVATE
   PRESERVE_FRAME_POINTER=$<BOOL:${PRESERVE_FRAME_POINTER}>
   ENABLE_TRACING=$<BOOL:${WITH_TRACING}>
   LIBRESTORE_SO="${CMAKE_INSTALL_FULL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}restore${CMAKE_SHARED_LIBRARY_SUFFIX}")
+target_include_directories(lisplib PUBLIC include)
 target_include_directories(lisplib PRIVATE src)
 target_link_libraries(lisplib PRIVATE $<$<BOOL:${WITH_TRACING}>:LTTng::UST>)
+set_target_properties(lisplib PROPERTIES PUBLIC_HEADER include/lisp.h)
 
 add_executable(lisp src/main.c)
 target_compile_definitions(lisp PRIVATE DATADIR="${CMAKE_INSTALL_DATADIR}")
@@ -94,11 +97,11 @@ if(BUILD_TESTING)
   add_test(unittest unittest)
 
   add_executable(heap_fuzz test/heap_fuzz.c)
-  target_include_directories(heap_fuzz PRIVATE src)
-  add_test(heap_fuzz heap_fuzz)
+  target_include_directories(heap_fuzz PRIVATE include src)
+  add_test(NAME heap_fuzz COMMAND heap_fuzz)
 endif()
 
-install(TARGETS lisp)
+install(TARGETS lisplib lisp)
 install(FILES lisp-gdb.py TYPE BIN RENAME $<TARGET_FILE_NAME:lisp>-gdb.py)
 install(FILES lisp.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
-install(DIRECTORY lisp DESTINATION ${CMAKE_INSTALL_DATADIR})
+install(DIRECTORY lisp TYPE DATA)
