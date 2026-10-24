@@ -1,6 +1,8 @@
 /** Lisp reader LLVM fuzzer harness. */
 
-#include "lisp.h"
+#include <stdlib.h>
+#include <string.h>
+#include <lisp.h>
 
 static struct LispCtx *ctx;
 
