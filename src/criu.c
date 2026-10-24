@@ -95,6 +95,9 @@ static SYSCALL2(int, open, const char *, pathname, int, flags)
 static SYSCALL4(ssize_t, preadv, int, fd, const struct iovec *, iov, int, iovcnt, off_t, offset)
 static SYSCALL2(int, arch_prctl, int, op, unsigned long, addr)
 
+static SYSCALL3(ssize_t, write, int, fd, const void *, buf, size_t, count)
+#define DEBUG(s) _write(1, s "\n", sizeof(s "\n"))
+
 static bool restore_map(struct Map *map) {
 	int fd = -1, prot = map->prot
 		| (map->type & VMA_FILE && map->flags & MAP_SHARED ? 0 : PROT_WRITE);
@@ -115,6 +118,7 @@ restore_fn do_restore;
 	struct iovec *iov = (struct iovec *)(hdr->maps + hdr->num_maps),
 		*iov_end = iov + hdr->num_iovs;
 	uintptr_t end = ALIGN_UP(iov_end, PAGE_SIZE);
+	DEBUG("unmapping current mappings");
 	if (_munmap(0, hint) || _munmap((void *)end, TASK_SIZE - end)) goto err;
 
 	for (struct Map *x = hdr->maps, *end = x + hdr->num_maps; x < end; ++x)
@@ -141,11 +145,17 @@ restore_fn do_restore;
 	// Map vDSO(+VVAR)
 	if (_arch_prctl(ARCH_MAP_VDSO_64, hdr->vdso_addr) < 0) goto err;
 
+	// TODO PR_SET_MM_MAP
+	// TODO Look in restore_thread_common() (GP regs, TLS, RSEQ)
+	// TODO Restore shadow stack
+
+	DEBUG("doing rt_sigreturn");
+	/* __asm__ volatile ("int 3\n\t"); */
 	__asm__ volatile ("lea rsp, [%[frame]+8]\n\t"
 		"syscall"
 		: : "a" (__NR_rt_sigreturn), [frame] "r" (hdr->frame) : "cc", "memory");
 	unreachable();
-err: __builtin_trap();
+err: DEBUG("do_restore failed"); __builtin_trap();
 }
 #else
 #include <stdlib.h>
@@ -252,6 +262,99 @@ out_close:
 out: return ret;
 }
 
+#define PROC_TASK_COMM_LEN     32
+struct proc_pid_stat {
+	int pid;
+	char comm[PROC_TASK_COMM_LEN];
+	char state;
+	int ppid;
+	int pgid;
+	int sid;
+	int tty_nr;
+	int tty_pgrp;
+	unsigned int flags;
+	unsigned long min_flt;
+	unsigned long cmin_flt;
+	unsigned long maj_flt;
+	unsigned long cmaj_flt;
+	unsigned long utime;
+	unsigned long stime;
+	long cutime;
+	long cstime;
+	long priority;
+	long nice;
+	int num_threads;
+	int zero0;
+	unsigned long long start_time;
+	unsigned long vsize;
+	long mm_rss;
+	unsigned long rsslim;
+	unsigned long start_code;
+	unsigned long end_code;
+	unsigned long start_stack;
+	unsigned long esp;
+	unsigned long eip;
+	unsigned long sig_pending;
+	unsigned long sig_blocked;
+	unsigned long sig_ignored;
+	unsigned long sig_handled;
+	unsigned long wchan;
+	unsigned long zero1;
+	unsigned long zero2;
+	int exit_signal;
+	int task_cpu;
+	unsigned int rt_priority;
+	unsigned int policy;
+	unsigned long long delayacct_blkio_ticks;
+	unsigned long gtime;
+	long cgtime;
+	unsigned long start_data;
+	unsigned long end_data;
+	unsigned long start_brk;
+	unsigned long arg_start;
+	unsigned long arg_end;
+	unsigned long env_start;
+	unsigned long env_end;
+	int exit_code;
+};
+
+#include <asm/prctl.h>
+static void get_regs() {
+	unsigned long l;
+
+	syscall(__NR_arch_prctl, ARCH_GET_FS, &l);
+	printf("fs: %p\n", (void *)l);
+
+	syscall(__NR_arch_prctl, ARCH_GET_GS, &l);
+	printf("gs: %p\n", (void *)l);
+
+	FILE *f;
+	f = fopen("/proc/self/stat", "r");
+	char line[512], *p = line;
+	if (fgets(line, sizeof line, f))
+		printf("stat: %s\n", line);
+
+	p = strrchr(p, ')');
+
+	struct proc_pid_stat s2, *s = &s2;
+	int n = sscanf(p + 1,
+		" %c %d %d %d %d %d %u %lu %lu %lu %lu "
+		"%lu %lu %ld %ld %ld %ld %d %d %llu %lu %ld %lu %lu %lu %lu "
+		"%lu %lu %lu %lu %lu %lu %lu %lu %lu %d %d %u %u %llu %lu %ld "
+		"%lu %lu %lu %lu %lu %lu %lu %d",
+		&s->state, &s->ppid, &s->pgid, &s->sid, &s->tty_nr, &s->tty_pgrp, &s->flags, &s->min_flt,
+		&s->cmin_flt, &s->maj_flt, &s->cmaj_flt, &s->utime, &s->stime, &s->cutime, &s->cstime, &s->priority,
+		&s->nice, &s->num_threads, &s->zero0, &s->start_time, &s->vsize, &s->mm_rss, &s->rsslim,
+		&s->start_code, &s->end_code, &s->start_stack, &s->esp, &s->eip, &s->sig_pending, &s->sig_blocked,
+		&s->sig_ignored, &s->sig_handled, &s->wchan, &s->zero1, &s->zero2, &s->exit_signal, &s->task_cpu,
+		&s->rt_priority, &s->policy, &s->delayacct_blkio_ticks, &s->gtime, &s->cgtime, &s->start_data,
+		&s->end_data, &s->start_brk, &s->arg_start, &s->arg_end, &s->env_start, &s->env_end, &s->exit_code);
+	if (n < 50)
+		die("fo");
+
+	printf("start_brk: %lx\n", s->start_brk);
+}
+
 static int fd;
 static const void *arg;
 
@@ -297,6 +400,8 @@ static void signal_handler([[maybe_unused]] int sig) {
 		if (sigaction(sig, NULL, hdr.sigacts + sig)) die("sigaction failed");
 	}
 
+	/* printf("num_maps: %u num_iovs: %u\n", hdr.num_maps, hdr.num_iovs); */
+
 	write(fd, &hdr, sizeof hdr);
 	write(fd, maps, hdr.num_maps * sizeof *maps);
 	write(fd, iovs, hdr.num_iovs * sizeof *iovs); // Dump iovecs to restore with preadv()
@@ -306,6 +411,8 @@ static void signal_handler([[maybe_unused]] int sig) {
 
 const void *checkpoint(int _fd) {
 	fd = _fd;
+
+	get_regs();
 
 	struct sigaction action;
 	action.sa_handler = signal_handler;
@@ -417,6 +524,8 @@ static void unregister_rseq() {
 }
 
 void restore(int fd, size_t arg_len, const void *arg) {
+	get_regs();
+
 	struct CheckpointHdr hdr0, *hdr;
 	if (pread(fd, &hdr0, sizeof hdr0, 0) < (ssize_t)sizeof hdr0) die("pread failed");
 	size_t info_len = sizeof *hdr
