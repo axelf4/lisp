@@ -409,7 +409,9 @@ static void unregister_rseq() {
 	if (!__rseq_size) return;
 	struct rseq *rseq_abi = (struct rseq *)
 		((char *)__builtin_thread_pointer() + __rseq_offset);
-	int ret [[maybe_unused]] = rseq(rseq_abi, __rseq_size, RSEQ_FLAG_UNREGISTER, RSEQ_SIG);
+	// glibc reports registered size, e.g. 20, but older kernels expect full 32
+	uint32_t rseq_len = MAX(__rseq_size, 32);
+	int ret [[maybe_unused]] = rseq(rseq_abi, rseq_len, RSEQ_FLAG_UNREGISTER, RSEQ_SIG);
 	assert(!ret && "unregistering rseq failed");
 #endif
 }
