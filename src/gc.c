@@ -209,8 +209,9 @@ found:
 	struct LargeObject *new = (struct LargeObject *)
 		ALIGN_UP((char *)&obj->hdr + size, alignof(struct LargeObject));
 	if (new < obj->next) {
-		ASAN_UNPOISON_MEMORY_REGION(new, sizeof *new);
-		*new = (struct LargeObject){ .next = obj->next };
+		ASAN_UNPOISON_MEMORY_REGION(new, offsetof(struct LargeObject, hdr));
+		new->flag = new->is_live = false;
+		new->next = obj->next;
 		obj->next = new;
 	}
 	ASAN_UNPOISON_MEMORY_REGION(&obj->hdr, size);
@@ -383,8 +384,8 @@ void garbage_collect(struct GcHeap *heap) {
 	if (heap->is_major_gc) {
 		memset(heap->object_map, 0, OBJECT_MAP_SIZE);
 		if (heap->is_defrag) select_defrag_candidates(heap);
-		// TODO Cyclical line marks (see MMTk) need not be reset, but
-		// would complicate gc_mark().
+		// Cyclical line marks (see MMTk) need not be reset, but would
+		// complicate gc_mark().
 		for (struct GcBlock *block = heap->blocks; block < heap->blocks + NUM_BLOCKS; ++block)
 			if (block->flag == 2) block->flag = 0;
 			else memset(block->line_marks, 0, sizeof block->line_marks);
