@@ -442,6 +442,7 @@ void lisp_free(struct LispCtx *ctx) {
 	free(ctx->traces);
 #endif
 	symbol_tbl_free(&ctx->symbol_tbl);
-	munmap(ctx->bp, ctx->guard_end - (uintptr_t)ctx->bp);
+	assert((uintptr_t *)ctx->guard_end - ctx->bp == STACK_LEN + MAX_FRAME);
+	munmap(ctx->bp, (STACK_LEN + MAX_FRAME) * sizeof *ctx->bp);
 	gc_free((struct GcHeap *)ctx);
 }
