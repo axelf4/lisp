@@ -99,13 +99,27 @@ static void init_lisp_path(const struct Config *config, const char *argv0) {
 	sload_path->value = list;
 }
 
+static char *file_contents(FILE *f, char *buf) {
+	long pos;
+	size_t len = 0,
+		size = fseek(f, 0, SEEK_END) || (pos = ftell(f)) < 0 ? 4096 : pos + 1u;
+	fseek(f, 0, SEEK_SET);
+	for (;; size *= 2) {
+		if (!(buf = realloc(buf, size))) die("malloc failed");
+		if ((len += fread(buf + len, 1, size - 1 - len, f)) < size) break;
+	}
+	if (ferror(f)) { fputs("fread failed\n", stderr); free(buf); return NULL; }
+	buf[len] = '\0';
+	return buf;
+}
+
 /** Executes a file of Lisp code named @p filename. */
 static LispObject lisp_load(struct LispCtx *ctx, const char *filename) {
-	// TODO Support reading from - or /dev/stdin
-	size_t filename_len = strlen(filename);
 	char *buf = NULL;
 	FILE *f;
 	bool ok = false;
+	if (!strcmp(filename, "-")) { f = stdin; goto found; }
+	size_t filename_len = strlen(filename);
 	struct LispSymbol *sload_path = LISP_UNTAG_OBJ(LISP_INTERN(ctx, "load-path"));
 	for (LispObject xs = sload_path->value; !lisp_nilp(ctx, xs); xs = lisp_cdr(ctx, xs)) {
 		LispObject x = lisp_car(ctx, xs);
@@ -123,24 +137,17 @@ static LispObject lisp_load(struct LispCtx *ctx, const char *filename) {
 	fprintf(stderr, "file not found: %s\n", filename);
 	goto out_free_buf;
 found:
-	fseek(f, 0, SEEK_END);
-	long len;
-	if ((len = ftell(f)) < 0) { fprintf(stderr, "ftell failed\n"); goto out_close; }
-	fseek(f, 0, SEEK_SET);
-	if (!(buf = realloc(buf, (size_t)len + 1))) die("malloc failed");
-	if (fread(buf, 1, len, f) != (size_t)len) { perror("fread failed"); goto out_close; }
-	buf[len] = '\0';
+	if (!(buf = file_contents(f, buf))) goto out_close;
 
 	LispObject form, result = lisp_nil(ctx);
 	const char *s = buf;
 	enum LispReadError err;
 	while (!(err = lisp_read(ctx, &s, &form))) result = lisp_eval(ctx, form);
 	switch (err) {
-	case LISP_READ_OK: unreachable();
 	case LISP_READ_EMPTY: assert(!*s); ok = true; break;
 	default: fprintf(stderr, "lisp_read failed: %d\n", err);
 	}
-out_close: fclose(f);
+out_close: if (f != stdin) fclose(f);
 out_free_buf: free(buf);
 	if (ok) return result; else throw(1);
 }
