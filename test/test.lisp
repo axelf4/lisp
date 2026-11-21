@@ -26,4 +26,13 @@
 
 (test-assert "it computes Ackermann" (= (ack 3 7) 1021))
 
+(def (id x) x)
+
+(let (f (fn (acc n b)
+          (if (< n 1)
+              acc
+            (let (b2 (if b nil (set acc (+ acc n)) t))
+              (f (id acc) (+ n -1) b2)))))
+  (test-assert "loop with alternating branch" (= (f 0 500 nil) 62750)))
+
 (if failed? (fail))

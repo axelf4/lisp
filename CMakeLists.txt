@@ -10,6 +10,7 @@ include(GNUInstallDirs)
 include(CTest)
 find_package(LTTngUST 2.14.0)
 find_package(cmocka 1.1.0)
+find_package(Curses REQUIRED)
 
 check_c_source_runs("#include <stdlib.h>
 int main() { void *ptr = &&foo; goto *ptr; return EXIT_FAILURE; foo: }"
@@ -95,7 +96,8 @@ endif()
 
 add_executable(lisp src/main.c)
 target_compile_definitions(lisp PRIVATE DATADIR="${CMAKE_INSTALL_DATADIR}")
-target_link_libraries(lisp lisplib)
+target_include_directories(lisp PRIVATE ${CURSES_INCLUDE_DIRS})
+target_link_libraries(lisp lisplib ${CURSES_LIBRARIES})
 
 if(BUILD_TESTING)
   add_test(NAME lisp_test COMMAND lisp --script ${CMAKE_CURRENT_SOURCE_DIR}/test/test.lisp)

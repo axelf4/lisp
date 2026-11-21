@@ -60,7 +60,11 @@ static struct Closure *cached_closure(struct Prototype *proto, uint8_t *upvalues
 #ifdef __clang__
 #define PRESERVE_NONE [[clang::preserve_none]]
 #elifdef __GNUC__
+#if __has_c_attribute(gnu::preserve_none)
+#define PRESERVE_NONE [[gnu::preserve_none]]
+#else
 #define PRESERVE_NONE [[gnu::no_callee_saved_registers]]
+#endif
 #else
 #define PRESERVE_NONE
 #endif

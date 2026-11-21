@@ -5,6 +5,7 @@
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
     inherit (pkgs) lib stdenv stdenvNoCC cmake cmocka mkShell runtimeShell;
+    # stdenv = pkgs.useMoldLinker pkgs.llvmPackages_23.stdenv;
 
     version = "0.1.0";
     meta = {
@@ -22,6 +23,7 @@
 
       strictDeps = true;
       nativeBuildInputs = [ cmake ];
+      buildInputs = with pkgs; [ ncurses.dev ];
       checkInputs = [ cmocka ];
       outputs = [ "out" "man" ];
 
@@ -51,10 +53,11 @@
   in {
     packages.${system} = { inherit lisp lisp-wrapped; default = lisp; };
 
-    devShells.${system}.default = mkShell {
+    devShells.${system}.default = mkShell.override { inherit stdenv; } {
       inputsFrom = [ lisp ];
-      packages = with pkgs; [ doxygen valgrind aflplusplus lttng-tools lttng-ust ];
+      packages = with pkgs; [ doxygen aflplusplus lttng-tools lttng-ust rlwrap ];
 
+      hardeningDisable = [ "all" ];
       env.NIX_ENFORCE_NO_NATIVE = 0;
     };
   };
