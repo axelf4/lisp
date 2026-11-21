@@ -579,8 +579,8 @@ static enum CompileResult compile_form(struct ByteCompCtx *ctx, LispObject x, st
 		}
 		default: // Macro or function call
 			if (lisp_type(head) == LISP_SYMBOL
-				&& consp(((struct LispSymbol *) UNTAG_OBJ(head))->value)) {
-				LispObject macro = car(lisp_ctx, ((struct LispSymbol *) UNTAG_OBJ(head))->value);
+				&& consp(((struct LispSymbol *)UNTAG_OBJ(head))->value)) {
+				LispObject macro = lisp_car(lisp_ctx, ((struct LispSymbol *)UNTAG_OBJ(head))->value);
 				return compile_form(ctx, apply(lisp_ctx, macro, 0, &x), dst);
 			}
 

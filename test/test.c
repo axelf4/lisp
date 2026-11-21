@@ -66,7 +66,7 @@ static void test_gc_traces_live_object(void **state) {
 	struct LispCtx *ctx = *state;
 	LispObject obj = lisp_cons(ctx, TAG_SMI(1), NIL(ctx));
 	garbage_collect(*state);
-	assert_int_equal(UNTAG_SMI(car(ctx, obj)), 1);
+	assert_int_equal(UNTAG_SMI(lisp_car(ctx, obj)), 1);
 }
 
 static void test_rope(void **) {

@@ -42,23 +42,19 @@
 #include "gc.h"
 #include "tbl.h"
 
+/** Returns whether @a a and @a b are referentially equal. */
+#define LISP_EQ(a, b) (GC_COMPRESS(a).p == GC_COMPRESS(b).p)
+#define LISP_BOOL(ctx, x) ((x) ? LISP_CONST(ctx, t) : LISP_NIL(ctx))
+#define IS_UV_OPEN(x) ((x).location != &(x).value)
+// Shorthands
 #define IS_SMI(x) LISP_IS_SMI(x)
 #define TAG_SMI(i) LISP_TAG_SMI(i)
 #define UNTAG_SMI(x) LISP_UNTAG_SMI(x)
 #define TAG_OBJ(p) LISP_TAG_OBJ(p)
 #define UNTAG_OBJ(x) LISP_UNTAG_OBJ(x)
-
-/** Returns whether @a a and @a b are referentially equal. */
-#define LISP_EQ(a, b) (GC_COMPRESS(a).p == GC_COMPRESS(b).p)
-#define LISP_BOOL(ctx, x) ((x) ? LISP_CONST(ctx, t) : NIL(ctx))
-#define IS_UV_OPEN(x) ((x).location != &(x).value)
-
-#define NIL(ctx) TAG_OBJ(&(ctx)->nil)
-#if USE_COMPRESSED_PTRS
-#define NILP(ctx, x) ((void)ctx, LISP_EQ(x, TAG_OBJ(offsetof(struct LispCtx, nil))))
-#else
-#define NILP(ctx, x) LISP_EQ(x, NIL(ctx))
-#endif
+#define NIL(ctx) LISP_NIL(ctx)
+#define NILP(ctx, v) LISP_NILP(ctx, v)
+#define consp(v) lisp_consp(v)
 
 #define MAX_FRAME 0x100
 
@@ -97,9 +93,9 @@ struct LispTrace;
 struct JitState;
 
 struct LispCtx {
+	struct LispObjectHeader nil; // Must be first for NIL()
 	uintptr_t *bp, ///< Base pointer.
 		guard_end;
-	struct LispObjectHeader nil;
 	struct Table symbol_tbl;
 	struct Upvalue *upvalues; ///< Sorted list of open upvalues.
 	struct LispGcCallback *gc_callbacks;
@@ -132,30 +128,15 @@ static inline enum LispKeyword lisp_symbol_to_keyword(struct LispCtx *ctx, LispO
 }
 #endif
 
-/** Cons cell. */
-struct LispPair {
-	alignas(LISP_ALIGNMENT) struct LispObjectHeader hdr;
-	struct LispRef car, cdr;
-};
-
-static inline bool consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
-
 static inline bool listp(LispObject x) {
 	enum LispType ty = lisp_type(x);
 	return ty == LISP_PAIR || ty == LISP_NIL;
 }
 
-static inline LispObject car(struct LispCtx *ctx, LispObject x) {
-	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *)UNTAG_OBJ(x))->car) : NIL(ctx);
-}
-static inline LispObject cdr(struct LispCtx *ctx, LispObject x) {
-	return consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *)UNTAG_OBJ(x))->cdr) : NIL(ctx);
-}
-
 static inline LispObject pop(struct LispCtx *ctx, LispObject *x) {
 	LispObject cell = *x;
-	*x = cdr(ctx, cell);
-	return car(ctx, cell);
+	*x = lisp_cdr(ctx, cell);
+	return lisp_car(ctx, cell);
 }
 
 #if ENABLE_JIT

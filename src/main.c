@@ -71,7 +71,7 @@ static size_t search_up(size_t len, char s[static len], struct Str *landmarks) {
 }
 
 static void init_lisp_path(const struct Config *config, const char *argv0) {
-	LispObject list = lisp_nil(ctx);
+	LispObject list = LISP_NIL(ctx);
 
 	if (!argv0) argv0 = "";
 	char s[PATH_MAX];
@@ -121,7 +121,7 @@ static LispObject lisp_load(struct LispCtx *ctx, const char *filename) {
 	if (!strcmp(filename, "-")) { f = stdin; goto found; }
 	size_t filename_len = strlen(filename);
 	struct LispSymbol *sload_path = LISP_UNTAG_OBJ(LISP_INTERN(ctx, "load-path"));
-	for (LispObject xs = sload_path->value; !lisp_nilp(ctx, xs); xs = lisp_cdr(ctx, xs)) {
+	for (LispObject xs = sload_path->value; !LISP_NILP(ctx, xs); xs = lisp_cdr(ctx, xs)) {
 		LispObject x = lisp_car(ctx, xs);
 		if (lisp_type(x) != LISP_STRING) goto out_free_buf;
 		struct LispString *dir = LISP_UNTAG_OBJ(x);
@@ -139,7 +139,7 @@ static LispObject lisp_load(struct LispCtx *ctx, const char *filename) {
 found:
 	if (!(buf = file_contents(f, buf))) goto out_close;
 
-	LispObject form, result = lisp_nil(ctx);
+	LispObject form, result = LISP_NIL(ctx);
 	const char *s = buf;
 	enum LispReadError err;
 	while (!(err = lisp_read(ctx, &s, &form))) result = lisp_eval(ctx, form);

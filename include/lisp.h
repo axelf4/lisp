@@ -20,6 +20,12 @@
 extern "C" {
 #endif
 
+#if defined(__has_builtin) && __has_builtin(__builtin_assume_aligned)
+#define ASSUME_ALIGNED(x, align) __builtin_assume_aligned(x, align)
+#else
+#define ASSUME_ALIGNED(x, align) ((void *) (x))
+#endif
+
 #ifndef USE_COMPRESSED_PTRS
 #define USE_COMPRESSED_PTRS __LP64__
 #endif
@@ -43,6 +49,15 @@ extern "C" {
 #define GC_DECOMPRESS(base, ref) ((void)(base), (ref).p)
 #endif
 #define LISP_ALIGNMENT sizeof(struct LispRef)
+
+/** Returns the nil value. */
+#define LISP_NIL(ctx) LISP_TAG_OBJ(ctx)
+/** Returns whether @p x is the nil value. */
+#if USE_COMPRESSED_PTRS
+#define LISP_NILP(ctx, x) ((void)(ctx), GC_COMPRESS(x).p == LISP_TAG_OBJ(0))
+#else
+#define LISP_NILP(ctx, x) ((x) == NIL(ctx))
+#endif
 
 #define LISP_INTERN(ctx, s) lisp_intern(ctx, sizeof(s) - 1, s)
 
@@ -156,9 +171,6 @@ bool lisp_signal_handler(int sig, siginfo_t *info, void *ucontext, struct LispCt
 
 void lisp_free(struct LispCtx *ctx);
 
-LispObject lisp_nil(struct LispCtx *ctx);
-bool lisp_nilp(struct LispCtx *ctx, LispObject v);
-
 struct LispString {
 	alignas(LISP_ALIGNMENT) struct LispObjectHeader hdr;
 	unsigned len;
@@ -178,10 +190,27 @@ struct LispSymbol {
 /** Returns the canonical symbol whose name is @p s. */
 LispObject lisp_intern(struct LispCtx *ctx, size_t len, const char s[static len]);
 
+/** Cons cell. */
+struct LispPair {
+	alignas(LISP_ALIGNMENT) struct LispObjectHeader hdr;
+	struct LispRef car, cdr;
+};
+
 /** Constructs a pair with @p car and @p cdr as components. */
 LispObject lisp_cons(struct LispCtx *ctx, LispObject car, LispObject cdr);
-LispObject lisp_car(struct LispCtx *ctx, LispObject v);
-LispObject lisp_cdr(struct LispCtx *ctx, LispObject v);
+
+static inline bool lisp_consp(LispObject x) { return lisp_type(x) == LISP_PAIR; }
+
+/** Projects the first component of the pair @p x. */
+static inline LispObject lisp_car(struct LispCtx *ctx, LispObject x) {
+	return lisp_consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *)LISP_UNTAG_OBJ(x))->car)
+		: LISP_NIL(ctx);
+}
+/** Projects the second component of the pair @p x. */
+static inline LispObject lisp_cdr(struct LispCtx *ctx, LispObject x) {
+	return lisp_consp(x) ? GC_DECOMPRESS(ctx, ((struct LispPair *)LISP_UNTAG_OBJ(x))->cdr)
+		: LISP_NIL(ctx);
+}
 
 struct LispSubr {
 	struct LispObjectHeader hdr;

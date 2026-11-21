@@ -10,9 +10,6 @@
 
 #define STACK_LEN 0x10000
 
-LispObject lisp_nil(struct LispCtx *ctx) { return NIL(ctx); }
-bool lisp_nilp(struct LispCtx *ctx, LispObject v) { return NILP(ctx, v); }
-
 LispObject lisp_cons(struct LispCtx *ctx, LispObject car, LispObject cdr) {
 	struct LispPair *cell
 		= gc_alloc((struct GcHeap *) ctx, alignof(struct LispPair), sizeof *cell);
@@ -56,17 +53,14 @@ LispObject lisp_intern(struct LispCtx *ctx, size_t len, const char s[static len]
 	return TAG_OBJ(*entry);
 }
 
-LispObject lisp_car(struct LispCtx *ctx, LispObject v) { return car(ctx, v); }
-LispObject lisp_cdr(struct LispCtx *ctx, LispObject v) { return cdr(ctx, v); }
-
 void lisp_print(struct LispCtx *ctx, LispObject x, FILE *stream) {
 	switch (lisp_type(x)) {
 	case LISP_INTEGER: fprintf(stream, "%i", UNTAG_SMI(x)); break;
 	case LISP_NIL: fputs("nil", stream); break;
 	case LISP_PAIR:
 		putc('(', stream);
-		do lisp_print(ctx, car(ctx, x), stream);
-		while (consp(x = cdr(ctx, x)) && (putc(' ', stream), true));
+		do lisp_print(ctx, lisp_car(ctx, x), stream);
+		while (consp(x = lisp_cdr(ctx, x)) && (putc(' ', stream), true));
 		if (!NILP(ctx, x)) { fputs(" . ", stream); lisp_print(ctx, x, stream); }
 		putc(')', stream);
 		break;
@@ -363,9 +357,9 @@ DEFUN("consp", consp, (struct LispCtx *ctx, LispObject x)) {
 	return LISP_BOOL(ctx, consp(x));
 }
 
-DEFUN("car", car, (struct LispCtx *ctx, LispObject x)) { return car(ctx, x); }
+DEFUN("car", car, (struct LispCtx *ctx, LispObject x)) { return lisp_car(ctx, x); }
 
-DEFUN("cdr", cdr, (struct LispCtx *ctx, LispObject x)) { return cdr(ctx, x); }
+DEFUN("cdr", cdr, (struct LispCtx *ctx, LispObject x)) { return lisp_cdr(ctx, x); }
 
 DEFUN("+", add, (struct LispCtx *, LispObject a, LispObject b)) {
 	if (!(IS_SMI(a) && IS_SMI(b))) throw(1);
