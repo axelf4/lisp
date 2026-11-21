@@ -19,7 +19,7 @@
 #include <sys/syscall.h>
 #include "util.h"
 
-#define PAGE_SIZE (1u << 12)
+#define PAGE_SIZE (1ul << 12)
 #define TASK_SIZE ((1ul << 47) - PAGE_SIZE)
 
 enum VmaType {
@@ -55,6 +55,7 @@ typedef void restore_fn(uintptr_t hint, struct CheckpointHdr *hdr, int fd);
 #if IS_RESTORER_DSO
 #include <asm/prctl.h>
 
+// See: https://chromium.googlesource.com/linux-syscall-support
 #define SYS_VAR0()
 #define SYS_VAR1(_1) SYS_VAR0()
 #define SYS_VAR2(_1, _2) SYS_VAR1(_1)
@@ -221,10 +222,9 @@ static bool parse_map(FILE *f, struct Map *result) {
 }
 
 static bool should_dump(enum VmaType type, uint64_t pme) {
-	return pme & (PM_SWAP | PM_PRESENT)
-		&& !(pme & PM_GUARD_REGION)
+	return pme & (PM_PRESENT | PM_SWAP)
 		&& !(pme & PM_FILE && type & VMA_FILE) // COW?
-		&& !(type & VMA_VVAR);
+		&& !(pme & PM_GUARD_REGION);
 }
 
 static bool do_splice(int fd, struct iovec *iov, struct iovec *iov_end) {
@@ -323,7 +323,7 @@ static uintptr_t restorer_mmap_hint(struct CheckpointHdr *hdr, size_t len) {
 	FILE *f;
 	if (!(f = fopen("/proc/self/maps", "r"))) return 0;
 	struct Map *x = hdr->maps, *xend = x + hdr->num_maps, y;
-	uintptr_t i = hdr->mmap_min_addr, xstart = x->start, ystart = 0;
+	uintptr_t i = hdr->mmap_min_addr, xstart = x->start, ystart;
 	goto do_init_y;
 	for (;;)
 		if (i + len > xstart) { i = x->end; xstart = ++x < xend ? x->start : UINTPTR_MAX; }

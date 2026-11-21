@@ -102,10 +102,10 @@ struct LispCtx {
 	uint32_t next_gensym;
 
 #if ENABLE_JIT
-	unsigned char hotcounts[64];
 	struct JitState *jit_state;
 	struct LispTrace *(*traces)[UINT16_MAX], ///< Numbered root traces.
 		*current_trace;
+	unsigned char hotcounts[64];
 #endif
 
 #ifndef LISP_GENERATED_FILE
