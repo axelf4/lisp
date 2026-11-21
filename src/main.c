@@ -70,7 +70,8 @@ static size_t search_up(size_t len, char s[static len], struct Str *landmarks) {
 	return 0;
 }
 
-static void init_lisp_path(const struct Config *config, const char *argv0) {
+static void init_lisp_path(struct LispCtx *ctx,
+	const struct Config *config, const char *argv0) {
 	LispObject list = LISP_NIL(ctx);
 
 	if (!argv0) argv0 = "";
@@ -202,7 +203,7 @@ int main(int argc, char *argv[]) {
 	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
 	if (sigaction(SIGSEGV, &action, NULL)) return EXIT_FAILURE;
 
-	init_lisp_path(&config, *argv);
+	init_lisp_path(ctx, &config, *argv);
 	lisp_load(ctx, "core.lisp");
 
 	if (config.checkpoint_file) do_checkpoint(&config);
