@@ -22,6 +22,15 @@ static struct Upvalue *find_uv(struct LispCtx *ctx, LispObject *slot, bool is_mu
 	return *p = new;
 }
 
+static void close_uvs(struct LispCtx *ctx, uintptr_t *bp) {
+	while (ctx->upvalues && ctx->upvalues->location >= bp) {
+		struct Upvalue *x = ctx->upvalues;
+		ctx->upvalues = x->next;
+		x->value = *x->location;
+		x->location = &x->value;
+	}
+}
+
 /** Collects arguments of a CALL instruction. */
 static uint8_t bind_rest(struct LispCtx *ctx, struct Prototype *prototype,
 	LispObject *bp, uint8_t n) {
@@ -105,18 +114,10 @@ enum { main_dispatch_table, RECORD = 0x1f, recording_dispatch_table = RECORD };
 #endif
 
 [[gnu::optimize ("-fnon-call-exceptions")]]
-static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instruction *pc) {
+static LispObject vm(struct LispCtx *ctx, struct Instruction *pc) {
 	uintptr_t *bp = ctx->bp;
-	bp[0] = TAG_OBJ(chunk);
-	bp[1] = (uintptr_t)NULL; // TODO Reentrancy
-#if ENABLE_JIT
-	assert(!ctx->current_trace);
-#define JIT_THRESHOLD 4
-	memset(ctx->hotcounts, JIT_THRESHOLD, sizeof ctx->hotcounts);
-#endif
 
 #define LOAD_CONST (*(LispObject *) (pc - insn.b))
-
 	VM_BEGIN
 	DEFINE_OP(MOV) { bp[insn.a] = bp[insn.c]; NEXT; }
 	DEFINE_OP(LOADNIL) { bp[insn.a] = NIL(ctx); NEXT; }
@@ -203,16 +204,9 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 		bp[insn.a] = TAG_OBJ(closure);
 		NEXT;
 	}
-	DEFINE_OP(CLO) {
-		while (ctx->upvalues && ctx->upvalues->location >= bp) {
-			struct Upvalue *x = ctx->upvalues;
-			ctx->upvalues = x->next;
-			x->value = *x->location;
-			x->location = &x->value;
-		}
-		NEXT;
-	}
+	DEFINE_OP(CLO) { close_uvs(ctx, bp); NEXT; }
 #if ENABLE_JIT
+#define JIT_THRESHOLD 4
 	/** Decrements hotcount, triggering trace recorder at zero. */
 #define DECR_HOTCOUNT() do {											\
 		unsigned char hash = (uintptr_t)pc / sizeof *pc,				\
@@ -247,6 +241,32 @@ static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instructi
 	DEFINE_OP(RECORD) { unreachable(); }
 #endif
 	VM_END;
+}
+
+struct RunCtx {
+	struct LispCtx *ctx;
+	union { struct Instruction *pc; LispObject result; };
+	struct Chunk *volatile chunk; // Pins bytecode via conservative root
+};
+
+static void p_run(void *x) { struct RunCtx *st = x; st->result = vm(st->ctx, st->pc); }
+
+static LispObject run(struct LispCtx *ctx, struct Chunk *chunk, struct Instruction *pc) {
+	uintptr_t *bp = ctx->bp;
+	bp[0] = TAG_OBJ(chunk);
+	bp[1] = (uintptr_t)NULL;
+#if ENABLE_JIT
+	assert(!ctx->current_trace);
+	memset(ctx->hotcounts, JIT_THRESHOLD, sizeof ctx->hotcounts);
+#endif
+
+	struct RunCtx st = { ctx, { pc }, chunk };
+	int err = pcall(&st, p_run);
+	if (!err) return st.result;
+
+	ctx->bp = bp; // Unwind the stack
+	close_uvs(ctx, bp);
+	throw(err); // Rethrow
 }
 
 /** Applies @a function to @a args.

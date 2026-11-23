@@ -296,13 +296,12 @@ void gc_trace_roots(struct GcHeap *heap, bool mark_color) {
 		*stack = end - STACK_LEN, *top = MIN(ctx->bp + MAX_FRAME, end);
 	// Non-LispObjects, i.a. return addresses, masquerade as SMIs via
 	// >1-byte alignment.
-	for (uintptr_t *x = stack; x < top; ++x) switch (lisp_type(*x)) {
-		case LISP_CLOSURE:
+	for (uintptr_t *x = stack; x < top; ++x) {
+		if (lisp_type(*x) == LISP_CLOSURE) {
 			struct Closure *closure = UNTAG_OBJ(*x);
 			gc_pin(heap, mark_color, prototype_chunk(closure->prototype));
-			[[fallthrough]];
-		default: lisp_trace(heap, mark_color, x); break;
-		case LISP_BYTECODE: gc_pin(heap, mark_color, UNTAG_OBJ(*x)); break;
+		}
+		lisp_trace(heap, mark_color, x);
 	}
 	memset(top, 0, end - top); // Zero unused stack to not resurrect GCd object
 
